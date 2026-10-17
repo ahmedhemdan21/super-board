@@ -69,6 +69,13 @@ class Urlopen:
         if m:
             name = f"posthog-issue-{m.group(1)}.json"
             return self._file(name, url) if os.path.exists(os.path.join(self.folder, name)) else {"status": "active"}
+        # Loki / Prometheus (self-hosted telemetry)
+        telemetry = {"/loki/api/v1/query": "loki-metric.json", "/loki/api/v1/query_range": "loki-streams.json",
+                     "/loki/api/v1/status/buildinfo": None, "/api/v1/alerts": "prometheus-alerts.json",
+                     "/api/v1/targets": "prometheus-targets.json", "/api/v1/status/buildinfo": None}
+        if path in telemetry:
+            name = telemetry[path]
+            return self._file(name, url) if name else {"status": "success", "version": "3.0.0", "data": {"version": "3.0.0"}}
         # Sentry
         if re.search(r"/api/0/projects/[^/]+/[^/]+/$", path):
             return self._file("sentry-project.json", url)

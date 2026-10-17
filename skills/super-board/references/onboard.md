@@ -339,6 +339,9 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    │    in the same call ("Error sources", "Code sources") — the tool takes 4 per question.
    │    "Other" = ➕ Add another source (link, app, API URL, MCP or command).
    ├─ Built-ins: ask only what detection missed (Sentry org/project/host, PostHog host/project_id).
+   │    Loki / Prometheus (offered when the user names them, or the compose files run them): ask
+   │    the url, the Loki `selector` (required, never guessed: one Loki may hold prod) and, when
+   │    the stack is only reachable in a remote Docker network, the ssh host + docker_network.
    │    Missing key → the exact .env line to add (name only) + scopes: Sentry `event:read
    │    project:read`; PostHog personal key `query:read error_tracking:read`. PostHog failure
    │    events: grep capture() calls for *_failed / *_error, propose them, user confirms.
@@ -353,6 +356,8 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    ├─ Ping each built-in, read-only, before step 8:
    │      python3 .claude/skills/super-collect/scripts/collect_sentry.py  --config <staged> ping
    │      python3 .claude/skills/super-collect/scripts/collect_posthog.py --config <staged> ping
+   │      python3 .claude/skills/super-collect/scripts/collect_loki.py       --config <staged> ping
+   │      python3 .claude/skills/super-collect/scripts/collect_prometheus.py --config <staged> ping
    │      gh api graphql -f query='{viewer{login}}'          (github, prs)
    └─ One result block, one line per source; a failure leaves that source out, never halts:
           ✅ linear — can read issues (12 open bugs); saved in this project's config

@@ -10,6 +10,8 @@ Give the agent runner the project's working directory, installed skills/helpers,
 authenticated GitHub CLI, Python, jq, and access to the configured sources.
 Credentials remain in the owning project's environment/secret store. Never put
 secrets or private ticket bodies in scheduler notifications or command arguments.
+A `loki` / `prometheus` source on the ssh transport also needs a non-interactive
+SSH key for its host (`BatchMode=yes` never prompts).
 Confirm the active config matches the intended repo/board, then test a dry run.
 
 ## Copyable agent-job prompt

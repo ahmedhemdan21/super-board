@@ -6,13 +6,16 @@ board fixes them.
 ## What It Does
 
 - Reads pluggable sources: **sentry** (unresolved errors), **posthog** (exceptions, failure
-  events, rage and dead clicks, slow pages, survey themes, tracking gaps), **github** (open issues
+  events, rage and dead clicks, slow pages, survey themes, tracking gaps), **loki** (error log
+  groups for one required selector), **prometheus** (firing alerts, down scrape targets), **github** (open issues
   not on the board, adopted rather than copied), **prs** (recurring problems across merged PRs and
   their human, bot and super-review comments) and **architecture** (read-only refactor finder).
 - Checks every candidate with one fresh verifier: is it real, still happening, already fixed, or a
   duplicate. Unclear ones are filed with `needs-triage`, never silently dropped.
 - Reports a source it cannot reach as `unavailable`, never `empty`: the Sentry and PostHog
   fetchers print `{"status":"unavailable","error":…}` and exit 2.
+- Reaches a Loki / Prometheus that lives inside a remote Docker network over
+  `transport: {"kind":"ssh","host":…,"docker_network":…}` (GET only, URL-encoded, quoted).
 - Files through `super-qa-file-bug.sh` and `super-review-file-refactor.sh`, always into the
   holding column. Nothing reaches `Ready` until `super-board lint` says so.
 
@@ -32,7 +35,9 @@ Dry-run is the default: you see what would be filed, then confirm.
 `/super-board onboard` sets up the `collect` block per project: it detects Sentry and PostHog,
 asks which sources to enable, writes IDs and hosts to the config, and tests each connection
 read-only. Secrets stay in `.env`: `SENTRY_AUTH_TOKEN` (scopes `event:read project:read`),
-`POSTHOG_PERSONAL_API_KEY` (`query:read`, `error_tracking:read`).
+`POSTHOG_PERSONAL_API_KEY` (`query:read`, `error_tracking:read`). Loki and Prometheus need no
+secret: `collect.loki` (`url`, required `selector`) and `collect.prometheus` (`url`).
+`collect_loki.py check` also backs the post-deploy telemetry check (`deploy.telemetry`).
 
 ## Install
 

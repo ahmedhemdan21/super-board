@@ -1,0 +1,5 @@
+{"status":"success","data":{"resultType":"streams","result":[
+ {"stream":{"service_name":"primecore-gateway","severity_text":"Error"},"values":[
+  ["1760700100000000000","{\"message\":\"Timeout calling ledger 10.0.0.12:5432 after 3000ms request 8f14e45f-ceea-467f-a9b3-1c2d3e4f5a6b\"}"],
+  ["1760700050000000000","{\"message\":\"Timeout calling ledger 10.0.0.13:5432 after 2999ms request 1a2b3c4d-1111-2222-3333-444455556666\"}"],
+  ["1760700000000000000","NullReferenceException in InvoiceService.Post at 2026-10-17T10:00:01Z"]]}]}}

@@ -1,0 +1,4 @@
+{"status":"success","data":{"alerts":[
+ {"labels":{"alertname":"HighErrorRate","job":"gateway","severity":"critical"},"annotations":{"summary":"5xx rate above 5%"},"state":"firing","activeAt":"2026-10-17T09:00:00Z","value":"0.08"},
+ {"labels":{"alertname":"SlowQueries","job":"ledger","severity":"warning"},"annotations":{},"state":"pending","activeAt":"2026-10-17T09:30:00Z","value":"2"},
+ {"labels":{"alertname":"DiskFull","job":"node","severity":"warning"},"annotations":{"summary":"disk 95%"},"state":"firing","activeAt":"2026-10-17T08:00:00Z","value":"95"}]}}

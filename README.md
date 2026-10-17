@@ -85,7 +85,7 @@ Add cards to `Ready`. The board drains on its own.
 | Skill | What it does |
 |---|---|
 | [`/super-board`](skills/super-board/README.md) | Orchestrator: plans waves, runs Build → QA → Review, merges when green. |
-| [`/super-collect`](skills/super-collect/README.md) | Finds problems (Sentry, PostHog, issues, PRs, architecture) and files verified Backlog cards. |
+| [`/super-collect`](skills/super-collect/README.md) | Finds problems (Sentry, PostHog, Loki, Prometheus, issues, PRs, architecture) and files verified Backlog cards. |
 | [`/ui-refine-loop`](skills/ui-refine-loop/README.md) | Critique → refine loop that polishes one page or component. |
 | [`/visual`](skills/visual/README.md) | One HTML page: branch recap, plan, or codebase map with diagrams. |
 | [`/git-sync`](skills/git-sync/README.md) | Commit per logical change, merge-pull, push without force, report. |
