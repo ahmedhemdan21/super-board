@@ -20,7 +20,9 @@
 # JSON: a key names a nested path, .NET style — ConnectionStrings:Default or
 # ConnectionStrings__Default. In a dotenv file Section:Key is read as Section__Key.
 #
-# Stdout, one line per key:   KEY present | KEY empty | KEY missing
+# Stdout, one line per key:   KEY present | KEY empty | KEY missing | KEY unreadable <file>
+# (appsettings JSONC comments and trailing commas are fine; a file that still will not
+# parse is "unreadable", never "missing").
 # Exit: 0 every key present · 1 at least one empty or missing · 64 usage
 set -euo pipefail
 
@@ -54,10 +56,58 @@ state_in() {
     *.json)
       python3 - "$file" "$k" <<'PY'
 import json, re, sys
+
+def strip_jsonc(text):
+    """Drop // and /* */ comments outside strings, then trailing commas."""
+    out, i, n, in_str = [], 0, len(text), False
+    while i < n:
+        ch = text[i]
+        if in_str:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1]); i += 2; continue
+            if ch == '"':
+                in_str = False
+            i += 1
+        elif ch == '"':
+            in_str = True; out.append(ch); i += 1
+        elif text.startswith("//", i):
+            while i < n and text[i] not in "\r\n":
+                i += 1
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            i = n if end < 0 else end + 2
+        else:
+            out.append(ch); i += 1
+    s = "".join(out)
+    # trailing commas: only outside strings, so walk again
+    res, in_str, i = [], False, 0
+    while i < len(s):
+        ch = s[i]
+        if in_str:
+            res.append(ch)
+            if ch == "\\" and i + 1 < len(s):
+                res.append(s[i + 1]); i += 2; continue
+            if ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True; res.append(ch)
+        elif ch == ",":
+            j = i + 1
+            while j < len(s) and s[j] in " \t\r\n":
+                j += 1
+            if j < len(s) and s[j] in "}]":
+                i += 1; continue
+            res.append(ch)
+        else:
+            res.append(ch)
+        i += 1
+    return "".join(res)
+
 try:
-    node = json.load(open(sys.argv[1], encoding="utf-8-sig"))
+    node = json.loads(strip_jsonc(open(sys.argv[1], encoding="utf-8-sig").read()))
 except Exception:
-    print("missing"); sys.exit(0)
+    print("unreadable"); sys.exit(0)
 for part in re.split(r":|__", sys.argv[2]):
     if not isinstance(node, dict):
         print("missing"); sys.exit(0)
@@ -88,6 +138,8 @@ for k in "${KEYS[@]}"; do
   for f in ${FILES[@]+"${FILES[@]}"}; do
     s=$(state_in "$f" "$k"); s=${s%$'\r'}
     if [ "$s" = present ]; then state=present; break; fi
+    # JSONC that still will not parse: say so (file name only), never "missing"
+    [ "$s" = unreadable ] && { [ "$state" = empty ] || state="unreadable $f"; }
     [ "$s" = empty ] && state=empty
   done
   echo "$k $state"

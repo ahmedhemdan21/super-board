@@ -62,4 +62,28 @@ echo "$OUT" | grep -q "abc123" && fail "a value leaked via --config: $OUT"
 [ "$(echo "$OUT" | grep -c ' present$')" -eq 3 ] || fail "three keys present via config: $OUT"
 RC=0; (cd "$T" && "$EC" 'A:' >/dev/null 2>&1) || RC=$?; [ "$RC" -eq 64 ] || fail "a trailing colon should exit 64, got $RC"
 
-echo "PASS: test-env-check.sh (6 scenarios)"
+# 7 — ASP.NET appsettings are JSONC: comments and trailing commas parse; a broken file
+#     is "unreadable <file>", never "missing"; a "//" inside a string is a value, not a comment.
+cat > "$T/backend/src/Host/appsettings.json" <<JSON
+{
+  // connection strings
+  "ConnectionStrings": { "Default": "Host=db;Password=$SECRET", /* inline */ },
+  "Serilog": { "Url": "http://seq//x" },
+  /* block
+     comment */
+  "Jwt": { "Issuer": "", },
+}
+JSON
+J2=backend/src/Host/appsettings.json
+RC=0; OUT=$(cd "$T" && "$EC" --file "$J2" ConnectionStrings:Default Serilog:Url Jwt:Issuer Jwt:Nope 2>&1) || RC=$?
+echo "$OUT" | grep -qx "ConnectionStrings:Default present" || fail "JSONC comments: $OUT"
+echo "$OUT" | grep -qx "Serilog:Url present" || fail "// inside a string: $OUT"
+echo "$OUT" | grep -qx "Jwt:Issuer empty" || fail "trailing comma: $OUT"
+echo "$OUT" | grep -qx "Jwt:Nope missing" || fail "missing key in JSONC: $OUT"
+echo "$OUT" | grep -q "$SECRET" && fail "a JSONC value leaked: $OUT"
+printf '{ "Jwt": { "Issuer": "x" ' > "$T/backend/src/Host/appsettings.Broken.json"
+RC=0; OUT=$(cd "$T" && "$EC" --file backend/src/Host/appsettings.Broken.json Jwt:Issuer 2>&1) || RC=$?
+[ "$RC" -eq 1 ] || fail "an unreadable file should exit 1, got $RC"
+[ "$OUT" = "Jwt:Issuer unreadable backend/src/Host/appsettings.Broken.json" ] || fail "unreadable, not missing: $OUT"
+
+echo "PASS: test-env-check.sh (7 scenarios)"
