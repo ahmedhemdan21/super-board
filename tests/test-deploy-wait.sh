@@ -159,6 +159,67 @@ PR_BASE=main run
 is "PR into another branch → exit 0" 0 "$RC"
 has "names the branch" "$OUT" "merged into main"
 
+# ── telemetry: collect_loki.py stubbed; prints $TEL_OUT, exits $TEL_RC, logs its args.
+cat > "$WORK/loki_stub.py" <<'STUB'
+import os, sys
+with open(os.environ["TEL_LOG"], "a") as f:
+    f.write(" ".join(sys.argv[1:]) + "\n")
+print(os.environ.get("TEL_OUT", ""))
+sys.exit(int(os.environ.get("TEL_RC", "0")))
+STUB
+export SB_COLLECT_LOKI="$WORK/loki_stub.py" TEL_LOG="$WORK/tel.log"
+telcfg() {
+  config "$GOOD"
+  jq '.deploy.telemetry = {source:"loki", window_s:600, max_new_error_groups:0, selector_extra:"| service_name=\"api\""}
+      | .collect.loki = {url:"http://loki:3100", selector:"{deployment_environment=\"dev\"}"}' "$WORK/cfg.json" > "$WORK/cfg2.json"
+  mv "$WORK/cfg2.json" "$WORK/cfg.json"
+}
+
+echo "== telemetry: new error groups after deploy → bug"
+telcfg; rm -f "$TEL_LOG"
+TEL_OUT='{"status":"ok","regression":true,"new":2,"after":3,"maxNew":0,"windowS":120,"summary":"api: timeout calling ledger (4x); api: nullreferenceexception (1x)"}' run
+is "exit 10" 10 "$RC"
+has "telemetry reason" "$OUT" "reason=telemetry_regression"
+hasnt "telemetry body passes the ticket checks" "$(cat "$WORK/bug.log")" "BODY REJECTED"
+has "bug body names the new groups" "$(cat "$WORK/bug-body.md")" "timeout calling ledger"
+TL=$(cat "$TEL_LOG")
+has "check called with the deploy sha" "$TL" "check --since-epoch"
+has "passes release" "$TL" "--release $SHA"
+has "passes window and threshold" "$TL" "--window-s 600 --max-new 0"
+
+echo "== telemetry: no new groups → healthy"
+telcfg
+TEL_OUT='{"status":"ok","regression":false,"new":0,"after":1,"maxNew":0,"windowS":120,"summary":""}' run
+is "exit 0" 0 "$RC"
+has "reports telemetry ok" "$OUT" "telemetry: ok"
+has "still healthy" "$OUT" "deploy: healthy"
+has "summary says telemetry=ok" "$OUT" "telemetry=ok"
+
+echo "== telemetry: no logs at all → unknown warning, not ok"
+telcfg
+TEL_OUT='{"source":"loki","status":"no_data","lines":0,"regression":false,"windowS":120,"selector":"{deployment_environment=\"dev\"}"}' run
+is "exit 0" 0 "$RC"
+has "reports unknown" "$OUT" 'telemetry: unknown (no logs for {deployment_environment="dev"} in window)'
+hasnt "never says ok" "$OUT" "telemetry: ok"
+has "WARNING on stderr" "$(cat "$WORK/err")" "telemetry: WARNING"
+has "summary carries it" "$OUT" "telemetry=unknown"
+[ -e "$WORK/bug.log" ] && bad "no bug filed" "no bug.log" "filed" || ok "no bug filed"
+
+echo "== telemetry: absent config → skipped"
+config "$GOOD"; rm -f "$TEL_LOG"
+run
+is "exit 0" 0 "$RC"
+has "says skipped" "$OUT" "telemetry: skipped"
+[ -e "$TEL_LOG" ] && bad "collector not called" "no tel.log" "called" || ok "collector not called"
+
+echo "== telemetry: Loki unreachable → warning, deploy healthy"
+telcfg
+TEL_RC=2 TEL_OUT='{"source":"loki","status":"unavailable","error":"Loki unreachable over ssh"}' run
+is "exit 0" 0 "$RC"
+has "deploy healthy" "$OUT" "deploy: healthy"
+has "warning on stderr" "$(cat "$WORK/err")" "telemetry: warning"
+[ -e "$WORK/bug.log" ] && bad "no bug filed" "no bug.log" "filed" || ok "no bug filed"
+
 echo "== --budget-s: exit 75, the next call keeps the run and the clock"
 config "$GOOD" "" 60
 RUN_SEQ="in_progress:" run --budget-s 1

@@ -540,8 +540,14 @@ bash .claude/bin/super-board-deploy-wait.sh --config <cfg> --pr <PR> --issue <N>
    polls it with backoff (`gh run view`), through `super-board-github-read.py` and the gh guard.
 2. Checks every `deploy.health` URL for 2xx, and `expect_version` (the merge sha) when set.
 3. Runs `deploy.smoke`.
-4. **Post-deploy checks** — `post_deploy_checks()` in the script: the hook for later checks on
-   the deployed build. Empty today.
+4. **Post-deploy checks** — `post_deploy_checks()` in the script. Today: the telemetry check,
+   when `deploy.telemetry` is set (absent → `telemetry: skipped`). It runs
+   `collect_loki.py check --since-epoch <deploy finished> --window-s <window_s> --release <sha>`
+   against `collect.loki` and compares error groups (labels + normalized message) after the
+   deploy with the same-length window before it. More than `max_new_error_groups` new groups →
+   failure `telemetry_regression`, bug filed naming them. Loki unreachable → a warning line,
+   never a failure. The after-window is what has arrived when the check runs, at most
+   `window_s`.
 
 Exits: 0 healthy or skipped · 10 failed, bug filed (`bug: #<n>`) · 11 failed, no bug filed ·
 75 the call's budget ran out, run the same command again (the `timeout_s` clock carries over)

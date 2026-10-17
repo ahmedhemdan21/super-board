@@ -267,7 +267,16 @@
     "health": [ { "name": "api", "url": "https://api.dev.example.com/health", "expect_version": "{short_sha}" } ],
     // Optional; runs from the repo root with SB_DEPLOY_SHA, SB_DEPLOY_RUN_ID
     // and SB_TARGET_<NAME> per health entry.
-    "smoke": null
+    "smoke": null,
+    // Optional post-deploy telemetry check. Absent → skipped. After health and smoke,
+    // `collect_loki.py check` (Loki url / selector / transport come from collect.loki)
+    // compares error groups in the window_s after the deploy with the same-length window
+    // before it; more than max_new_error_groups new groups → bug `telemetry_regression`.
+    // Loki unreachable → a warning, never a failure. selector_extra: extra LogQL stages
+    // for both windows. release_label (optional): a label holding the deployed version;
+    // when set, the after-window keeps only lines whose label starts with the short sha.
+    "telemetry": { "source": "loki", "window_s": 600, "max_new_error_groups": 0,
+                   "selector_extra": "", "release_label": null }
   },
 
   // ── Runaway controls (v2.0.0).
@@ -413,7 +422,7 @@
   // live in .env — SENTRY_AUTH_TOKEN, POSTHOG_PERSONAL_API_KEY — never here.
   "collect": {
     // Sources `/super-collect` runs with no argument. Any of:
-    // "sentry", "posthog", "github", "prs", "architecture", plus the `name` of
+    // "sentry", "posthog", "loki", "prometheus", "github", "prs", "architecture", plus the `name` of
     // any entry in `custom` below.
     "sources": ["sentry", "posthog", "github", "prs", "architecture", "linear"],
     // Default window in days when no --since is given. Default 14.
@@ -428,6 +437,25 @@
       // Drop issues under these window counts. Defaults 1 / 1.
       "min_events": 1,
       "min_users": 1
+    },
+    // Self-hosted telemetry. No secrets. transport (both): {"kind":"http"} (default) or
+    // {"kind":"ssh","host":"<ssh host>","docker_network":"<net>"} — each GET runs as
+    // `ssh -o BatchMode=yes <host> docker run --rm --network <net> curlimages/curl …`.
+    "loki": {
+      "url": "http://loki:3100",
+      // REQUIRED, no default: one Loki may hold prod logs too.
+      "selector": "{deployment_environment=\"dev\"}",
+      // Default | severity_text=~"(?i)error|fatal|critical".
+      "error_filter": "| severity_text=~\"(?i)error|fatal|critical\"",
+      // Labels one error group is keyed on. Default ["service_name"].
+      "group_by": ["service_name"],
+      "transport": { "kind": "ssh", "host": "dev-server", "docker_network": "app-network" }
+    },
+    "prometheus": {
+      "url": "http://prometheus:9090",
+      // Optional regex on the `job` label.
+      "job_filter": null,
+      "transport": { "kind": "http" }
     },
     "posthog": {
       // App host (us.posthog.com / eu.posthog.com or self-hosted), not the ingest host.

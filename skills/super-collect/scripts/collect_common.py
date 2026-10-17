@@ -105,3 +105,95 @@ def fingerprint(source, *parts):
         p = str(p)
         safe.append(p if re.fullmatch(r"[A-Za-z0-9_.:/-]{1,60}", p) else hashlib.sha1(normalize(p).encode()).hexdigest()[:12])
     return "|".join([source, *safe])
+
+
+# ── Transport for self-hosted telemetry (Loki, Prometheus). GET only.
+#
+# {"kind": "http"} (default): urllib straight to the URL.
+# {"kind": "ssh", "host": "dev-box", "docker_network": "app-net"}: the stack is only
+# reachable inside a Docker network on a remote host, so the GET runs there as
+#   ssh -o BatchMode=yes <host> docker run --rm --network <net> curlimages/curl -fsS --max-time 20 '<url>'
+# Every query parameter is URL-encoded locally, the URL is checked against a strict
+# character set, host / network against a name pattern, and the URL is single-quoted
+# for the remote shell, so nothing from config reaches a shell unquoted.
+
+class FetchError(RuntimeError):
+    pass
+
+
+_SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.@-]{0,120}")
+_SAFE_URL = re.compile(r"https?://[A-Za-z0-9._~:/?&=%+-]+")
+_SAFE_IMAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./:@-]{0,200}")
+
+
+def build_url(base, path, params=None):
+    import urllib.parse
+    url = (base or "").rstrip("/") + path
+    if params:
+        url += "?" + urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
+    if not _SAFE_URL.fullmatch(url):
+        raise FetchError(f"refusing URL with unsafe characters: {url[:80]}")
+    return url
+
+
+def ssh_argv(transport, url):
+    host, net = transport.get("host") or "", transport.get("docker_network") or ""
+    if not (_SAFE_NAME.fullmatch(host) and _SAFE_NAME.fullmatch(net)):
+        raise FetchError("transport ssh needs host and docker_network (letters, digits, . _ @ -)")
+    image = transport.get("image") or "curlimages/curl"
+    if not _SAFE_IMAGE.fullmatch(image):
+        raise FetchError("transport.image has unsafe characters")
+    if not _SAFE_URL.fullmatch(url):
+        raise FetchError("refusing URL with unsafe characters")
+    # ssh joins the remote args with spaces for the remote shell: quote the URL there.
+    return ["ssh", "-o", "BatchMode=yes", host, "docker", "run", "--rm", "--network", net,
+            image, "-fsS", "--max-time", "20", "'" + url + "'"]
+
+
+def get_json(base, path, params=None, transport=None, timeout=25, label="source"):
+    """GET base+path?params and parse JSON, over the configured transport."""
+    import subprocess
+    import urllib.error
+    import urllib.request
+    url = build_url(base, path, params)
+    kind = (transport or {}).get("kind") or "http"
+    if kind == "http":
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url), timeout=timeout) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            raise FetchError(f"{label} HTTP {e.code} on {path}") from None
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            raise FetchError(f"{label} unreachable on {path}: {getattr(e, 'reason', e)}") from None
+    if kind != "ssh":
+        raise FetchError(f"transport.kind must be http or ssh (got {kind})")
+    try:
+        p = subprocess.run(ssh_argv(transport, url), capture_output=True, text=True, timeout=timeout + 20)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise FetchError(f"{label} unreachable over ssh: {e}") from None
+    if p.returncode != 0:
+        last = (p.stderr or "").strip().splitlines()[-1:] or [f"exit {p.returncode}"]
+        raise FetchError(f"{label} unreachable over ssh on {path}: {last[0][:200]}")
+    try:
+        return json.loads(p.stdout)
+    except ValueError:
+        raise FetchError(f"{label} sent non-JSON over ssh on {path}") from None
+
+
+_GUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+_TS = re.compile(r"\d{4}-\d\d-\d\d[t ]\d\d:\d\d:\d\d([.,]\d+)?(z|[+-]\d\d:?\d\d)?", re.I)
+
+
+def signature(line):
+    """One error line → a stable signature (GUIDs, timestamps, numbers collapsed)."""
+    text = line or ""
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            for k in ("exception.type", "exception_type", "message", "msg", "body", "Body", "error"):
+                if obj.get(k):
+                    text = str(obj[k])
+                    break
+    except ValueError:
+        pass
+    return normalize(_TS.sub("T", _GUID.sub("G", text)))[:160]

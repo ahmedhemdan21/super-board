@@ -1,6 +1,6 @@
 ---
 name: super-collect
-description: Find problems in one project and file them as tickets into its super-board Backlog — the board fixes them. Source plug-ins - sentry (app errors), posthog (exceptions, rage/dead clicks, failure events, web vitals, tracking gaps), github (issues not on the board), prs (recurring problems in merged PRs and their review comments), architecture (refactor findings), plus any custom source added in onboard (an MCP server, HTTP API, CLI command or app). Each candidate is checked by one fresh verifier before filing. Dry-run by default. Use when the user says "super-collect", "/super-collect", "/super-collect sentry", "collect tickets", "triage errors onto the board", "what keeps breaking", or "find refactors".
+description: Find problems in one project and file them as tickets into its super-board Backlog — the board fixes them. Source plug-ins - sentry (app errors), posthog (exceptions, rage/dead clicks, failure events, web vitals, tracking gaps), loki (error log groups), prometheus (firing alerts, down targets), github (issues not on the board), prs (recurring problems in merged PRs and their review comments), architecture (refactor findings), plus any custom source added in onboard (an MCP server, HTTP API, CLI command or app). Each candidate is checked by one fresh verifier before filing. Dry-run by default. Use when the user says "super-collect", "/super-collect", "/super-collect sentry", "collect tickets", "triage errors onto the board", "what keeps breaking", or "find refactors".
 ---
 
 # super-collect — find problems, file them into Backlog
@@ -15,7 +15,7 @@ config and files onto that project's board.
 | Command | Does |
 |---|---|
 | `/super-collect` | every source enabled in `collect.sources` |
-| `/super-collect <source> [<source>…]` | just those: `sentry`, `posthog`, `github`, `prs`, `architecture`, or a custom source's `name` |
+| `/super-collect <source> [<source>…]` | just those: `sentry`, `posthog`, `loki`, `prometheus`, `github`, `prs`, `architecture`, or a custom source's `name` |
 | `--since 30d` / `--since 2026-09-01` | window; default `collect.window_days`, else 14 days |
 | `--yes` | file without the confirm step (never skips verify or dedupe) |
 
@@ -50,10 +50,25 @@ Scripts live in `.claude/skills/super-collect/scripts/` (`S=` below). Every fetc
 |---|---|---|
 | `sentry` | `python3 $S/collect_sentry.py list --since <w>` — Sentry REST, Bearer token (scopes `event:read project:read`): org issues list, then `event <id>` / `tags <id>` for evidence | one unresolved issue → `bug`, fp `err|sentry|<id>` |
 | `posthog` | `python3 $S/collect_posthog.py list --since <w>` — HogQL `POST {host}/api/projects/{id}/query/` | one signal group → see table below |
+| `loki` | `python3 $S/collect_loki.py list --since <w>` — `collect.loki.selector` is required (no default: one Loki may hold prod); error lines (`error_filter`) counted per `group_by` labels, a sample per group split by signature | one group + signature → `bug`, fp `loki|<group>|<signature hash>` |
+| `prometheus` | `python3 $S/collect_prometheus.py list` — `GET /api/v1/alerts` (firing only) and `/api/v1/targets` (health `down`), narrowed by `job_filter`; current state, `--since` is ignored | one alert / down target → `bug`, fp `prom|alert|<name>|<labels>` or `prom|target|<job>|<instance>` |
 | `github` | Read open candidates with `gh issue list --state open --json number,title,body,labels,url --limit 300` (a full 300 is capped coverage, not a complete repo inventory), minus issues on the board and `source:*` labels | real work → **adopt** (`--adopt <n>`), never copied |
 | `prs` | `python3 $S/collect_prs.py list --since <w>` — one GraphQL search `is:pr is:merged merged:>=DATE`, paginated, with comments, reviews and review threads (human and bot), super-review reports flagged (`<!-- super-review:report -->`) | one recurring root cause → `fix` / `refactor` / `feature`, fp `prs|<boundary>|<cause>` |
 | `architecture` | read-only finder sub-agent (below) | one finding → `refactor`, fp `arch|<module>|<problem>` |
 | custom (`collect.custom[]`) | `python3 $S/collect_custom.py list --since <w>` — http and cli sources run in the script; an `mcp` source comes back `status: agent`: call that server's read/list tool yourself (read-only), then pipe its JSON into `collect_custom.py normalize --name <n>` | one candidate → `bug` (errors, incidents) or `feature` (requests), `--source custom`, fp `custom|<name>|<key>` (the script emits it) |
+
+### loki and prometheus (self-hosted telemetry)
+
+No secrets: config holds `url` and an optional `transport`. `{"kind":"http"}` (default) calls the
+URL directly. A stack that is only reachable inside a Docker network on a remote host uses
+`{"kind":"ssh","host":"<ssh host>","docker_network":"<network>"}`: each GET runs as
+`ssh -o BatchMode=yes <host> docker run --rm --network <net> curlimages/curl -fsS --max-time 20 '<url>'`.
+Query parameters are URL-encoded locally and the URL, host and network are checked against strict
+character sets, so config never reaches a shell unquoted. GET only. Every Loki query carries the
+configured `selector`, so the queries only ever name that environment. Verifier "still happening":
+rerun `list --since 1d` and look for the same fingerprint. Tempo is not a source yet.
+`collect_loki.py check` is the post-deploy telemetry check (`deploy.telemetry`, run.md →
+"Post-merge dev check").
 
 ### custom sources
 
@@ -147,7 +162,7 @@ Every card goes through one script, which routes to the pack's filers:
 
 ```bash
 $S/super-collect-file.sh --config <cfg> --type bug|feature|refactor|fix \
-  --source sentry|posthog|github|prs|architecture|custom --title "<one line>" --body-file <md> \
+  --source sentry|posthog|loki|prometheus|github|prs|architecture|custom --title "<one line>" --body-file <md> \
   --fingerprint "<key>" [--priority p] [--area a] [--label needs-triage] [--label ux] [--yes]
 $S/super-collect-file.sh --config <cfg> --adopt <n> --type <t> [--yes]
 ```
@@ -161,7 +176,8 @@ $S/super-collect-file.sh --config <cfg> --adopt <n> --type <t> [--yes]
   links and counts — never secrets or user PII. The filer refuses a body that misses a section.
 - **Fingerprint per source** (the filer rejects a mismatch): sentry `err|sentry|<id>`, posthog
   `posthog|<signal>|<key>` (fetchers emit it) or `gap|<workflow>`, github `github|<n>`, prs
-  `prs|<boundary>|<cause>`, architecture `arch|<module>|<problem>`, custom `custom|<name>|<key>`.
+  `prs|<boundary>|<cause>`, architecture `arch|<module>|<problem>`, custom `custom|<name>|<key>`, loki
+  `loki|<group>|<signature>`, prometheus `prom|alert|…` / `prom|target|…` (fetchers emit them).
 - **Dedupe** uses complete guarded paginated issue history, exact-fingerprint, repo-wide, any label: an open hit gets a "Seen again" comment; a
   closed-only hit is a **recurrence**, filed again naming the closed issue.
 - **Column** is the board's holding column (`Backlog`, else `Todo`/`To do`/`Triage`/`Inbox`); none

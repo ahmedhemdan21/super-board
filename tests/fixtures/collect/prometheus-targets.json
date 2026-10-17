@@ -1,0 +1,3 @@
+{"status":"success","data":{"activeTargets":[
+ {"labels":{"job":"gateway","instance":"primecore-gateway:8080"},"scrapeUrl":"http://primecore-gateway:8080/metrics","health":"up","lastError":"","lastScrape":"2026-10-17T10:00:00Z"},
+ {"labels":{"job":"worker","instance":"primecore-worker:8080"},"scrapeUrl":"http://primecore-worker:8080/metrics","health":"down","lastError":"connection refused","lastScrape":"2026-10-17T10:00:00Z"}]}}

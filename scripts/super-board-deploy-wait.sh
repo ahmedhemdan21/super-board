@@ -29,6 +29,9 @@
 #                      true = must contain {short_sha}
 #   deploy.smoke       optional command; env SB_DEPLOY_SHA, SB_DEPLOY_RUN_ID,
 #                      SB_TARGET_<NAME> per health entry, SB_TARGET_URL
+#   deploy.telemetry   optional {source:"loki", window_s, max_new_error_groups,
+#                      selector_extra, release_label}: new Loki error groups after
+#                      the deploy → telemetry_regression (collect.loki = where)
 #
 # Stdout, last line: `deploy: healthy|skipped|failed …` (+ `bug: #<n>` on a filed bug).
 # Exits: 0 healthy or skipped (not configured, PR not into deploy.branch)
@@ -150,6 +153,7 @@ if [ -z "$REASON" ]; then
     RUN_STATUS=$(echo "$RUN" | jqx -r '.status // empty'); RUN_CONCLUSION=$(echo "$RUN" | jqx -r '.conclusion // empty')
     RUN_URL=$(echo "$RUN" | jqx -r '.url // empty')
     if [ "$RUN_STATUS" = "completed" ]; then
+      DEPLOY_TS=$(date +%s)
       [ "$RUN_CONCLUSION" = "success" ] || fail deploy-failed "$WORKFLOW run $RUN_ID concluded ${RUN_CONCLUSION:-unknown}"
       break
     fi
@@ -198,18 +202,58 @@ if [ -z "$REASON" ] && [ -n "$SMOKE" ]; then
   fi
 fi
 
-# 5. Post-deploy checks — the hook point for later checks on the deployed build
-#    (the telemetry phase plugs in here: error rate / traces for $SHA). Each
-#    check calls `fail <reason> <detail>` and returns; a failure files the bug
-#    the same way as the steps above. Nothing runs here yet.
+# 5. Post-deploy checks on the deployed build. Each check calls
+#    `fail <reason> <detail>` and returns; a failure files the bug the same way
+#    as the steps above.
+#
+#    telemetry (deploy.telemetry, source loki): error groups in Loki since the
+#    deploy finished that were not there in the same-length window before it,
+#    through `collect_loki.py check` (collect.loki holds url / selector /
+#    transport). More than max_new_error_groups → telemetry_regression. Loki
+#    unreachable or misconfigured → a warning line, never a failure. No log
+#    line at all for the selector (status no_data) → "telemetry: unknown",
+#    a WARNING, never "ok": zero errors out of zero logs proves nothing.
+#    TELEMETRY (ok|unknown|unavailable|skipped|regression) goes on the summary line.
+LOKI_PY="${SB_COLLECT_LOKI:-$HERE/../skills/super-collect/scripts/collect_loki.py}"
+telemetry_check() {
+  local tel src win maxn extra label out rc
+  tel=$(echo "$DEPLOY" | jqx -c '.telemetry // empty')
+  TELEMETRY=skipped
+  if [ -z "$tel" ] || [ "$tel" = "null" ]; then echo "telemetry: skipped (no deploy.telemetry)"; return 0; fi
+  src=$(echo "$tel" | jqx -r '.source // "loki"')
+  [ "$src" = "loki" ] || { echo "telemetry: skipped (source $src is not supported; use loki)" >&2; return 0; }
+  win=$(echo "$tel" | jqx -r '.window_s // 600'); maxn=$(echo "$tel" | jqx -r '.max_new_error_groups // 0')
+  extra=$(echo "$tel" | jqx -r '.selector_extra // ""'); label=$(echo "$tel" | jqx -r '.release_label // empty')
+  out=$(python3 "$LOKI_PY" --config "$CONFIG" check --since-epoch "${DEPLOY_TS:-$(date +%s)}" \
+    --window-s "$win" --max-new "$maxn" --release "$SHA" ${label:+--release-label "$label"} --extra "$extra" 2>&1); rc=$?
+  if [ "$rc" -eq 0 ] && [ "$(echo "$out" | jqx -r '.status // empty' 2>/dev/null)" = "no_data" ]; then
+    TELEMETRY=unknown
+    local sel; sel=$(echo "$out" | jqx -r '.selector // "the selector"')
+    echo "telemetry: WARNING — no logs for $sel in the ${win}s window; health unknown, not failing the deploy" >&2
+    echo "telemetry: unknown (no logs for $sel in window)"
+    return 0
+  fi
+  if [ "$rc" -ne 0 ] || [ "$(echo "$out" | jqx -r '.status // empty' 2>/dev/null)" != "ok" ]; then
+    TELEMETRY=unavailable
+    echo "telemetry: warning — Loki check unavailable, not failing the deploy: $(echo "$out" | jqx -r '.error // empty' 2>/dev/null || echo "$out" | tail -n 1)" >&2
+    return 0
+  fi
+  if [ "$(echo "$out" | jqx -r '.regression')" = "true" ]; then
+    TELEMETRY=regression
+    fail telemetry_regression "$(echo "$out" | jqx -r '"\(.new) new error group(s) in Loki within \(.windowS)s of the deploy (max \(.maxNew)): \(.summary)"' | cut -c1-600)"
+    return 0
+  fi
+  TELEMETRY=ok
+  echo "telemetry: ok ($(echo "$out" | jqx -r '"\(.after) error group(s) after, \(.new) new"'))"
+}
 post_deploy_checks() {
-  return 0
+  telemetry_check
 }
 [ -n "$REASON" ] || post_deploy_checks
 
 if [ -z "$REASON" ]; then
   rm -f "$SFILE"
-  echo "deploy: healthy sha=$SHORT run=$RUN_ID branch=$BRANCH${RUN_URL:+ $RUN_URL}"
+  echo "deploy: healthy sha=$SHORT run=$RUN_ID branch=$BRANCH telemetry=${TELEMETRY:-skipped}${RUN_URL:+ $RUN_URL}"
   exit 0
 fi
 rm -f "$SFILE"
@@ -259,7 +303,7 @@ Find why the merged change broke the dev deploy (workflow run $RUN_REF), fix it 
 ## Acceptance Criteria
 - [ ] The \`$WORKFLOW\` run for the fix commit succeeds
 - [ ] Every deploy health URL answers 2xx with the fix commit's version
-- [ ] The deploy smoke command passes
+- [ ] The deploy smoke command passes$( [ "$REASON" = telemetry_regression ] && printf '\n- [ ] No new error groups in Loki in the %s window after the fix deploys' "deploy.telemetry" )
 
 ## Risk
 🟡 **Medium** · dev is broken or stale until this lands; production is untouched.

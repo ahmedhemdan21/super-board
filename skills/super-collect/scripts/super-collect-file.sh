@@ -15,11 +15,12 @@
 #      every run: sentry `err|sentry|<issue-id>`, posthog `posthog|<signal>|<key>`
 #      (tracking gaps: `gap|<workflow>`),
 #      github `github|<issue#>`, prs `prs|<boundary>|<cause>`,
-#      architecture `arch|<module>|<problem>`.
+#      architecture `arch|<module>|<problem>`, loki `loki|<group>|<signature>`,
+#      prometheus `prom|alert|<name>|<labels>` or `prom|target|<job>|<instance>`.
 #
 # Usage:
 #   super-collect-file.sh --config <cfg.json> --type bug|feature|refactor|fix \
-#     --source sentry|posthog|github|prs|architecture|custom --title "<one line>" --body-file <md> \
+#     --source sentry|posthog|loki|prometheus|github|prs|architecture|custom --title "<one line>" --body-file <md> \
 #     --fingerprint "<stable key>" [--priority high|medium|low] [--area <a>] \
 #     [--label <l>]... [--yes]          # e.g. --label needs-triage --label ux
 #   super-collect-file.sh --config <cfg.json> --adopt <issue#> --type bug|feature|refactor [--yes]
@@ -62,8 +63,9 @@ if [ -z "$ADOPT" ]; then
   case "$SOURCE" in
     sentry) FP_PREFIX="err|sentry|" ;; posthog) FP_PREFIX="posthog|" ;; github) FP_PREFIX="github|" ;;
     prs) FP_PREFIX="prs|" ;; architecture) FP_PREFIX="arch|" ;;
+    loki) FP_PREFIX="loki|" ;; prometheus) FP_PREFIX="prom|" ;;
     custom) FP_PREFIX="custom|" ;;   # onboard's "➕ Add another source": custom|<name>|<key>
-    *) die "--source must be sentry|posthog|github|prs|architecture|custom (got: ${SOURCE:-<unset>})" 64 ;;
+    *) die "--source must be sentry|posthog|loki|prometheus|github|prs|architecture|custom (got: ${SOURCE:-<unset>})" 64 ;;
   esac
   [ -n "$TITLE" ] || die "--title is required" 64
   [ -n "$FP" ]    || die "--fingerprint is required (dedupe key)" 64
