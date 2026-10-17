@@ -57,13 +57,15 @@ echo "$CFG" | jqx -e 'type == "object"' >/dev/null 2>&1 || { echo "config is not
 case "$CMD" in start|stop) [ -n "$ISSUE" ] || { echo "$CMD needs --issue" >&2; exit 64; } ;; esac
 if [ -n "$ISSUE" ]; then case "$ISSUE" in *[!0-9]*) echo "--issue must be a number" >&2; exit 64 ;; esac; fi
 
-# State is shared by every lane on this machine, so it lives beside the main
-# checkout (git common dir), not inside a lane's worktree.
+# Port leases must be shared by every lane on this machine, so state lives in
+# the git common dir (<common>/super-board/qa-local): every linked worktree sees
+# the same directory, yet it is inside .git, never a checkout. Writing beside
+# the main clone would drop files into the user's working tree when a lane runs
+# from a linked worktree. Per-card pids, env files and logs sit with the leases.
 state_root() {
   if [ -n "${SB_QA_STATE_DIR:-}" ]; then echo "$SB_QA_STATE_DIR"; return; fi
   local common
-  common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && [ -n "$common" ] \
-    && { echo "$(dirname "$common")/.claude/super-board/qa-local"; return; }
+  common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && [ -n "$common" ]     && { echo "$common/super-board/qa-local"; return; }
   echo "$PWD/.claude/super-board/qa-local"
 }
 STATE=$(state_root)

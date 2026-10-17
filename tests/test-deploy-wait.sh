@@ -171,6 +171,16 @@ is "second call finishes" 0 "$RC"
 hasnt "second call reuses the run id" "$(cat "$GH_LOG")" "run list"
 [ -f "$WORK/state/$SHA.json" ] && bad "state cleared" "no file" "still there" || ok "state cleared"
 
+echo "== state from a linked worktree stays in that repo.path, not the main clone"
+git init -q "$WORK/main" && git -C "$WORK/main" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+git -C "$WORK/main" worktree add -q "$WORK/lane" 2>/dev/null
+config "$GOOD" "" 60
+: > "$GH_LOG"; rm -f "$RUN_COUNT"
+OUT=$(env -u SB_DEPLOY_STATE_DIR SB_REPO_PATH="$WORK/lane" RUN_SEQ="in_progress:" "$SCRIPT" --config "$WORK/cfg.json" --pr 12 --issue 5 --budget-s 1 2>"$WORK/err"); RC=$?
+is "exit 75" 75 "$RC"
+[ -f "$WORK/lane/.claude/super-board/deploy/$SHA.json" ] && ok "state in the lane's repo.path" || bad "state in the lane's repo.path" "lane state file" "$(find "$WORK" -name "$SHA.json")"
+[ -e "$WORK/main/.claude" ] && bad "main clone untouched" "no main/.claude" "created" || ok "main clone untouched"
+
 echo
 echo "PASS: $PASS  FAIL: $FAIL"
 [ "$FAIL" -eq 0 ]

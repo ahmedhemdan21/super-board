@@ -93,11 +93,14 @@ PR_URL=$(echo "$PRJSON" | jqx -r '.url // empty')
 SHORT=${SHA:0:7}
 
 # Overall clock, kept across --budget-s calls.
+# Board state lives under the configured repo.path, like merge-gate's
+# REPO_PATH/.claude/super-board/inflight. Use SB_REPO_PATH itself, not the
+# git common dir: hopping to the main clone wrote into the user's checkout
+# when repo.path (or the caller) was a linked worktree.
 state_dir() {
   if [ -n "${SB_DEPLOY_STATE_DIR:-}" ]; then echo "$SB_DEPLOY_STATE_DIR"; return; fi
-  local common
-  common=$(cd "$SB_REPO_PATH" 2>/dev/null && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && [ -n "$common" ] \
-    && { echo "$(dirname "$common")/.claude/super-board/deploy"; return; }
+  local top
+  top=$(cd "$SB_REPO_PATH" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null) && [ -n "$top" ]     && { echo "$top/.claude/super-board/deploy"; return; }
   echo "$PWD/.claude/super-board/deploy"
 }
 SDIR=$(state_dir); mkdir -p "$SDIR"; [ -e "$SDIR/.gitignore" ] || printf '*\n' > "$SDIR/.gitignore"

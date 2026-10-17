@@ -111,6 +111,15 @@ T0=$(date +%s)
 q start --config "$WORK/dead.json" --issue 12 --worktree "$WORK/wt" >/dev/null 2>&1; is "exit 4" 4 $?
 [ $(( $(date +%s) - T0 )) -lt 30 ] && ok "fails fast" || bad "fails fast" "<30s" "$(( $(date +%s) - T0 ))s"
 
+echo "== state from a linked worktree lives in the git common dir, not a checkout"
+git init -q "$WORK/main" && git -C "$WORK/main" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+git -C "$WORK/main" worktree add -q "$WORK/lane" 2>/dev/null
+COMMON=$(git -C "$WORK/main" rev-parse --path-format=absolute --git-common-dir)
+( cd "$WORK/lane" && env -u SB_QA_STATE_DIR bash "$SCRIPT" start --config "$WORK/dead.json" --issue 12 --worktree "$WORK/lane" >/dev/null 2>&1 )
+[ -d "$COMMON/super-board/qa-local/ports" ] && ok "leases under <common>/super-board" || bad "leases under <common>/super-board" "$COMMON/super-board/qa-local" "missing"
+[ -e "$WORK/main/.claude" ] && bad "main checkout untouched" "no main/.claude" "created" || ok "main checkout untouched"
+[ -e "$WORK/lane/.claude" ] && bad "lane checkout untouched" "no lane/.claude" "created" || ok "lane checkout untouched"
+
 echo "== qa.auth_command: JSON login, never printed"
 jq -n --arg u "$EXT/health" '{target:{url:$u}, qa:{auth_command:"printf %s \"{\\\"token\\\":\\\"s3cr3t-tok\\\",\\\"user\\\":\\\"$BASE_URL\\\"}\""}}' > "$WORK/auth.json"
 OUT=$(q auth --config "$WORK/auth.json" 2>"$WORK/ea"); RC=$?
