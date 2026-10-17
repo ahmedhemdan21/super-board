@@ -157,7 +157,7 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    │      ⏺ Fixed for you:
    │        ✓ super-board skills and scripts installed
    │        ✓ board engine (workflow) installed
-   │        ✓ 6 safety guards switched on
+   │        ✓ 7 safety guards switched on
    │        ✓ settings.json entries added (backup kept)
    │        ✓ git repo found
    ├─ Each `needs` item (a system tool): one line, then run its `command` with Bash — Claude
@@ -301,6 +301,9 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
        commits) / No]. Skipped when settings.json already wires guard-protected-push.py. Script
        missing (--no-hooks install) → record the answer and say: "Run ./install.sh --no-hooks
        --protect-main <this-dir> — it installs only this guard."
+       Prod guard: never asked. guard-prod.py is wired by default and does nothing until the
+       user adds `guard.prod` (patterns · hosts · ports · message, config-schema.json) by
+       hand, e.g. when dev and prod share one SSH server.
     c. "Databases" (multiSelect, only when migration dirs exist) — "Which databases may the robot
        migrate?" [test (Recommended) / staging (Recommended) / live] → migrations.allowed_envs;
        target_env "live" on a production base, else "staging"; commands from the manifest's
