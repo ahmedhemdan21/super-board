@@ -32,7 +32,7 @@ MAX_HUNK_LINES = 80
 
 
 def git(*args: str, cwd: Path | None = None, check: bool = True) -> str:
-    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8")
     if check and r.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)}: {r.stderr.strip()}")
     return r.stdout if r.returncode == 0 else ""
@@ -253,7 +253,7 @@ def output_path(root: Path, data: dict) -> Path:
         d.mkdir(exist_ok=True)
         gi = d / ".gitignore"
         if not gi.exists():
-            gi.write_text("*\n")
+            gi.write_text("*\n", encoding="utf-8")
     d.mkdir(parents=True, exist_ok=True)
     return d / name
 
@@ -399,7 +399,7 @@ def load_map(path: Path) -> dict:
     root_view = next((v for v in views if not v.get("parent")), views[0] if views else {})
     data.setdefault("title", model.get("title") or root_view.get("title") or path.stem)
     top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=path.resolve().parent,
-                         capture_output=True, text=True).stdout.strip()
+                         capture_output=True, text=True, encoding="utf-8").stdout.strip()
     data["_root"] = top or str(path.resolve().parent)
     data.setdefault("source", portable_path(path.resolve(), Path(data["_root"])))
     embed_logos(data, path.resolve().parent)
@@ -539,14 +539,14 @@ def first_sentence(s: str) -> str:
 def cmd_skillmap(a) -> None:
     sk = Path(a.skills_dir).resolve()
     top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=sk, capture_output=True,
-                         text=True).stdout.strip()
+                         text=True, encoding="utf-8").stdout.strip()
     top_p = Path(top) if top else sk.parent
     pack = sk.parent
     rel = lambda p: os.path.relpath(p, top_p)
     fam = {}
     fpath = sk / "families.json"
     if fpath.is_file():
-        for group in json.loads(fpath.read_text()).values():
+        for group in json.loads(fpath.read_text(encoding="utf-8")).values():
             for name, blurb in (group.get("skills") or {}).items():
                 fam[name] = blurb
     skills = {}
@@ -677,7 +677,7 @@ def cmd_skillmap(a) -> None:
     snip = pack / "hooks" / "settings-snippet.json"
     hook_ids = []
     if snip.is_file():
-        cfg = json.loads(snip.read_text()).get("hooks", {})
+        cfg = json.loads(snip.read_text(encoding="utf-8")).get("hooks", {})
         for event, groups in cfg.items():
             eid = "event:" + event
             add_node({"id": eid, "label": event, "kind": "hook", "verbs": [],
@@ -782,11 +782,11 @@ def chrome(binary: str, *args: str, done=None, timeout: int = 45) -> str:
     # Chrome subprocesses can still write to the profile after the parent exits.
     prof = tempfile.mkdtemp()
     try:
-        with tempfile.TemporaryFile("w+") as out:
+        with tempfile.TemporaryFile("w+", encoding="utf-8") as out:
             proc = subprocess.Popen([binary, "--headless", "--disable-gpu", "--hide-scrollbars",
                                      "--no-first-run", "--no-default-browser-check", "--mute-audio",
                                      f"--user-data-dir={prof}", *args],
-                                    stdout=out, stderr=subprocess.DEVNULL, text=True)
+                                    stdout=out, stderr=subprocess.DEVNULL, text=True, encoding="utf-8")
             t0, text = time.time(), ""
             while time.time() - t0 < timeout:
                 if proc.poll() is not None:
@@ -902,4 +902,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # Windows pipes default to the ANSI code page; super-board text is UTF-8.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     main()

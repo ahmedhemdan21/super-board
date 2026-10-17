@@ -1,8 +1,8 @@
 # Releasing super-board
 
 Push a version tag to run the release workflow. GitHub creates the release only after
-all safety suites pass on Linux and macOS, and the status-reader checks pass on Windows,
-Linux and macOS. Failed, cancelled or skipped checks prevent the publish job from running.
+all safety suites pass on Linux and macOS, and the status-reader and portability checks
+pass on Windows, Linux and macOS. Failed, cancelled or skipped checks prevent the publish job from running.
 No release is created on pull requests or ordinary branch pushes.
 
 1. Update `VERSION` and `RELEASE-NOTES.md` in a reviewed commit.
@@ -30,7 +30,8 @@ run twice. Keep these tests offline and deterministic; paid agent evaluations be
 Dependencies: Bash, Python 3, Git, jq, Node.js, curl and tar. GitHub's Linux/macOS runners
 provide the command-line utilities; the safety workflow tests Python 3.9 and 3.12 with
 Node.js 22.
-Windows coverage remains limited to the Python status reader.
+Windows runs the Python status reader and `tests/test_windows_portability.py` (UTF-8
+output and `gh` reads, the collector lock, Git Bash); the full safety suite is not ported.
 
 Loopback HTTP test fixtures use a fixed local server name and skip reverse DNS.
 Runtime fixture failures print the report and app startup logs. Failed safety jobs also

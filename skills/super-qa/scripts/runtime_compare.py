@@ -142,7 +142,7 @@ def ready(url, process, timeout):
 def group_members(group):
     """Read actual live members: killpg(..., 0) is unreliable for residual groups."""
     result = subprocess.run(['ps', '-axo', 'pid=,pgid=,stat=,uid='],
-                            capture_output=True, text=True, timeout=.5)
+                            capture_output=True, text=True, encoding='utf-8', timeout=.5)
     if result.returncode:
         raise RuntimeError('could not inspect owned process group during cleanup')
     members = {}
@@ -206,7 +206,7 @@ def stop(process, grace=.5):
 
 def run_adapter(argv, cwd, env, timeout):
     process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, text=True, start_new_session=True)
+                               stderr=subprocess.PIPE, text=True, encoding='utf-8', start_new_session=True)
     try:
         stdout, stderr = process.communicate(timeout=timeout)
         return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
@@ -231,7 +231,7 @@ def run_adapter(argv, cwd, env, timeout):
 
 def measure(config_path, output):
     config_path, output = Path(config_path).resolve(), Path(output).resolve()
-    config, root = json.loads(config_path.read_text()), config_path.parent
+    config, root = json.loads(config_path.read_text(encoding='utf-8')), config_path.parent
     if not isinstance(config, dict):
         raise ValueError('config must be a JSON object')
     validate(config, root)
@@ -254,10 +254,10 @@ def measure(config_path, output):
             for p in side.get('source_files', []):
                 source['sha256'][p] = hashlib.sha256((source_dir / p).read_bytes()).hexdigest()
             try:
-                head = subprocess.run(['git', '-C', str(source_dir), 'rev-parse', 'HEAD'], capture_output=True, text=True)
+                head = subprocess.run(['git', '-C', str(source_dir), 'rev-parse', 'HEAD'], capture_output=True, text=True, encoding='utf-8')
                 if head.returncode == 0:
                     source['git_head'] = head.stdout.strip()
-                    dirty = subprocess.run(['git', '-C', str(source_dir), 'status', '--porcelain'], capture_output=True, text=True)
+                    dirty = subprocess.run(['git', '-C', str(source_dir), 'status', '--porcelain'], capture_output=True, text=True, encoding='utf-8')
                     source['git_dirty'] = bool(dirty.stdout.strip()) if dirty.returncode == 0 else None
             except OSError:
                 pass
@@ -271,7 +271,7 @@ def measure(config_path, output):
                 raise RuntimeError('app URL is already occupied: ' + name)
             except OSError:
                 pass
-            log = (output / (name + '-server.log')).open('w')
+            log = (output / (name + '-server.log')).open('w', encoding='utf-8')
             logs.append(log)
             process = subprocess.Popen(side['start_command'], cwd=root / side.get('cwd', '.'),
                                        env=common_env, stdout=log, stderr=log, start_new_session=True)
@@ -290,7 +290,7 @@ def measure(config_path, output):
                 try:
                     result = run_adapter(config['scenario_command'], root, env, config.get('timeout_seconds', 30))
                     row['exit_code'] = result.returncode
-                    (sample_dir / 'adapter.stderr.log').write_text(result.stderr)
+                    (sample_dir / 'adapter.stderr.log').write_text(result.stderr, encoding='utf-8')
                     payload = json.loads(result.stdout)
                     if not isinstance(payload, dict):
                         raise ValueError('adapter output must be a JSON object')
@@ -348,7 +348,7 @@ def measure(config_path, output):
                 report['timing']['outcome'] = 'inconclusive'
         for log in logs:
             log.close()
-        (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
+        (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
     return report, 2 if failure or any(report['correctness_failures'].values()) else 0
 
 
@@ -367,4 +367,10 @@ def main():
         return 2
 
 if __name__ == '__main__':
+    # Windows pipes default to the ANSI code page; super-board text is UTF-8.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8')
+        except Exception:
+            pass
     sys.exit(main())

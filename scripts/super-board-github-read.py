@@ -49,7 +49,7 @@ def halt_path():
     if override:
         return Path(override)
     result = subprocess.run(['git', 'rev-parse', '--git-common-dir'], capture_output=True,
-                            text=True, timeout=5, cwd=os.environ.get('SB_REPO_PATH'))
+                            text=True, encoding='utf-8', timeout=5, cwd=os.environ.get('SB_REPO_PATH'))
     cwd = Path(os.environ.get('SB_REPO_PATH') or Path.cwd())
     common = Path(result.stdout.strip())
     root = (cwd / common).resolve().parent if result.returncode == 0 else cwd
@@ -66,7 +66,7 @@ def halt(reason, attempts, operation=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     # Exclusive creation keeps the first failure's evidence when workers trip together.
     try:
-        with path.open('x') as stream:
+        with path.open('x', encoding='utf-8') as stream:
             json.dump({'reason': reason, 'attempts': attempts, 'at': int(time.time()), 'operation': operation}, stream)
     except FileExistsError:
         pass
@@ -303,7 +303,7 @@ def read(args, kind='json', meta=None, recovering=False):
         if not recovering:
             check_halt()
         try:
-            result = subprocess.run(['gh', *args], capture_output=True, text=True, timeout=30)
+            result = subprocess.run(['gh', *args], capture_output=True, text=True, encoding='utf-8', timeout=30)
             diagnostic = result.stderr
             if result.returncode:
                 diagnostic += result.stdout
@@ -356,14 +356,14 @@ def main():
         if args.resume:
             path = halt_path()
             if path.exists():
-                record = json.loads(path.read_text())
+                record = json.loads(path.read_text(encoding='utf-8'))
                 operation = record.get('operation')
                 if not isinstance(operation, dict):
                     raise ReadHalted('saved failure needs manual outcome reconciliation before restart')
                 if command:
                     if args.kind != operation['kind']:
                         raise ValueError('replacement recovery read must validate the same evidence kind')
-                    meta = json.loads(Path(args.meta).read_text()) if args.meta else operation.get('meta')
+                    meta = json.loads(Path(args.meta).read_text(encoding='utf-8')) if args.meta else operation.get('meta')
                     if args.kind == 'diff':
                         validate(json.dumps(meta), 'metadata')
                     read(command, args.kind, meta, recovering=True)
@@ -382,7 +382,7 @@ def main():
             _, pages = read(['api','graphql','--paginate','--slurp','-f','query='+query,'-F','owner='+owner,'-F','repo='+repo], 'issue-history')
             print(json.dumps([n for page in pages for n in page['data']['repository']['issues']['nodes']]))
             return 0
-        meta = json.loads(Path(args.meta).read_text()) if args.meta else None
+        meta = json.loads(Path(args.meta).read_text(encoding='utf-8')) if args.meta else None
         output, _ = read(command, args.kind or 'json', meta)
         sys.stdout.write(output)
         return 0
@@ -395,4 +395,10 @@ def main():
 
 
 if __name__ == '__main__':
+    # Windows pipes default to the ANSI code page; super-board text is UTF-8.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8')
+        except Exception:
+            pass
     sys.exit(main())

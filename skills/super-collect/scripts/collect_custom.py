@@ -64,7 +64,7 @@ def mcp_servers():
     names = set()
     for path in (".mcp.json", os.path.expanduser("~/.claude.json")):
         try:
-            data = json.load(open(path))
+            data = json.load(open(path, encoding="utf-8"))
         except (OSError, ValueError):
             continue
         names |= set((data.get("mcpServers") or {}).keys())
@@ -218,7 +218,7 @@ def fetch(src, since=None):
         if not argv or not shutil.which(argv[0]):
             return "unavailable", f"{argv[0] if argv else target} isn't installed here"
         try:
-            r = subprocess.run(argv, capture_output=True, text=True, timeout=TIMEOUT, stdin=subprocess.DEVNULL)
+            r = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", timeout=TIMEOUT, stdin=subprocess.DEVNULL)
         except subprocess.TimeoutExpired:
             return "unavailable", f"timed out after {TIMEOUT}s"
         if r.returncode != 0:
@@ -307,7 +307,7 @@ def main(argv=None):
         if s["name"] not in srcs:
             srcs.append(s["name"])
         tmp = cfg_path + ".tmp"
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
             f.write("\n")
         os.replace(tmp, cfg_path)
@@ -344,4 +344,10 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    # Windows pipes default to the ANSI code page; super-board text is UTF-8.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     sys.exit(main())

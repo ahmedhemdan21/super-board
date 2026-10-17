@@ -169,7 +169,7 @@ def toplevel_of(d):
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     try:
         r = subprocess.run(["git", "-C", d, "rev-parse", "--show-toplevel"], capture_output=True,
-                           text=True, env=env, timeout=10)
+                           text=True, encoding="utf-8", env=env, timeout=10)
         return r.stdout.strip() if r.returncode == 0 else None
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -197,4 +197,10 @@ def main():
 
 
 if __name__ == "__main__":
+    # Windows pipes default to the ANSI code page; super-board text is UTF-8.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     main()
