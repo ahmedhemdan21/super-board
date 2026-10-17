@@ -155,6 +155,18 @@ def group_members(group):
 
 def stop(process, grace=.5):
     """Terminate live owned group members, including children of an exited wrapper."""
+    if os.name == 'nt':
+        # No process groups or ps -o pgid: end the tree under the owned PID. Children
+        # of a wrapper that already exited are out of reach here.
+        try:
+            if process.poll() is None:
+                subprocess.run(['taskkill', '/T', '/F', '/PID', str(process.pid)], capture_output=True, timeout=10)
+        finally:
+            try:
+                process.wait(timeout=max(grace, 5))
+            except subprocess.TimeoutExpired:
+                pass
+        return
     try:
         parent_exited = process.poll() is not None
         original = group_members(process.pid)

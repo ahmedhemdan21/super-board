@@ -217,6 +217,7 @@ def fetch(src, since=None):
         argv = shlex.split(target)
         if not argv or not shutil.which(argv[0]):
             return "unavailable", f"{argv[0] if argv else target} isn't installed here"
+        argv[0] = shutil.which(argv[0])  # Windows runs npm's .cmd shims only by full path
         try:
             r = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", timeout=TIMEOUT, stdin=subprocess.DEVNULL)
         except subprocess.TimeoutExpired:

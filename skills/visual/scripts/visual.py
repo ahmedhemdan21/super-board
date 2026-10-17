@@ -327,6 +327,7 @@ def link_sources(data: dict, repo: Path, src_root: Path, base: str) -> int:
     the hosted file. Sources outside `src_root` keep their text and get no link. Returns the count."""
     from urllib.parse import quote
     base = base.rstrip("/") + "/"
+    src_root = src_root.resolve()  # sources resolve below; on Windows that adds a drive
     prefix = (data.get("sourcesBase") or "").strip("/")
 
     def one(s):

@@ -17,6 +17,8 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -42,6 +44,45 @@ FORMS = {
     'metadata': 'pr view <N> --json files,labels,body,additions,deletions,changedFiles',
     'state': 'issue view <N> --json state --jq .state',
 }
+
+
+def command(name, args=()):
+    """argv running a program on PATH. Windows only execs name.exe: this also finds
+    npm's .cmd shims and runs an extensionless #! script (a shim or test stub) with
+    this Python or with Git Bash. Git Bash would glob and unquote a plain Windows
+    command line ({owner} -> owner), so its script gets the args shell-quoted in -c."""
+    args = list(args)
+    if os.name != 'nt':
+        return [name, *args]
+    if name == 'bash':
+        return [git_bash(), *args]
+    exts = [e for e in os.environ.get('PATHEXT', '.EXE').split(os.pathsep) if e]
+    for folder in os.environ.get('PATH', '').split(os.pathsep):
+        for ext in exts:
+            if os.path.isfile(os.path.join(folder, name + ext)):
+                return [os.path.join(folder, name + ext), *args]
+        script = os.path.join(folder, name)
+        if os.path.isfile(script):
+            with open(script, 'rb') as stream:
+                shebang = stream.readline()
+            if b'python' in shebang:
+                return [sys.executable, script, *args]
+            return [git_bash(), '-c', 'exec "$0" ' + shlex.join(args), script]
+    return [name, *args]
+
+
+def git_bash():
+    """Git Bash, not System32's WSL bash.exe that Windows would find first."""
+    override = os.environ.get('CLAUDE_CODE_GIT_BASH_PATH')
+    if override and os.path.isfile(override):
+        return override
+    git = shutil.which('git')
+    if git:
+        up = os.path.dirname(os.path.dirname(git))  # <Git>\cmd\git.exe -> <Git>
+        for top in (up, os.path.dirname(up)):
+            if os.path.isfile(os.path.join(top, 'bin', 'bash.exe')):
+                return os.path.join(top, 'bin', 'bash.exe')
+    return 'bash'
 
 
 def halt_path():
@@ -303,7 +344,7 @@ def read(args, kind='json', meta=None, recovering=False):
         if not recovering:
             check_halt()
         try:
-            result = subprocess.run(['gh', *args], capture_output=True, text=True, encoding='utf-8', timeout=30)
+            result = subprocess.run(command('gh', args), capture_output=True, text=True, encoding='utf-8', timeout=30)
             diagnostic = result.stderr
             if result.returncode:
                 diagnostic += result.stdout

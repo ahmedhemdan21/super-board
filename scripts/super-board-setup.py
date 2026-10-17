@@ -48,6 +48,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import datetime as dt
+import importlib.util
 import glob
 import json
 import os
@@ -101,10 +102,24 @@ def out(obj, code=0):
 
 
 def run(cmd, cwd=None, check=False, input=None):
-    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", input=input)
+    argv = gh_argv(cmd[1:]) if os.name == "nt" and cmd[0] == "gh" else cmd
+    r = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, encoding="utf-8", input=input)
     if check and r.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd[:3])} failed: {(r.stderr or r.stdout).strip()[:300]}")
     return r
+
+
+def gh_argv(args):
+    """Windows: gh through the read helper's resolver, which also runs a gh.cmd shim
+    or an extensionless #! stub that CreateProcess cannot."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "github_read", os.path.join(os.path.dirname(os.path.abspath(__file__)), "super-board-github-read.py"))
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        return helper.command("gh", args)
+    except (OSError, ImportError, AttributeError):
+        return ["gh", *args]
 
 
 def have(tool):
