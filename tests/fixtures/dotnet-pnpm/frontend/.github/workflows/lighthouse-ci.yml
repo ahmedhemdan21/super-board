@@ -1,0 +1,10 @@
+name: lighthouse-ci
+on: [pull_request]
+jobs:
+  lhci:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pnpm exec playwright install --with-deps
+      - run: pnpm dlx @lhci/cli autorun --config=lighthouserc.json --outputDir=$RUNNER_TEMP/lhci
+      - run: cd apps/dashboard && pnpm build
+      - run: cd apps/dashboard && pnpm lint && pnpm test

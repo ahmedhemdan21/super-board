@@ -1,0 +1,1 @@
+{ "name": "frontend", "packageManager": "pnpm@10.0.0", "scripts": { "lint": "turbo run lint", "type-check": "turbo run type-check", "test": "turbo run test", "format:check": "prettier --check ." } }

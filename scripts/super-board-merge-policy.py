@@ -67,7 +67,12 @@ DEFAULT_ALWAYS_HUMAN = {
 DEFAULT_MIGRATION_GLOBS = [
     "supabase/migrations/**", "prisma/migrations/**", "drizzle/**",
     "**/migrations/*.sql", "db/migrate/**", "alembic/versions/**",
+    # EF Core: src/Modules/X/Persistence/Migrations/20260101_Add.cs, also Migrations/<Context>/*.cs
+    "**/Migrations/**/*.cs",
 ]
+# Matched by a migration glob but not a migration: EF Core's generated designer
+# and model snapshot. They fall back to size counting (and size_exclude below).
+DEFAULT_MIGRATION_EXCLUDE = ["**/*.Designer.cs", "**/*ModelSnapshot.cs"]
 DEFAULT_ALLOWED_ENVS = ["test", "staging"]
 DEFAULT_AUTO_MAX_LINES = 400
 DEFAULT_SIZE_EXCLUDE = [
@@ -75,9 +80,11 @@ DEFAULT_SIZE_EXCLUDE = [
     "**/package-lock.json", "**/yarn.lock", "**/pnpm-lock.yaml", "**/bun.lockb", "**/bun.lock",
     "**/npm-shrinkwrap.json", "**/Cargo.lock", "**/poetry.lock", "**/uv.lock", "**/Pipfile.lock",
     "**/Gemfile.lock", "**/composer.lock", "**/go.sum", "**/Podfile.lock", "**/pubspec.lock",
+    "**/packages.lock.json",
     # generated output
     "**/generated/**", "**/__generated__/**", "**/*.generated.*", "**/*.gen.*",
     "**/*.min.js", "**/*.min.css", "**/*.map", "**/*.pb.go", "**/*_pb2.py",
+    "**/*.Designer.cs", "**/*ModelSnapshot.cs",
     # snapshots
     "**/__snapshots__/**", "**/*.snap",
 ]
@@ -134,7 +141,9 @@ def main() -> int:
         human.append({"category": "default", "why": "merge_policy.default is \"human\""})
     mig = cfg.get("migrations") or {}
     globs = mig.get("globs") or DEFAULT_MIGRATION_GLOBS
-    mig_files = [p for p in paths if matches(p, globs)]
+    mig_excl = mig.get("exclude")
+    mig_excl = DEFAULT_MIGRATION_EXCLUDE if mig_excl is None else mig_excl
+    mig_files = [p for p in paths if matches(p, globs) and not matches(p, mig_excl)]
 
     cap = policy.get("auto_max_lines")
     cap = DEFAULT_AUTO_MAX_LINES if cap is None else int(cap)
