@@ -61,7 +61,7 @@ GIT_ENV.update(
 
 def git(cwd, *args, timeout=60):
     try:
-        r = subprocess.run(["git", "-C", cwd] + list(args), capture_output=True, text=True,
+        r = subprocess.run(["git", "-C", cwd] + list(args), capture_output=True, text=True, encoding="utf-8",
                            env=GIT_ENV, timeout=timeout)
         return r.returncode, r.stdout.strip(), r.stderr.strip()
     except (subprocess.TimeoutExpired, OSError) as e:
@@ -176,7 +176,7 @@ def pull_requests(cwd):
 
     def gh(*args):
         try:
-            r = subprocess.run([exe] + list(args), cwd=cwd, capture_output=True, text=True, env=env, timeout=15)
+            r = subprocess.run([exe] + list(args), cwd=cwd, capture_output=True, text=True, encoding="utf-8", env=env, timeout=15)
             return json.loads(r.stdout or "[]") if r.returncode == 0 else None
         except (OSError, ValueError, subprocess.TimeoutExpired):
             return None
@@ -340,7 +340,7 @@ def now_iso():
 
 def write_tsv(path, log):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as fh:
+    with open(path, "w", encoding="utf-8") as fh:
         fh.write("when\tkind\tname\tsha\tpath\taction\treason\n")
         for r in log:
             fh.write("\t".join(str(r[k]) for k in ("when", "kind", "name", "sha", "path", "action", "reason")) + "\n")
@@ -461,10 +461,10 @@ def bases_moved(ctx, names):
     tips = " ".join(b["sha"] for b in base_refs(ctx["cwd"], names))
     if not os.path.exists(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as fh:
+        with open(path, "w", encoding="utf-8") as fh:
             fh.write(tips + "\n")
         return False, path, tips
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         return fh.read().strip() != tips, path, tips
 
 
@@ -513,7 +513,7 @@ def run(argv):
 
     if args.get("quiet"):
         if gate:
-            with open(gate[0], "w") as fh:
+            with open(gate[0], "w", encoding="utf-8") as fh:
                 fh.write(gate[1] + "\n")
         acted = [d for d in done if d.startswith(("removed", "deleted", "pruned"))]
         if acted:
@@ -546,4 +546,10 @@ def main():
 
 
 if __name__ == "__main__":
+    # Windows pipes default to the ANSI code page; super-board text is UTF-8.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     main()

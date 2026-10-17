@@ -300,6 +300,7 @@ while IFS= read -r line; do [ -n "$line" ] && NEEDS+=("$line"); done \
 if [ "$(echo "$PLAN" | jq '.migrations | length')" -gt 0 ]; then
   say "migrations in this PR: $(echo "$PLAN" | jq -r '.migrations | join(" ")')"
   while IFS=$'\t' read -r env cmd; do
+    cmd=${cmd%$'\r'}  # Windows jq.exe ends lines with CRLF
     [ -n "$env" ] || continue
     if [ "$DRY" -eq 1 ]; then say "dry run: would migrate ${env}: ${cmd}"; continue; fi
     say "migrate ${env}: ${cmd}"

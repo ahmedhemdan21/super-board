@@ -10,7 +10,8 @@
 #   prs-merged.json    `gh pr list` — array of merged PRs (used instead of pr.json when present)
 #   project-items.json `gh project item-list` — {items:[…], totalCount}
 #   fields.json        `gh project field-list` (default: Status = Backlog, Ready, In progress, Done)
-#   graphql.json       `gh api graphql` for anything but a rateLimit query (collect_prs.py's search)
+#   graphql.json       `gh api graphql` for anything but a rateLimit or issue-history query (collect_prs.py's search)
+#   issues.json also answers the filers' issue-history query, as one complete page.
 # List reads honour --state, --label and --search (any search word of 5+ letters in title or
 # body). Writes are recorded, never sent: `issue create` appends its body to
 # .git/gh-created.md and answers a new issue URL; `issue comment` appends to .git/gh-comments.md.
@@ -112,6 +113,10 @@ case "${1:-} ${2:-}" in
   "api graphql")
     case "$*" in
       *rateLimit*) emit '{"data":{"rateLimit":{"limit":5000,"remaining":4988,"used":12,"resetAt":"2099-12-31T00:00:00Z"}}}' ;;
+      *"issues(first:"*) # the filers' complete issue history (--paginate --slurp): one page from issues.json
+        jq -c '[{data: {repository: {issues: {totalCount: length, pageInfo: {hasNextPage: false, endCursor: null},
+                 nodes: [.[] | {number, state: (.state | ascii_upcase), body: (.body // "")}]}}}}]' \
+          "$( [ -f "$FX/issues.json" ] && echo "$FX/issues.json" || echo /dev/stdin)" <<<'[]' ;;
       *) if [ -f "$FX/graphql.json" ]; then emit "$(cat "$FX/graphql.json")"; elif [ -n "$jq_arg" ]; then echo '{}' | jq -r "$jq_arg" 2>/dev/null; else echo '{}'; fi ;;
     esac ;;
   "api "*) if [ -n "$jq_arg" ]; then echo '{}' | jq -r "$jq_arg" 2>/dev/null; else echo '{}'; fi ;;

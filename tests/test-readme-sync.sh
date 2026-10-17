@@ -21,8 +21,8 @@ copy() {
 fam() {  # python edit of families.json: $1 = statement on `d`
   python3 - "$T/skills/families.json" "$1" <<'PY'
 import json, sys
-p = sys.argv[1]; d = json.load(open(p)); exec(sys.argv[2])
-open(p, "w").write(json.dumps(d, indent=2))
+p = sys.argv[1]; d = json.load(open(p, encoding="utf-8")); exec(sys.argv[2])
+open(p, "w", encoding="utf-8").write(json.dumps(d, indent=2))
 PY
 }
 
@@ -46,7 +46,7 @@ mkdir -p "$T/skills/new-one"
 printf -- '---\nname: new-one\ndescription: >-\n  Does a new thing. Then more.\n---\n' > "$T/skills/new-one/SKILL.md"
 fam 'd["you_type"]["skills"]["new-one"] = ""'
 python3 "$SYNC" >/dev/null
-read -r NY NB <<<"$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(len(d["you_type"]["skills"]), len(d["board_runs"]["skills"]))' "$T/skills/families.json")"
+read -r NY NB <<<"$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); print(len(d["you_type"]["skills"]), len(d["board_runs"]["skills"]))' "$T/skills/families.json")"
 PHRASE="$((NY + NB)) skills ($NY you type, $NB the board runs)"
 [ "$(grep -cF "$PHRASE" "$T/README.md")" -ge 2 ] || fail "header and Skills counts not both updated to: $PHRASE"
 grep -qF "**You type — $NY skills**" "$T/README.md" || fail "family title count not updated"
@@ -70,6 +70,8 @@ rm -rf "$T"; ok
 
 # 4 — --hook syncs only for an edit under skills/, and always exits 0.
 copy
+# Claude Code sends native paths: C:/... on Windows, where Python cannot read /tmp/...
+command -v cygpath >/dev/null && T=$(cygpath -m "$T")
 fam 'd["you_type"]["skills"]["visual"] = "Hook brief."'
 printf '{"tool_input":{"file_path":"%s/docs/x.md"}}' "$T" | python3 "$SYNC" --hook || fail "--hook must exit 0"
 grep -q "Hook brief." "$T/README.md" && fail "--hook must not sync for a path outside skills/"

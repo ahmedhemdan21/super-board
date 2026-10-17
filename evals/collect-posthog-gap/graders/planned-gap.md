@@ -1,12 +1,9 @@
 ---
-type: regex
-pattern: 'gap\|[a-z0-9_-]*receipt'
-match: contains
-target:
-  source: file
-  path: .git/gh-calls.log
+type: tool_used
+tool: Bash
+input_match: 'super-collect-file\.sh.*gap\|[a-z0-9_-]*receipt'
+min: 1
 weight: 1
 ---
 
-A gap|<receipt-upload workflow> ticket went through super-collect-file.sh (its dedupe lookup
-carries the fingerprint).
+A gap|<receipt-upload workflow> ticket went through super-collect-file.sh (its --fingerprint).

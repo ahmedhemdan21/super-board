@@ -10,11 +10,14 @@ Run directly:  python3 tests/test_writing_format.py
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# PATH's bash: on Windows a bare 'bash' finds System32's WSL bash before Git Bash.
+BASH = shutil.which('bash') or 'bash'
 REF = ROOT / "skills" / "super-board" / "references"
 STANDARD = (REF / "writing-standard.md").read_text(encoding="utf-8")
 
@@ -99,7 +102,7 @@ def test_dispatcher_greps_the_standard_loop_subjects():
 
     def grep(pat: str, subject: str) -> bool:
         r = subprocess.run(["grep", "-E", "^[0-9a-f]+ " + pat], input=f"abc123 {subject}\n",
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, encoding="utf-8")
         return r.returncode == 0
 
     assert grep(close_pat, "🔧 [chore] loop: close #42 — add streaming")
@@ -217,7 +220,7 @@ def test_needs_you_comment_is_checklist_first():
 # ── PR body ──────────────────────────────────────────────────────────────────
 
 def test_pr_body_markers():
-    out = subprocess.run(["bash", str(ROOT / "scripts" / "super-board-pr-body.sh"), "--skeleton"],
+    out = subprocess.run([BASH, str(ROOT / "scripts" / "super-board-pr-body.sh"), "--skeleton"],
                          capture_output=True, text=True, check=True).stdout
     for b in PR_BLOCKS:
         assert f"<!-- sb:{b} -->" in out and f"<!-- /sb:{b} -->" in out, f"skeleton lacks {b}"
@@ -235,6 +238,7 @@ def test_status_alerts():
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding="utf-8")  # Windows pipes default to the ANSI code page
     failed = 0
     for t in TESTS:
         try:

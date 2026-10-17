@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Stop integration uses local dummy processes and gh/ps/pgrep stubs only.
 set -euo pipefail
+# Windows: the wave's PID marker holds a Windows PID that Git Bash's kill cannot
+# signal, and native Python runs no SIGTERM handler, so graceful stop is POSIX-only.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*)
+  echo 'SKIP (Windows): stopping a Codex wave needs POSIX signals'; exit 0 ;;
+esac
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TMP=$(mktemp -d)
 wave_pid=""

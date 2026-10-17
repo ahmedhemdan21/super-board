@@ -113,14 +113,14 @@ def main() -> int:
     ap.add_argument("--diff", required=True)
     a = ap.parse_args()
 
-    cfg = json.load(open(a.config))
+    cfg = json.load(open(a.config, encoding="utf-8"))
     try:
-        meta = json.load(open(a.meta))
+        meta = json.load(open(a.meta, encoding="utf-8"))
     except ValueError:
         return 2
     if not isinstance(meta, dict) or "files" not in meta:
         return 2
-    diff = open(a.diff, errors="replace").read()
+    diff = open(a.diff, errors="replace", encoding="utf-8").read()
 
     labels = {(l.get("name") or "").lower() for l in meta.get("labels") or []}
     paths = [f.get("path") or "" for f in meta.get("files") or []]
@@ -198,4 +198,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Windows pipes default to the ANSI code page; super-board text is UTF-8.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     sys.exit(main())

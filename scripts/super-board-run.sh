@@ -211,6 +211,7 @@ top_card_in_column() {
   local col="$1" issue item_id
   TOP_ISSUE=""; TOP_ITEM_ID=""
   while IFS=$'\t' read -r issue item_id; do
+    item_id=${item_id%$'\r'}  # Windows jq.exe ends lines with CRLF
     [ -n "$issue" ] || continue
     issue_locked "$issue" && continue
     local issue_rc=0
@@ -533,6 +534,7 @@ reclaim_stranded_building() {
   # next Builder continues on it instead of starting over.
   local issue item_id branch wt wt_branch
   while IFS=$'\t' read -r issue item_id; do
+    item_id=${item_id%$'\r'}  # Windows jq.exe ends lines with CRLF
     [ -n "$issue" ] || continue
     issue_locked "$issue" && continue
     branch=$(git ls-remote --heads origin "issue-${issue}-*" 2>/dev/null | head -1 | sed 's#.*refs/heads/##')

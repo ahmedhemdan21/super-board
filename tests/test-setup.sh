@@ -275,6 +275,7 @@ q '[.items[] | {(.id): .status}] | add == {"I1":"Done","I2":"Building","I3":"Rev
   || fail "prune-empty must put every wiped status back: $(jq -c .items "$GH_STATE")"
 echo "$OUT" | q '.restored == 3' || fail "three cards should be restored: $OUT"
 BK=$(echo "$OUT" | jq -r .status_backup)
+command -v cygpath >/dev/null && BK=$(cygpath -u "$BK")  # Windows Python prints C:\...
 case "$BK" in "$WORK/.claude/super-board/backup/board-2-"*.json) ;; *) fail "backup path wrong: $BK" ;; esac
 q '. == {"I1":"Done","I2":"Building","I3":"Review","I4":null}' "$BK" || fail "backup must hold the pre-rewrite statuses: $(cat "$BK")"
 

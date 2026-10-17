@@ -1,10 +1,9 @@
 ---
-type: regex
-pattern: 'gap\|[a-z0-9_-]*signup'
-match: not_contains
-target:
-  source: file
-  path: .git/gh-calls.log
+type: tool_used
+tool: Bash
+input_match: 'super-collect-file\.sh.*gap\|[a-z0-9_-]*signup'
+min: 0
+max: 0
 weight: 1
 ---
 

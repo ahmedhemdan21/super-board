@@ -48,6 +48,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import datetime as dt
+import importlib.util
 import glob
 import json
 import os
@@ -101,14 +102,56 @@ def out(obj, code=0):
 
 
 def run(cmd, cwd=None, check=False, input=None):
-    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, input=input)
+    argv = gh_argv(cmd[1:]) if os.name == "nt" and cmd[0] == "gh" else cmd
+    r = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, encoding="utf-8", input=input)
     if check and r.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd[:3])} failed: {(r.stderr or r.stdout).strip()[:300]}")
     return r
 
 
+def gh_argv(args):
+    """Windows: gh through the read helper's resolver, which also runs a gh.cmd shim
+    or an extensionless #! stub that CreateProcess cannot."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "github_read", os.path.join(os.path.dirname(os.path.abspath(__file__)), "super-board-github-read.py"))
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        return helper.command("gh", args)
+    except (OSError, ImportError, AttributeError):
+        return ["gh", *args]
+
+
 def have(tool):
     return shutil.which(tool) is not None
+
+
+def bash():
+    """Git Bash on Windows. Windows finds System32's WSL bash.exe first, and it cannot run
+    the pack's scripts or see Windows paths."""
+    if os.name != "nt":
+        return "bash"
+    override = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH")
+    if override and os.path.isfile(override):
+        return override
+    git = shutil.which("git")
+    if git:
+        # <Git>\cmd\git.exe or <Git>\mingw64\bin\git.exe -> <Git>\bin\bash.exe
+        up = os.path.dirname(os.path.dirname(git))
+        for top in (up, os.path.dirname(up)):
+            cand = os.path.join(top, "bin", "bash.exe")
+            if os.path.isfile(cand):
+                return cand
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        cand = os.path.join(d, "bash.exe")
+        if os.path.isfile(cand) and not re.search(r"system32|windowsapps", d, re.I):
+            return cand
+    return "bash"
+
+
+def posix_path(path):
+    """Forward slashes for paths handed to bash; Git Bash reads C:/x but not every C:\\x use."""
+    return path.replace("\\", "/") if os.name == "nt" else path
 
 
 def os_family():
@@ -133,7 +176,7 @@ def vtuple(v):
 
 def read(path, default=""):
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return f.read().strip()
     except OSError:
         return default
@@ -141,7 +184,7 @@ def read(path, default=""):
 
 def load_json(path):
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except (OSError, ValueError):
         return None
@@ -149,7 +192,7 @@ def load_json(path):
 
 def write_json(path, data):
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
         f.write("\n")
     os.replace(tmp, path)
@@ -299,7 +342,7 @@ def check(root, pack, host="claude", home=None, catalog=None):
         cfg = load_json(p)
         ready = subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__),
                                 "super-board-verification-ready.py"), "--config", p],
-                               capture_output=True, text=True)
+                               capture_output=True, text=True, encoding="utf-8")
         if ready.returncode:
             verification[os.path.relpath(p, root)] = ready.stderr.strip()
         if isinstance(cfg, dict):
@@ -369,7 +412,7 @@ def fix(root, pack, helpers=True, dry=False, host="claude", home=None, catalog=N
         if not pack:
             return {**before, "fixed": [], "error": "pack-not-found"}
         if not dry:
-            r = run(["bash", os.path.join(pack, "install.sh"), root],
+            r = run([bash(), posix_path(os.path.join(pack, "install.sh")), posix_path(root)],
                     input="", cwd=root)
             if r.returncode != 0:
                 return {**before, "fixed": fixed, "error": "install.sh failed: " + (r.stderr or r.stdout)[-300:]}
@@ -413,7 +456,7 @@ def fix(root, pack, helpers=True, dry=False, host="claude", home=None, catalog=N
 
     if helpers and not before["helper_skills"] and have("npx"):
         if not dry:
-            r = run(["bash", "-c", HELPERS_CMD], cwd=root, input="")
+            r = run([bash(), "-c", HELPERS_CMD], cwd=root, input="")
             confirmed = helper_readiness(root, host, home, catalog)
             if confirmed["ready"]:
                 fixed.append("worker skills re-resolved after helper installation")
@@ -693,7 +736,7 @@ def durable_json(path, data):
     parent = os.path.dirname(path)
     os.makedirs(parent, exist_ok=True)
     temp = path + '.tmp'
-    with open(temp, 'w') as stream:
+    with open(temp, 'w', encoding='utf-8') as stream:
         json.dump(data, stream, indent=2)
         stream.write('\n')
         stream.flush()
@@ -716,7 +759,7 @@ def migration_lock(path):
     os.makedirs(directory, exist_ok=True)
     # Upgrades of existing installations need this before onboard reaches its ignore-file step.
     try:
-        with open(os.path.join(directory, '.gitignore'), 'x') as ignore:
+        with open(os.path.join(directory, '.gitignore'), 'x', encoding='utf-8') as ignore:
             ignore.write('*\n')
     except FileExistsError:
         pass
@@ -1016,4 +1059,10 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    # Windows pipes default to the ANSI code page; super-board text is UTF-8.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     sys.exit(main(sys.argv[1:]))

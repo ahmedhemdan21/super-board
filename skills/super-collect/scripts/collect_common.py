@@ -35,13 +35,13 @@ def active_config(path=None):
     if not path:
         ptr = _find_up(os.path.join(".claude", "super-board", "active"))
         if ptr:
-            with open(ptr) as f:
+            with open(ptr, encoding="utf-8") as f:
                 slug = f.read().strip()
             cand = os.path.join(os.path.dirname(ptr), "configs", f"{slug}.json")
             path = cand if os.path.exists(cand) else None
     if not path:
         return {}, None
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f), path
 
 
@@ -58,7 +58,7 @@ def secret(name):
         for fname in (".env", ".env.local"):
             p = os.path.join(d, fname)
             if os.path.exists(p):
-                with open(p) as f:
+                with open(p, encoding="utf-8") as f:
                     for line in f:
                         line = line.strip()
                         if line.startswith("#") or "=" not in line:
