@@ -17,6 +17,9 @@ PASS=0; FAIL=0
 ok()  { PASS=$((PASS + 1)); printf '  ✅ %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf '  ❌ %s\n     expected: %s\n     actual:   %s\n' "$1" "$2" "$3"; }
 is()  { [ "$2" = "$3" ] && ok "$1" || bad "$1" "$2" "$3"; }
+# Node on Windows sees C:/... paths, not Git Bash's /tmp/...: native() is what it prints.
+native() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
+SHOOT_URL="$SHOOT"; command -v cygpath >/dev/null && SHOOT_URL="file:///$(native "$SHOOT")"
 get() { node -e 'const j=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(JSON.stringify(eval("j."+process.argv[1])))' "$1"; }
 
 # 1 — bare Next app with pnpm, no config: auto-detect everything, no auth.
@@ -81,8 +84,8 @@ is "env_files override"      '[".env.test"]'                           "$(get en
 is "impeccable under ~"      '"impeccable"'                            "$(get critic <<<"$OUT")"
 is "launcher layout"         '"launcher"'                              "$(get impeccable.layout <<<"$OUT")"
 is "launcher version"        '"4.4.0"'                                 "$(get impeccable.version <<<"$OUT")"
-is "launcher detect cmd"     "\"$WORK/home/.claude/skills/impeccable/scripts/impeccable detect --json\"" "$(get impeccable.detect <<<"$OUT")"
-is "launcher context cmd"    "\"$WORK/home/.claude/skills/impeccable/scripts/impeccable context\"" "$(get impeccable.context <<<"$OUT")"
+is "launcher detect cmd"     "\"$(native "$WORK")/home/.claude/skills/impeccable/scripts/impeccable detect --json\"" "$(get impeccable.detect <<<"$OUT")"
+is "launcher context cmd"    "\"$(native "$WORK")/home/.claude/skills/impeccable/scripts/impeccable context\"" "$(get impeccable.context <<<"$OUT")"
 is "no warnings with impeccable" '[]'                                  "$(get warnings <<<"$OUT")"
 
 # 4b — v4.0.x node layout, found in a PARENT dir's .agents/skills (a project nested in a bigger repo).
@@ -91,7 +94,7 @@ touch "$N/.agents/skills/impeccable/scripts/detect.mjs" "$N/.agents/skills/impec
 printf -- '---\nname: impeccable\nversion: 4.0.4\n---\n' > "$N/.agents/skills/impeccable/SKILL.md"
 cd "$N/projects/app"; echo '{"scripts":{"dev":"vite"}}' > package.json
 OUT=$(HOME="$WORK/nohome" bash "$SETUP" detect 2>/dev/null)
-NREAL=$(cd "$N" && pwd -P)
+NREAL=$(native "$(cd "$N" && pwd -P)")
 is "node layout"             '"node"'                                  "$(get impeccable.layout <<<"$OUT")"
 is "node version"            '"4.0.4"'                                 "$(get impeccable.version <<<"$OUT")"
 is "node detect cmd"         "\"node $NREAL/.agents/skills/impeccable/scripts/detect.mjs --json\"" "$(get impeccable.detect <<<"$OUT")"
@@ -124,14 +127,17 @@ bash "$SETUP" up --worktree /tmp >/dev/null 2>&1; is "qa-hook --worktree is gone
 cd "$WORK"
 echo '[{"name":"dense","query":"?n=500"}]' > states.json
 STATES=$(node --input-type=module -e "
-import { parseStates } from '$SHOOT';
+import { parseStates } from '$SHOOT_URL';
 console.log(JSON.stringify([parseStates(undefined), parseStates('main,empty'), parseStates('[{\"name\":\"x\"}]'), parseStates('states.json')]))")
 is "shoot parseStates" '[[{"name":"main"}],[{"name":"main"},{"name":"empty"}],[{"name":"x"}],[{"name":"dense","query":"?n=500"}]]' "$STATES"
 node "$SHOOT" >/dev/null 2>&1; is "shoot usage error exits 1" 1 $?
 HELP=$(node --input-type=module -e "
-import { parseThemes, pairNames } from '$SHOOT';
+import { parseThemes, pairNames } from '$SHOOT_URL';
+import path from 'node:path';
 let bad = 'no-throw'; try { parseThemes('sepia') } catch { bad = 'throws' }
-console.log(JSON.stringify([parseThemes(), parseThemes('dark'), bad, pairNames('/r/round-3-main-mobile-dark.png', 'round-3', 'round-0')]))")
+const pair = pairNames('/r/round-3-main-mobile-dark.png', 'round-3', 'round-0');
+for (const k in pair) pair[k] = pair[k].split(path.sep).join('/');  // Windows joins with backslashes
+console.log(JSON.stringify([parseThemes(), parseThemes('dark'), bad, pair]))")
 is "shoot themes + compare names" '[["light","dark"],["dark"],"throws",{"before":"/r/round-0-main-mobile-dark.png","sheet":"/r/cmp-round-3-main-mobile-dark.png"}]' "$HELP"
 
 # 7 — pr-shots.sh: copies round-0 + final shots onto the branch, commits, prints raw-URL table.

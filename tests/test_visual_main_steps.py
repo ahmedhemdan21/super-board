@@ -8,7 +8,7 @@ pack = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(pack / "skills" / "visual" / "scripts"))
 import visual  # noqa: E402
 
-model = json.loads((pack / "diagrams" / "skill-map.json").read_text())
+model = json.loads((pack / "diagrams" / "skill-map.json").read_text(encoding="utf-8"))
 views = {v["id"]: v for v in model["views"]}
 nodes = {n["id"]: n for n in model["nodes"]}
 nodes.update({n["id"]: n for v in model["views"] for n in v.get("nodes", [])})

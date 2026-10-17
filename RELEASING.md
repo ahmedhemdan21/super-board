@@ -31,7 +31,10 @@ Dependencies: Bash, Python 3, Git, jq, Node.js, curl and tar. GitHub's Linux/mac
 provide the command-line utilities; the safety workflow tests Python 3.9 and 3.12 with
 Node.js 22.
 Windows runs the Python status reader and `tests/test_windows_portability.py` (UTF-8
-output and `gh` reads, the collector lock, Git Bash); the full safety suite is not ported.
+output and `gh` reads, the collector lock, Git Bash). The full suite also passes locally
+in Git Bash (slowly: Windows starts processes slower), with Developer Mode on for real
+symlinks in `tests/test-install.sh`. It skips what needs POSIX signals and process groups:
+stopping a Codex wave, the legacy `claude-p` halt and runtime-compare group cleanup.
 
 Loopback HTTP test fixtures use a fixed local server name and skip reverse DNS.
 Runtime fixture failures print the report and app startup logs. Failed safety jobs also

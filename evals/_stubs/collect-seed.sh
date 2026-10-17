@@ -21,9 +21,9 @@ render() {
 import sys
 sys.path.insert(0, sys.argv[1])
 import fixture_http
-with open(sys.argv[2]) as f:
+with open(sys.argv[2], encoding="utf-8") as f:
     text = fixture_http.render(f.read())
-with open(sys.argv[3], "w") as f:
+with open(sys.argv[3], "w", encoding="utf-8") as f:
     f.write(text)
 PY
 }
