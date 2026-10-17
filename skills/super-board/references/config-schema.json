@@ -66,7 +66,40 @@
     // preview site the Tester may also hit. Testing a live site with no repo is
     // not a board: run `/super-qa <url>` on its own.
     "type": "repo",
-    "url": null
+    "url": null,
+    // Optional named targets, name → URL (an API next to a web app, an admin
+    // site). The Tester health-checks every one and gets each as
+    // SB_TARGET_<NAME> (upper-cased, non-alphanumerics → _); `url`, else the
+    // first entry, is SB_TARGET_URL / BASE_URL. super-board-qa-target.sh.
+    "urls": { "web": "https://dev.example.com", "api": "https://api.dev.example.com" }
+  },
+
+  // QA pass one, before merge (run.md → Tester step 2). Absent → the Tester
+  // tests `target.url` / `target.urls` as before.
+  "qa": {
+    // Start the PR's app from the card's QA worktree and test it there.
+    // Each running lane leases its own port block, exported to `start`, `stop`
+    // and the lane as SB_PORT_BASE (block = SB_PORT_BASE .. +port_stride-1), so
+    // parallel QA lanes never collide. In start / stop / health, `{port}` is
+    // SB_PORT_BASE and `{port+K}` is SB_PORT_BASE+K. The lane always stops the
+    // stack on exit (pass, fail or error); `stop` is optional — the process
+    // tree started by `start` is killed either way.
+    "local": {
+      "start": "cd backend/src/Hosts/PrimeCore.AppHost && dotnet run -- --urls http://127.0.0.1:{port}",
+      "stop": null,
+      // Every URL must answer 2xx before QA runs. Names become SB_TARGET_<NAME>.
+      "health": [ { "name": "api", "url": "http://127.0.0.1:{port}/health" } ],
+      "timeout_s": 300,
+      // Optional: first port of slot 0 (default 20000). Also optional:
+      // port_stride (ports per lane, default 10), port_slots (lanes, default 50).
+      "port_base": 20000
+    },
+    // Optional generic QA login, instead of super-qa's Supabase admin-key
+    // bootstrap. A command that prints a JSON object ({"token", "cookies",
+    // "user", ...}) or the path of a Playwright storageState file. It runs with
+    // the SB_TARGET_* env. Its output is kept in a private temp file and never
+    // logged; super-qa logs in from SB_AUTH_FILE.
+    "auth_command": null
   },
 
   // `{path, remote}`. `remote` can be `null` for local-only (no pull requests).
@@ -215,6 +248,26 @@
     },
     // Extra human-only steps every migration PR needs (e.g. a backfill).
     "human_steps": []
+  },
+
+  // QA pass two, after merge: the dev check (run.md → "Post-merge dev check",
+  // scripts/super-board-deploy-wait.sh). Absent → no post-merge check. Runs
+  // only for PRs merged into `branch` (default base_branch): wait for the
+  // `workflow` GitHub Actions run of the merge commit, check every `health`
+  // URL, run `smoke`. A failure (run failed, timeout, unhealthy, smoke failed)
+  // files a bug card linked to the card and PR; the PR is never reverted and
+  // the card stays Done.
+  "deploy": {
+    "branch": "dev",
+    "workflow": "deploy-dev.yml",
+    // The whole wait: run + health + smoke. Default 1800.
+    "timeout_s": 1800,
+    // expect_version (optional): text the response body must contain, with
+    // {sha} / {short_sha} of the merge commit substituted; true = {short_sha}.
+    "health": [ { "name": "api", "url": "https://api.dev.example.com/health", "expect_version": "{short_sha}" } ],
+    // Optional; runs from the repo root with SB_DEPLOY_SHA, SB_DEPLOY_RUN_ID
+    // and SB_TARGET_<NAME> per health entry.
+    "smoke": null
   },
 
   // ── Runaway controls (v2.0.0).

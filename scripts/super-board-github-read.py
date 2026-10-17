@@ -117,7 +117,7 @@ def halt(reason, attempts, operation=None):
 def read_only(args):
     if len(args) < 2:
         return False
-    if args[0] in ('pr', 'issue', 'project', 'repo'):
+    if args[0] in ('pr', 'issue', 'project', 'repo', 'run'):
         return args[1] in ('view', 'list', 'diff', 'checks', 'item-list', 'field-list')
     if args[0] != 'api':
         return False

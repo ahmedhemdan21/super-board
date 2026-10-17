@@ -116,6 +116,12 @@ report and any test diff.
 
 A live site with no repo is not a board. `/super-qa <url>` tests it on its own.
 
+**QA runs twice.** Pass one is the Tester lane, before merge: with `qa.local` it starts the PR's
+app from its own worktree on a lane-unique port block (Tester step 2). Pass two is the
+[post-merge dev check](#post-merge-dev-check), after the Reviewer merges into `deploy.branch`:
+it waits for the deploy run and checks the deployed build. A failed pass two files a bug card;
+it never reverts the PR or moves the card out of Done.
+
 ## Dispatch allocation model — one worker per lane, not per backlog
 
 `super-board run` allocates headless Claude capacity by **lane**, not by how many cards are stacked in one column.
@@ -333,7 +339,20 @@ column), never built unchecked. `qa` cards are not pre-flighted: nothing is buil
 
 1. Pull latest of base; checkout `issue-<N>-<slug>` into worktree `.claude/worktrees/issue-<N>-qa/`.
    A `qa` card has no branch yet: move it Ready → QA, then create the branch from the base.
-2. `target.url` set → health-check it first. Unhealthy → Block.
+2. **Targets** — `.claude/bin/super-board-qa-target.sh` (QA pass one; pass two is the
+   [post-merge dev check](#post-merge-dev-check)). Each Bash call is a fresh shell, so start
+   every later call with `eval "$(bash .claude/bin/super-board-qa-target.sh env --config <cfg> --issue <N>)"`.
+   - `qa.local` set → `start --config <cfg> --issue <N> --worktree <qa worktree>` runs the PR's
+     app from this worktree on a lane-unique port block (`SB_PORT_BASE`; `{port}` / `{port+K}`
+     in the config) and waits for every `qa.local.health` URL. Exit 4 (never healthy) is a QA
+     **fail** with the log path (step 7), not a Block. **Always** run `stop --config <cfg>
+     --issue <N>` before leaving the lane — pass, fail, block or error. A later `start` for the
+     same card stops a stack a crashed lane left behind.
+   - No `qa.local` → `check --config <cfg>` health-checks `target.url` and every `target.urls`
+     entry. Exit 3 (one unhealthy) → Block.
+   - Tests get `SB_TARGET_URL`, `SB_TARGET_<NAME>` per named target and `BASE_URL`.
+   - `qa.auth_command` set → `eval "$(… auth --config <cfg> --issue <N>)"` and log in from
+     `SB_AUTH_FILE` (super-qa → "Auth bootstrap"). Never print that file.
 3. Read issue + PR + Builder's handoff comment.
 4. Build issue-scoped test plan: one observable test per AC.
 4a. Existing project verifier → follow `../../super-qa/references/project-verifier.md`
@@ -368,7 +387,7 @@ If a screenshot file is >5MB, downscale to ≤1920px wide before committing; Git
 
 ### Tester (rebuild — when Reviewer bounced for `[qa]` thread fixes)
 
-1. Worktree as above.
+1. Worktree and targets as above (first pass, step 2: start / always stop).
 2. Read PR review threads; filter `[qa]` prefix.
 3. For each unresolved `[qa]` thread: apply fix to test files, resolve thread.
 4. Re-run full test suite for the ticket.
@@ -460,6 +479,8 @@ on the base branch**.
      git fetch origin <base> && git merge-base --is-ancestor <sha> origin/<base>
 4. Only after step 3 passes: close the issue, move card Review → Done, rewrite `status` (`> [!TIP]` ✅ Merged) and append the `history` row, post the `[reviewer] [report] ✅ merged` comment
    citing the merge commit sha.
+   `config.deploy` set → the "Post-merge dev check" below follows (legacy backend: you run it;
+   workflow backend: the wave's Deploy step does). Its outcome never changes this card.
 5. Merge through the gate, never with a bare `gh pr merge`. Record the head you
    reviewed when review passes, and hand it to the gate:
      HEAD=$(gh pr view <N> --json headRefOid -q .headRefOid)   # at the moment review passes
@@ -503,6 +524,30 @@ on the base branch**.
      tracked in issue #10. Exits 4 and 6 are the exceptions: 4 simply queued, and
      6 needs a fresh review of a commit nobody has reviewed yet.
 ```
+
+### Post-merge dev check
+
+QA pass two. Runs when `config.deploy` is set and the merged PR's base is `deploy.branch`
+(default `base_branch`). Workflow backend: the wave's `Deploy` step runs it after the Reviewer
+returns Done (the orchestrator passes `deploy: true`); the Reviewer does not. Legacy `claude-p`
+backend: the Reviewer runs it after merge protocol step 4.
+
+```
+bash .claude/bin/super-board-deploy-wait.sh --config <cfg> --pr <PR> --issue <N> --budget-s 540
+```
+
+1. Finds the `deploy.workflow` run for the merge commit (`gh run list --workflow --commit`) and
+   polls it with backoff (`gh run view`), through `super-board-github-read.py` and the gh guard.
+2. Checks every `deploy.health` URL for 2xx, and `expect_version` (the merge sha) when set.
+3. Runs `deploy.smoke`.
+4. **Post-deploy checks** — `post_deploy_checks()` in the script: the hook for later checks on
+   the deployed build. Empty today.
+
+Exits: 0 healthy or skipped · 10 failed, bug filed (`bug: #<n>`) · 11 failed, no bug filed ·
+75 the call's budget ran out, run the same command again (the `timeout_s` clock carries over)
+· 79 GitHub read halt. On 10/11 the bug card (`super-qa-file-bug.sh`, kind `bug`, priority
+high) names the card, the PR and the run. The PR stays merged and the card stays Done: a
+failed deploy is fixed forward, never reverted or blocked.
 
 **Ordering invariant.** `Done` means "merged" — or closed as not planned on purpose, with a 🤷
 comment (there is no Skipped column). If step 3 cannot be satisfied, the card goes to Blocked,

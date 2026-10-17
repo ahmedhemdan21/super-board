@@ -252,6 +252,13 @@ Repeat until a done condition or halt gate fires:
    for `run --high` (opus for every card), omitted/`'medium'`
    otherwise (sonnet/opus/session — the default). A `model_tier` key in the
    config sets the default; an explicit flag wins over config.
+   `deploy: true` when the config has a `deploy` block whose `branch` (default `base_branch`)
+   is the base branch: each card the Reviewer merges then gets the wave's `Deploy` step, the
+   post-merge dev check (run.md → "Post-merge dev check"). It can hold a lane slot up to
+   `deploy.timeout_s`; a failure files a bug card and the merged card stays Done. The summary
+   carries it as `deploy` (`healthy` · `skipped` · `failed` + `bug` · `halted`) and the
+   manifest's `lanesRun` ends `→ deploy:<status>`; report a `failed` one as a line with its bug.
+   The QA lane runs pass one against `qa.local` / `target.urls` (run.md → Tester step 2).
 5. **Reconcile** (when the run completes) — read the returned `cards`
    summary. If `halted: true`, any card is `halted`, or the GitHub helper's `--check`
    fails, preserve claims and stop. For verification-readiness (exit 9), repair
@@ -338,6 +345,8 @@ don't stall on prompts:
     "Bash(bash .claude/bin/super-board-codex-wave.sh:*)",
     "Bash(bash .claude/bin/super-board-host.sh:*)",
     "Bash(bash .claude/bin/super-board-pr-body.sh:*)", "Bash(gh pr edit:*)",
+    "Bash(bash .claude/bin/super-board-qa-target.sh:*)",
+    "Bash(bash .claude/bin/super-board-deploy-wait.sh:*)",
     plus your project's test runners (e.g. "Bash(npm test:*)", "Bash(npx playwright:*)").
 
 Merging is NOT in the base list. On a board whose `merge_policy.default` is

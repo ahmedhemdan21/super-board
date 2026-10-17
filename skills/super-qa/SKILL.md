@@ -21,6 +21,14 @@ on missing requirements and recheck each conditional helper before use.
 
 Before iter 1, resolve a test login. **Never ask the user; discover or create.** Order:
 
+0. **Project login command** — board config `qa.auth_command` set → it wins over everything
+   below. Run `eval "$(bash .claude/bin/super-board-qa-target.sh auth --config <cfg> [--issue <N>])"`.
+   It runs the command with the `SB_TARGET_*` env and keeps its output in a private temp file:
+   `SB_AUTH_KIND=json` → `SB_AUTH_FILE` holds `{token, cookies, user, …}` (send the token as a
+   bearer header / add the cookies to the browser context); `SB_AUTH_KIND=storage-state` → pass
+   `SB_AUTH_FILE` to Playwright as `storageState`. **Never print, log, commit or quote the
+   file's values** — evidence names the kind and keys only. Exit 6 (command failed) → Block
+   🔐 with the exit code; do not fall back to the Supabase flow. Unset → steps 1–3, unchanged.
 1. **Cached creds** at `.claude/settings.local.json` `.e2e.user` / `.e2e.pass` — use them as-is.
 2. **Env-file fallback** — read in order: `.env.production.local`, `.env.local`, `.env`. Pull `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`. If both present, auto-create `e2e-test@<owner-domain>` (owner from `git config user.email` domain, fallback `erictech.ca`) via:
    ```bash
@@ -553,6 +561,9 @@ Safety rails (enforced by the iteration preamble):
 - DB resets DISABLED (`RESET_DB=false`) — would wipe prod.
 - Email sending mocked via `RESEND_API_KEY=mock_<anything>`. **Required:** run against a staging deploy (`NODE_ENV=staging`, `EMAIL_DRY_RUN=1`) — not prod. If no staging URL is configured, halt with `STATUS: halt (no-staging-env)`.
 - Override the target via `BASE_URL=…` in the worker's environment.
+- On a board, `super-board-qa-target.sh env` sets the targets: `BASE_URL` = `SB_TARGET_URL`,
+  plus `SB_TARGET_<NAME>` per `target.urls` entry or `qa.local.health` name. With `qa.local`
+  they point at the PR's own app on this lane's ports (`SB_PORT_BASE`), not at staging.
 
 ## Files involved
 
@@ -634,6 +645,7 @@ When invoked by super-board (env `SUPER_BOARD_RUN=1` or invocation contains "sup
 ### Lifecycle (Tester, first pass)
 See `.claude/skills/super-board/references/run.md` → Tester (first pass — repo-backed). Summary:
 1. Pull latest of base; checkout `issue-<N>-<slug>` into worktree (a `qa` card: create it from the base).
+1a. **Targets** (run.md → Tester step 2): `qa.local` set → `bash .claude/bin/super-board-qa-target.sh start --config <cfg> --issue <N> --worktree <qa worktree>` starts the PR's app on this lane's port block; exit 4 = never healthy → Fail (step 7) with the log path. Start every later Bash call with `eval "$(… env --config <cfg> --issue <N>)"`. **Always `stop --config <cfg> --issue <N>` before exiting**, on every path. No `qa.local` → `check --config <cfg>`; exit 3 → Block. `qa.auth_command` set → login per "Auth bootstrap" step 0.
 2. Read issue + PR + Builder's handoff.
 3. Build issue-scoped test plan: ONE observable test per AC.
 3a. Existing project verifier → follow [project-verifier.md](references/project-verifier.md)
