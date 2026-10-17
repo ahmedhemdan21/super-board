@@ -63,7 +63,8 @@ def to_conventional(sb_type, scope, subject, repairs_bug=False, breaking=False):
     else:
         raise Refused(f"unknown super-board type: {sb_type}")
     subject = subject.strip().rstrip(".")
-    subject = subject[:1].lower() + subject[1:]
+    if not subject[1:2].isupper():  # keep acronyms: "API docs", not "aPI docs"
+        subject = subject[:1].lower() + subject[1:]
     return f"{t}{f'({scope})' if scope else ''}{'!' if breaking else ''}: {subject}"
 
 
@@ -95,7 +96,7 @@ def check(header, fmt, max_len, pr=None):
     if m["type"] not in CONVENTIONAL_TYPES:
         why = "wip is not a conventional type" if m["type"] == "wip" else f"type {m['type']} not in config-conventional"
         return False, why, n
-    if m["subject"][:1].isupper():
+    if m["subject"][:1].isupper() and not m["subject"][1:2].isupper():  # sentence-case; acronyms pass
         return False, "subject must start lower-case", n
     if m["subject"].endswith("."):
         return False, "subject must not end with a period", n
@@ -154,6 +155,10 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+    # Windows pipes default to the ANSI code page; super-board text is UTF-8.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     sys.exit(main(sys.argv[1:]))

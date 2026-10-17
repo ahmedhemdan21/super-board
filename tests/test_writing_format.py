@@ -142,7 +142,7 @@ CONV = {"writing": {"commit_format": "conventional", "header_max": 110}}
 def test_conventional_header_validation():
     good = ["fix(receipts): show a size error over 10 MB", "feat(chat)!: stream replies",
             "chore(loop): close #42 — stream replies", "test(super-qa): iter 3 (2 bugs, 9 items, 1 PRs opened)",
-            "docs: explain the board"]
+            "docs: explain the board", "docs(api): API usage examples"]
     bad = ["🐛 [fix] receipts: show a size error",   # emoji shape
            "wip(loop): #42 partial — schema",         # wip is not conventional
            "ui(reports): new chart",                   # not a config-conventional type
@@ -174,6 +174,8 @@ def test_mapping_to_conventional():
         args = ["format", "--type", t, "--scope", scope, "--subject", "Stream replies."] + ([fl] if fl else [])
         rc, out = header(*args, cfg=CONV)
         assert rc == 0 and out == want, f"{t}/{scope}{fl}: {out}"
+    rc, out = header("format", "--type", "docs", "--scope", "api", "--subject", "API usage examples", cfg=CONV)
+    assert rc == 0 and out == "docs(api): API usage examples", f"acronym lower-cased: {out}"
     for t in ("feat", "fix", "chore", "refactor", "test", "perf", "docs", "ci", "ui", "security", "revert"):
         assert f"`{t}`" in STANDARD.split("### Conventional format", 1)[1].split("## 2 · PR")[0], f"mapping lacks {t}"
 
