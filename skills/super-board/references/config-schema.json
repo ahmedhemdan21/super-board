@@ -406,6 +406,23 @@
     ]
   },
 
+  // Optional. Read by hooks/guard-prod.py (PreToolUse Bash|PowerShell): denies any
+  // shell command whose raw text names a production target, inside `ssh host '…'`
+  // payloads too. Case-insensitive. Absent or empty = the guard allows everything.
+  // Onboard asks nothing about it: add it by hand when dev and prod share a server.
+  //   patterns — regexes matched anywhere in the command (e.g. container names).
+  //   hosts    — host names / IPs matched as whole tokens.
+  //   ports    — matched as `:PORT`, `-p PORT`, `-pPORT`, `--port PORT`.
+  //   message  — extra text appended to the denial the agent sees.
+  "guard": {
+    "prod": {
+      "patterns": ["primecore-prod-"],
+      "hosts": [],
+      "ports": [25432, 28200, 18080],
+      "message": "Dev and prod share one server; only the dev containers (primecore-*, never primecore-prod-*) are in scope."
+    }
+  },
+
   // Commit and PR-title header shape (writing-standard.md § 1). Optional.
   //   "emoji"        — default: `✨ [feat] scope: subject`, ≤ 72 chars.
   //   "conventional" — `feat(scope)!: subject` for a project that lints with

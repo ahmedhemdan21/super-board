@@ -15,6 +15,15 @@
         ]
       },
       {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard-prod.py"
+          }
+        ]
+      },
+      {
         "matcher": "Bash|Read|Grep",
         "hooks": [
           {

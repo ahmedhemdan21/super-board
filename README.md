@@ -6,7 +6,7 @@
 
 <p><strong>Add tasks, walk away, get merged PRs with proof.</strong></p>
 
-<p>8 skills (5 you type, 3 the board runs) · 9 commands · 6 guard hooks</p>
+<p>8 skills (5 you type, 3 the board runs) · 9 commands · 7 guard hooks</p>
 
 <p>
 <img alt="Version" src="https://img.shields.io/badge/version-3.1.2-1f883d?style=flat-square">
@@ -126,6 +126,7 @@ Run automatically once installed. Python stdlib, JSON in, JSON out.
 | [guard-worktree-path](hooks/guard-worktree-path.py) | Blocks `git worktree add` outside `.claude/worktrees/` |
 | [guard-secrets](hooks/guard-secrets.py) | Blocks reading or piping dotenv files, SSH keys and credential files; key names via `super-board-env-check.sh` |
 | [guard-key-literals](hooks/guard-key-literals.py) | Blocks a live-looking API key written into a file; flags one already there |
+| [guard-prod](hooks/guard-prod.py) | Blocks shell commands naming a prod container, host or port from `guard.prod` in the config; no rules, no-op |
 | [guard-delete-outside](hooks/guard-delete-outside.py) | Blocks `rm`, `find -delete` and `git clean` aimed outside the project, `~` or `/` |
 | [guard-protected-push](hooks/guard-protected-push.py) | Opt-in (`onboard` asks, or `install.sh --protect-main`): blocks direct and force pushes to main/master/base |
 | [README sync](scripts/super-board-readme-sync.py) | Regenerates the skill table; pre-commit and PostToolUse hooks keep it fresh |

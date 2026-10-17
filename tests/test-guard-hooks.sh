@@ -100,6 +100,36 @@ OUT=$(printf '%s' "$(bash_cmd 'git push --force origin main' "$REPO")" | SB_ALLO
 [ -z "$OUT" ] || fail "SB_ALLOW_PROTECTED_PUSH=1 should turn the guard off"; PASS=$((PASS + 1))
 rm -rf "$REPO"
 
+# ---- guard-prod ---------------------------------------------------------------
+PRODP=$(mktemp -d); mkdir -p "$PRODP/.claude/super-board/configs"
+cat > "$PRODP/.claude/super-board/configs/app.json" <<'JSON'
+{"guard": {"prod": {"patterns": ["primecore-prod-"], "hosts": ["prod.example.com"],
+  "ports": [25432, 28200, 18080], "message": "Prod lives on the shared server."}}}
+JSON
+gp() { CLAUDE_PROJECT_DIR="$PRODP" expect "$1" guard-prod.py "$2" "$3"; }
+gp allow "$(bash_cmd "ssh primecore-dev 'docker ps --filter name=primecore-dev-api'")" "read-only dev ssh allowed"
+gp allow "$(bash_cmd "psql -h 127.0.0.1 -p 15432 -c 'select 1'")" "dev port allowed"
+gp deny  "$(bash_cmd "docker logs primecore-prod-api")"                        "prod container"
+gp deny  "$(bash_cmd "docker compose -p PrimeCore-Prod-stack stop")"           "case-insensitive pattern"
+gp deny  "$(bash_cmd "ssh primecore-dev 'docker exec -it primecore-prod-db psql'")" "prod inside ssh payload"
+gp deny  "$(bash_cmd "ssh primecore-dev \"curl -s http://127.0.0.1:18080/health\"")" "prod gateway port in ssh"
+gp deny  "$(bash_cmd "psql -h localhost -p 25432 app")"                       "prod port via -p"
+gp deny  "$(bash_cmd "vault status -address=http://127.0.0.1:28200")"         "prod vault port"
+gp allow "$(bash_cmd "echo 125432 :254320")"                                  "port digits inside a longer number"
+gp deny  "$(bash_cmd "ssh deploy@prod.example.com uptime")"                   "prod host token"
+gp allow "$(bash_cmd "ssh preprod.example.com.dev uptime")"                   "host must be a whole token"
+gp deny  "$(payload PreToolUse PowerShell '{"command":"docker restart primecore-prod-web"}')" "PowerShell input"
+gp allow "$(payload PreToolUse Read '{"file_path":"/x/primecore-prod-notes.md"}')" "non-shell tool ignored"
+OUT=$(printf '%s' "$(bash_cmd "docker rm primecore-prod-api")" | CLAUDE_PROJECT_DIR="$PRODP" python3 "$H/guard-prod.py")
+printf '%s' "$OUT" | grep -q 'PRODUCTION' || fail "reason should name production"
+printf '%s' "$OUT" | grep -q 'shared server' || fail "reason should carry the configured message"
+EMPTY=$(mktemp -d)
+CLAUDE_PROJECT_DIR="$EMPTY" expect allow guard-prod.py "$(bash_cmd "docker logs primecore-prod-api")" "no config is a no-op"
+mkdir -p "$EMPTY/.claude/super-board/configs"; echo '{"guard":{"prod":{}}}' > "$EMPTY/.claude/super-board/configs/a.json"
+CLAUDE_PROJECT_DIR="$EMPTY" expect allow guard-prod.py "$(bash_cmd "docker logs primecore-prod-api")" "empty rules are a no-op"
+gp allow "not json"                                                            "garbage input fails open"
+rm -rf "$PRODP" "$EMPTY"
+
 # ---- guard-delete-outside ----------------------------------------------------
 # A project path outside every temp root (mktemp lives under one); nothing is created or run.
 PROJ=/work/sb-guard-proj
