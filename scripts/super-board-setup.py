@@ -10,6 +10,9 @@ so step 1 (Checks) can say "Fixed for you" without asking anything.
     super-board-setup.py migrate-config <config.json> [--dry-run]     old config keys → v3 keys
     super-board-setup.py names   [--root DIR]                          two board-name suggestions
     super-board-setup.py branch  [--root DIR]                          branches, deploy source, recommendation
+    super-board-setup.py stack   [--root DIR]                          stacks (.NET, pnpm, turbo, node, python) and
+                                                                       the checks their CI / package.json documents
+    super-board-setup.py commit-format [--root DIR]                    writing.commit_format from commitlint
     super-board-setup.py board-rank    --owner O                       the user's boards, best column match first
     super-board-setup.py board-migrate (--config C | --owner O --number N --repo R) [--qa-all] [--prune-empty] [--root DIR] [--dry-run]
                                                                        columns + labels + Skipped → Done
@@ -48,6 +51,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import datetime as dt
+import importlib.util
 import glob
 import json
 import os
@@ -74,7 +78,7 @@ OLD_SKILL_DIRS = ["super-refine", "cleanup-wt", "arch-loop"]
 BIN = ["super-board-project-verifier.py", "super-board-skills-ready.py", "super-board-host.sh", "super-board-codex-wave.sh", "super-board-codex-lane.sh", "super-board-calibration.py", "super-board-verification-ready.py", "super-board-github-read.py", "super-board-collect-state.py", "super-board-run.sh", "super-board-gh-guard.sh", "super-board-card.sh", "super-board-status.py", "super-board-wave-plan.sh",
        "super-board-deps.sh", "super-board-preflight.sh", "super-board-merge-gate.sh",
        "super-board-merge-policy.py", "super-board-approval.py", "super-board-env-check.sh", "super-board-agents-md.py",
-       "super-board-settings.py", "super-board-setup.py", "super-board-usage.sh", "super-board-pr-body.sh",
+       "super-board-settings.py", "super-board-setup.py", "super-board-usage.sh", "super-board-pr-body.sh", "super-board-commit-header.py",
        "super-review-file-refactor.sh", "super-qa-file-bug.sh", "super-board-stop.sh",
        "super-board-qa-target.sh", "super-board-deploy-wait.sh"]
 WORKFLOWS = ["super-board-wave.js", "ui-refine-loop.js"]
@@ -102,14 +106,56 @@ def out(obj, code=0):
 
 
 def run(cmd, cwd=None, check=False, input=None):
-    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, input=input)
+    argv = gh_argv(cmd[1:]) if os.name == "nt" and cmd[0] == "gh" else cmd
+    r = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, encoding="utf-8", input=input)
     if check and r.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd[:3])} failed: {(r.stderr or r.stdout).strip()[:300]}")
     return r
 
 
+def gh_argv(args):
+    """Windows: gh through the read helper's resolver, which also runs a gh.cmd shim
+    or an extensionless #! stub that CreateProcess cannot."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "github_read", os.path.join(os.path.dirname(os.path.abspath(__file__)), "super-board-github-read.py"))
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        return helper.command("gh", args)
+    except (OSError, ImportError, AttributeError):
+        return ["gh", *args]
+
+
 def have(tool):
     return shutil.which(tool) is not None
+
+
+def bash():
+    """Git Bash on Windows. Windows finds System32's WSL bash.exe first, and it cannot run
+    the pack's scripts or see Windows paths."""
+    if os.name != "nt":
+        return "bash"
+    override = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH")
+    if override and os.path.isfile(override):
+        return override
+    git = shutil.which("git")
+    if git:
+        # <Git>\cmd\git.exe or <Git>\mingw64\bin\git.exe -> <Git>\bin\bash.exe
+        up = os.path.dirname(os.path.dirname(git))
+        for top in (up, os.path.dirname(up)):
+            cand = os.path.join(top, "bin", "bash.exe")
+            if os.path.isfile(cand):
+                return cand
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        cand = os.path.join(d, "bash.exe")
+        if os.path.isfile(cand) and not re.search(r"system32|windowsapps", d, re.I):
+            return cand
+    return "bash"
+
+
+def posix_path(path):
+    """Forward slashes for paths handed to bash; Git Bash reads C:/x but not every C:\\x use."""
+    return path.replace("\\", "/") if os.name == "nt" else path
 
 
 def os_family():
@@ -134,7 +180,7 @@ def vtuple(v):
 
 def read(path, default=""):
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return f.read().strip()
     except OSError:
         return default
@@ -142,7 +188,7 @@ def read(path, default=""):
 
 def load_json(path):
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except (OSError, ValueError):
         return None
@@ -150,7 +196,7 @@ def load_json(path):
 
 def write_json(path, data):
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
         f.write("\n")
     os.replace(tmp, path)
@@ -300,7 +346,7 @@ def check(root, pack, host="claude", home=None, catalog=None):
         cfg = load_json(p)
         ready = subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__),
                                 "super-board-verification-ready.py"), "--config", p],
-                               capture_output=True, text=True)
+                               capture_output=True, text=True, encoding="utf-8")
         if ready.returncode:
             verification[os.path.relpath(p, root)] = ready.stderr.strip()
         if isinstance(cfg, dict):
@@ -370,7 +416,7 @@ def fix(root, pack, helpers=True, dry=False, host="claude", home=None, catalog=N
         if not pack:
             return {**before, "fixed": [], "error": "pack-not-found"}
         if not dry:
-            r = run(["bash", os.path.join(pack, "install.sh"), root],
+            r = run([bash(), posix_path(os.path.join(pack, "install.sh")), posix_path(root)],
                     input="", cwd=root)
             if r.returncode != 0:
                 return {**before, "fixed": fixed, "error": "install.sh failed: " + (r.stderr or r.stdout)[-300:]}
@@ -414,7 +460,7 @@ def fix(root, pack, helpers=True, dry=False, host="claude", home=None, catalog=N
 
     if helpers and not before["helper_skills"] and have("npx"):
         if not dry:
-            r = run(["bash", "-c", HELPERS_CMD], cwd=root, input="")
+            r = run([bash(), "-c", HELPERS_CMD], cwd=root, input="")
             confirmed = helper_readiness(root, host, home, catalog)
             if confirmed["ready"]:
                 fixed.append("worker skills re-resolved after helper installation")
@@ -494,14 +540,16 @@ def branch(root):
     if not is_git_repo(root):
         return {"git": False, "branches": [], "staging": False, "deploy": None,
                 "recommend": "main", "create_staging": False}
-    local = [b for b in git("branch", "--format=%(refname:short)").stdout.split() if b]
+    # one name per line; a detached HEAD prints "(no branch)" / "(HEAD detached at …)"
+    local = [b.strip() for b in git("branch", "--format=%(refname:short)").stdout.splitlines()
+             if b.strip() and not b.strip().startswith("(")]
     remote = [b.split("/", 1)[1] for b in git("branch", "-r", "--format=%(refname:short)").stdout.split()
               if "/" in b and not b.endswith("/HEAD")]
     allb = sorted(set(local + remote))
     head = git("symbolic-ref", "--short", "refs/remotes/origin/HEAD").stdout.strip().split("/", 1)[-1]
     default = head or ("main" if "main" in allb else ("master" if "master" in allb else (local[0] if local else "main")))
     staging = next((b for b in ("staging", "develop", "dev") if b in allb), None)
-    deploy = None
+    deploy, target_branches = None, []
     if os.path.exists(os.path.join(root, "vercel.json")) or os.path.isdir(os.path.join(root, ".vercel")):
         deploy = f"Vercel deploys {default}"
     elif os.path.exists(os.path.join(root, "netlify.toml")):
@@ -513,10 +561,186 @@ def branch(root):
                     rf"branches:\s*\[?\s*['\"]?{re.escape(default)}\b", body):
                 deploy = f"{os.path.basename(wf)} deploys {default}"
                 break
-    return {"git": True, "branches": [b for b in allb if not b.startswith(("issue-", "feat/", "fix/"))][:8],
+    if deploy is None:
+        for wf in workflow_files(root):
+            body = read(wf)
+            if SELF_HOSTED_RE.search(body) and COMPOSE_RE.search(body):
+                target_branches = push_branches(body)
+                deploy = f"self-hosted compose ({os.path.relpath(wf, root).replace(os.sep, '/')}" + (
+                    f" deploys {', '.join(target_branches)})" if target_branches else ")")
+                break
+    return {"git": True, "target_env_branches": target_branches, "branches": [b for b in allb if not b.startswith(("issue-", "feat/", "fix/"))][:8],
             "default": default, "staging": staging, "deploy": deploy,
             "recommend": staging or "staging", "create_staging": staging is None,
             "create_command": None if staging else f"git push origin {default}:staging"}
+
+
+# ── Stack detection and documented checks ─────────────────────────────────────
+
+SELF_HOSTED_RE = re.compile(r"runs-on:.*(?:self-hosted|vars\.RUNNER_LABEL)", re.I)
+COMPOSE_RE = re.compile(r"docker[ -]compose\b")
+CHECK_TOOLS = re.compile(r"^(?:cd \S+ && )?(?:dotnet|pnpm|npx turbo|turbo|npm|yarn|bun)\s")
+NOT_A_CHECK = re.compile(
+    r"\b(?:publish|push|deploy|login|pack|nuget|docker|release|workload|playwright|commitlint|lhci|lighthouse)\b"
+    r"|(?<![-\w])(?:install|restore|setup(?:-\S*)?)\b|^(?:npm|pnpm|yarn|bun)\s+(?:ci|i|add)\b"
+    r"|\bdotnet\s+tool\b|[$|<>;`]|&&")
+IS_CHECK = re.compile(
+    r"^(?:dotnet\s+(?:build|test)\b|dotnet\s+format\b.*--verify-no-changes"
+    r"|(?:pnpm|npx turbo|turbo|npm|yarn|bun)\s.*\b(?:lint|type-?check|test|format:check|build)\b)")
+NON_PR_WORKFLOW = re.compile(r"^(?:deploy|release|publish)", re.I)
+PR_TRIGGER = re.compile(r"\bpull_request\b(?!_target)")
+PKG_CHECKS = ("lint", "type-check", "typecheck", "test", "format:check", "build")
+SKIP_DIRS = {"node_modules", "bin", "obj", "dist", "build", "out", "vendor"}
+
+
+def workflow_files(root):
+    """CI workflows of the repo and of a project one level down (backend/.github/…)."""
+    found = glob.glob(os.path.join(root, ".github", "workflows", "*.y*ml"))
+    found += glob.glob(os.path.join(root, "*", ".github", "workflows", "*.y*ml"))
+    return sorted(found)
+
+
+def push_branches(body):
+    """`on.push.branches` of a workflow, inline list or block list."""
+    m = re.search(r"^\s*push:\s*\n(?:\s*#.*\n)*\s*branches:\s*(\[[^\]]*\]|(?:\n\s*-\s*.+)+)", body, re.M)
+    if not m:
+        return []
+    items = (b.strip().lstrip("-").strip().strip("'\"") for b in re.split(r"[,\n]", m.group(1).strip("[] \n")))
+    return [b for b in items if b]
+
+
+def workflow_checks(body):
+    """Check commands from a workflow's `run:` steps, prefixed with their working-directory."""
+    lines, out = body.splitlines(), []
+    default_wd = ""
+    m = re.search(r"^defaults:\s*\n\s+run:\s*\n\s+working-directory:\s*(\S+)", body, re.M)
+    if m:
+        default_wd = m.group(1).strip("'\"")
+    i = 0
+    while i < len(lines):
+        m = re.match(r"^(\s*)(?:-\s+)?run:\s*(.*)$", lines[i])
+        if not m:
+            i += 1
+            continue
+        indent, first = len(m.group(1)), m.group(2).strip()
+        cmds = []
+        if first in ("|", ">", "|-", ">-"):
+            i += 1
+            joined = ""
+            while i < len(lines) and (not lines[i].strip() or len(lines[i]) - len(lines[i].lstrip()) > indent):
+                ln = lines[i].strip()
+                i += 1
+                if not ln or (ln.startswith("#") and not joined):
+                    continue
+                if ln.endswith("\\"):  # a backslash-continued command: join, then judge
+                    joined += ln[:-1].strip() + " "
+                    continue
+                cmds.append(joined + ln)
+                joined = ""
+            if joined:
+                cmds.append(joined.strip())
+        else:
+            cmds.append(first.strip("'\""))
+            i += 1
+        wd = default_wd
+        for j in range(max(0, i - 8), min(len(lines), i + 4)):  # the step's own working-directory
+            w = re.match(r"^\s*working-directory:\s*(\S+)", lines[j])
+            if w:
+                wd = w.group(1).strip("'\"")
+        for c in cmds:
+            m = re.match(r"^cd (\S+) && (.*)$", c)  # a leading `cd X &&` is fine, nothing else chained
+            body_cmd = m.group(2) if m else c
+            if NOT_A_CHECK.search(body_cmd) or not IS_CHECK.match(body_cmd):
+                continue
+            here = (m.group(1) if m.group(1).startswith("/") or not wd or wd == "." else f"{wd}/{m.group(1)}") if m else wd
+            c = f"cd {here} && {body_cmd}" if here and here != "." else body_cmd
+            if CHECK_TOOLS.match(c):
+                out.append(c)
+    return out
+
+
+def stack(root):
+    """Which stacks live here (root or one level down) and the checks they document.
+
+    Commands come only from CI `run:` steps (dotnet / pnpm / turbo / npm …) or, for a
+    Node project without CI, its package.json check scripts. Nothing is invented: a stack
+    with no documented check is listed under `unresolved` for onboard to ask about.
+    """
+    dirs = [root] + sorted(d for d in glob.glob(os.path.join(root, "*"))
+                           if os.path.isdir(d) and os.path.basename(d) not in SKIP_DIRS
+                           and not os.path.basename(d).startswith("."))
+    stacks = []
+    for d in dirs:
+        rel = os.path.relpath(d, root).replace(os.sep, "/")
+        has = lambda *pats: next((os.path.basename(f) for pat in pats for f in glob.glob(os.path.join(d, pat))), None)
+        found = {}
+        if has("*.slnx", "*.sln", "*.csproj", "global.json"):
+            found["dotnet"] = has("*.slnx", "*.sln", "*.csproj", "global.json")
+        if has("pnpm-workspace.yaml"):
+            found["pnpm"] = "pnpm-workspace.yaml"
+        if has("turbo.json"):
+            found["turbo"] = "turbo.json"
+        if has("package.json") and "pnpm" not in found:
+            found["node"] = "package.json"
+        if has("pyproject.toml"):
+            found["python"] = "pyproject.toml"
+        for kind, marker in found.items():
+            stacks.append({"stack": kind, "dir": rel, "marker": marker})
+    commands, seen = [], set()
+    for wf in workflow_files(root):
+        rel_wf = os.path.relpath(wf, root).replace(os.sep, "/")
+        body = read(wf)
+        # only checks a pull request runs; deploy/release workflows are not checks
+        if NON_PR_WORKFLOW.match(os.path.basename(wf)) or not PR_TRIGGER.search(body):
+            continue
+        sub = rel_wf.split("/.github/")[0] if not rel_wf.startswith(".github/") else ""
+        for c in workflow_checks(body):
+            if sub:
+                m = re.match(r"^cd (\S+) && (.*)$", c)
+                c = f"cd {sub}/{m.group(1)} && {m.group(2)}" if m and not m.group(1).startswith("/") else f"cd {sub} && {c}"
+            if c not in seen:
+                seen.add(c)
+                commands.append({"cmd": c, "source": rel_wf})
+    unresolved = []
+    for st in stacks:
+        prefix = "" if st["dir"] == "." else f"cd {st['dir']} && "
+        tool = {"dotnet": "dotnet", "pnpm": "pnpm", "turbo": "turbo"}.get(st["stack"])
+        covered = any(c["cmd"].startswith(prefix) and (not tool or tool in c["cmd"]) for c in commands) \
+            if prefix else any(not c["cmd"].startswith("cd ") and (not tool or tool in c["cmd"]) for c in commands)
+        if covered:
+            continue
+        if st["stack"] in ("pnpm", "node"):
+            scripts = (load_json(os.path.join(root, st["dir"], "package.json")) or {}).get("scripts") or {}
+            runner = "pnpm" if st["stack"] == "pnpm" else "npm"
+            picked = [f"{prefix}{runner} run {k}" for k in PKG_CHECKS if k in scripts]
+            if picked:
+                for c in picked:
+                    if c not in seen:
+                        seen.add(c)
+                        commands.append({"cmd": c, "source": f"{st['dir']}/package.json".lstrip("./")})
+                continue
+        if st["stack"] != "turbo":
+            unresolved.append(st)
+    return {"stacks": stacks, "verify_commands": [c["cmd"] for c in commands],
+            "sources": commands, "unresolved": unresolved}
+
+COMMITLINT_FILES = ["commitlint.config." + e for e in ("js", "cjs", "mjs", "ts", "cts", "mts")] + \
+    [".commitlintrc"] + [".commitlintrc." + e for e in ("json", "yaml", "yml", "js", "cjs", "mjs", "ts")]
+
+
+def commit_format(root):
+    """writing.commit_format for this project: "conventional" when a commitlint config extends
+    @commitlint/config-conventional, else "emoji". header_max = a literal header-max-length."""
+    found = [(f, read(os.path.join(root, f))) for f in COMMITLINT_FILES if os.path.isfile(os.path.join(root, f))]
+    pkg = load_json(os.path.join(root, "package.json")) or {}
+    if isinstance(pkg, dict) and pkg.get("commitlint") is not None:
+        found.append(("package.json", json.dumps(pkg["commitlint"])))
+    for src, body in found:
+        if "config-conventional" not in body:
+            continue
+        m = re.search(r"""['"]?header-max-length['"]?\s*:\s*\[\s*\d+\s*,\s*['"]?\w+['"]?\s*,\s*(\d+)\s*\]""", body)
+        return {"commit_format": "conventional", "header_max": int(m.group(1)) if m else None, "source": src}
+    return {"commit_format": "emoji", "header_max": None, "source": found[0][0] if found else None}
 
 
 # ── GitHub board: rank and migrate ────────────────────────────────────────────
@@ -694,7 +918,7 @@ def durable_json(path, data):
     parent = os.path.dirname(path)
     os.makedirs(parent, exist_ok=True)
     temp = path + '.tmp'
-    with open(temp, 'w') as stream:
+    with open(temp, 'w', encoding='utf-8') as stream:
         json.dump(data, stream, indent=2)
         stream.write('\n')
         stream.flush()
@@ -717,7 +941,7 @@ def migration_lock(path):
     os.makedirs(directory, exist_ok=True)
     # Upgrades of existing installations need this before onboard reaches its ignore-file step.
     try:
-        with open(os.path.join(directory, '.gitignore'), 'x') as ignore:
+        with open(os.path.join(directory, '.gitignore'), 'x', encoding='utf-8') as ignore:
             ignore.write('*\n')
     except FileExistsError:
         pass
@@ -985,6 +1209,10 @@ def main(argv):
             return out(names(root))
         if cmd == "branch":
             return out(branch(root))
+        if cmd == "stack":
+            return out(stack(root))
+        if cmd == "commit-format":
+            return out(commit_format(root))
         if cmd == "board-rank":
             owner = flag(rest, "--owner")
             if not owner:
@@ -1017,4 +1245,10 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    # Windows pipes default to the ANSI code page; super-board text is UTF-8.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     sys.exit(main(sys.argv[1:]))

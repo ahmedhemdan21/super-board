@@ -1,0 +1,9 @@
+name: frontend-type-check
+on:
+  push:
+    branches: [main]
+jobs:
+  tc:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pnpm turbo type-check --filter=admin

@@ -216,7 +216,11 @@
   // work; a live database, or a destructive schema change, waits for you.
   "migrations": {
     "globs": ["supabase/migrations/**", "prisma/migrations/**", "drizzle/**",
-              "**/migrations/*.sql", "db/migrate/**", "alembic/versions/**"],
+              "**/migrations/*.sql", "db/migrate/**", "alembic/versions/**",
+              "**/Migrations/**/*.cs"],
+    // Paths a glob matches that are not migrations. Default: EF Core's generated
+    // designer and snapshot ("**/*.Designer.cs", "**/*ModelSnapshot.cs").
+    "exclude": ["**/*.Designer.cs", "**/*ModelSnapshot.cs"],
     // Which databases the robot may migrate. Any of "test", "staging", "live".
     // Default ["test", "staging"]. Onboard asks (multi-select).
     "allowed_envs": ["test", "staging"],
@@ -334,6 +338,26 @@
   "verify_commands": [
     "cd server && npm ci --silent && npm run typecheck && npm test"
   ],
+
+  // Optional limits for the merge gate's verify_commands run.
+  "merge_gate": {
+    // Seconds each verify command may run before it is killed and counts as a
+    // failure (exit 2). Default 2700 (45 min, room for Testcontainers suites);
+    // 0 = no limit.
+    "command_timeout_s": 2700,
+    // Tools the checks need running before they start. "docker" preflights
+    // `docker info`; when it fails the gate exits 9 (verification-readiness)
+    // before verifying, so a stopped daemon is never read as a stale branch.
+    "requires": ["docker"]
+  },
+
+  // Optional: where super-board-env-check.sh looks for keys. Dotenv files and
+  // appsettings*.json, relative to the repo root; first file that has the key wins.
+  // JSON keys are named Section:Key or Section__Key (nested objects).
+  "env_check": {
+    "files": ["backend/.env", "frontend/apps/dashboard/.env.local",
+              "backend/src/Host/appsettings.Development.json"]
+  },
 
   // Optional throttle on how many cards a single wave dispatches. ABSENT OR 0
   // MEANS UNLIMITED, which is the default and is usually what you want.
@@ -457,6 +481,36 @@
         "map": { "items": "incidents", "id": "id", "title": "name", "url": "shortlink" } },
       { "name": "vercel-logs", "kind": "cli", "target": "vercel logs --output json" }
     ]
+  },
+
+  // Optional. Read by hooks/guard-prod.py (PreToolUse Bash|PowerShell): denies any
+  // shell command whose raw text names a production target, inside `ssh host '…'`
+  // payloads too. Case-insensitive. Absent or empty = the guard allows everything.
+  // Onboard asks nothing about it: add it by hand when dev and prod share a server.
+  //   patterns — regexes matched anywhere in the command (e.g. container names).
+  //   hosts    — host names / IPs matched as whole tokens.
+  //   ports    — matched as `:PORT`, `-p PORT`, `-pPORT`, `--port PORT`.
+  //   message  — extra text appended to the denial the agent sees.
+  "guard": {
+    "prod": {
+      "patterns": ["primecore-prod-"],
+      "hosts": [],
+      "ports": [25432, 28200, 18080],
+      "message": "Dev and prod share one server; only the dev containers (primecore-*, never primecore-prod-*) are in scope."
+    }
+  },
+
+  // Commit and PR-title header shape (writing-standard.md § 1). Optional.
+  //   "emoji"        — default: `✨ [feat] scope: subject`, ≤ 72 chars.
+  //   "conventional" — `feat(scope)!: subject` for a project that lints with
+  //                    @commitlint/config-conventional. No `wip`; ui → feat/fix,
+  //                    security → fix. Onboard sets it when it finds that config.
+  // `header_max` is the header limit counted WITH GitHub's ` (#<PR>)` squash suffix
+  // (conventional only; default 100, onboard copies commitlint's header-max-length).
+  // Check a header: .claude/bin/super-board-commit-header.py check --config <cfg> "<h>".
+  "writing": {
+    "commit_format": "emoji",
+    "header_max": null
   },
 
   "notifications": {

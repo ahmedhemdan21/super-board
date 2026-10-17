@@ -29,7 +29,7 @@ SECRET_RE = re.compile("|".join([
 # plain call -- no pipe, redirect, chain or substitution can ride along.
 ENV_CHECK = re.compile(
     r"^\s*(?:bash\s+|sh\s+)?(?:\S*/)?super-board-env-check\.sh"
-    r"(?:\s+[A-Za-z0-9_./=-]+)*\s*$")
+    r"(?:\s+[A-Za-z0-9_./:=-]+)*\s*$")
 
 REASON = ("Blocked by guard-secrets: this touches a secret file. Read the checked-in example env "
           "file (.env.example) for the key names, or ask the user to run the command themselves "
@@ -64,4 +64,10 @@ def main():
 
 
 if __name__ == "__main__":
+    # Windows pipes default to the ANSI code page; super-board text is UTF-8.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     main()

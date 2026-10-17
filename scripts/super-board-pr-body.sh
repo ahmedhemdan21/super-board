@@ -57,7 +57,13 @@ fi
 if [ "$MODE" = "time" ]; then
   TZV=""
   [ -n "$CONFIG" ] && [ -r "$CONFIG" ] && TZV=$(jq -r '.timezone // empty' "$CONFIG" 2>/dev/null)
-  if [ -n "$TZV" ]; then TZ="$TZV" date '+%b %e, %H:%M %Z' | sed 's/  */ /g'
+  if [ -n "$TZV" ] && [ ! -e "/usr/share/zoneinfo/$TZV" ] && command -v node >/dev/null; then
+    # Git Bash ships no zoneinfo, so its date prints GMT for every zone: ask Node's ICU.
+    node -e 'const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", {timeZone: process.argv[1],
+      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+      timeZoneName: "short"}).formatToParts(new Date()).map(x => [x.type, x.value]));
+      console.log(`${p.month} ${p.day}, ${p.hour}:${p.minute} ${p.timeZoneName}`)' "$TZV"
+  elif [ -n "$TZV" ]; then TZ="$TZV" date '+%b %e, %H:%M %Z' | sed 's/  */ /g'
   else date '+%b %e, %H:%M %Z' | sed 's/  */ /g'; fi
   exit 0
 fi
@@ -92,7 +98,8 @@ trap 'rm -f "$OLD_TMP" "$NEW_TMP"' EXIT
 printf '%s' "$META" | jq -r '.body // ""' > "$OLD_TMP"
 
 MODE_FLAG=replace; [ -n "$APPEND_FILE" ] && MODE_FLAG=append
-python3 - "$OLD_TMP" "$SRC" "$BLOCK" "$MODE_FLAG" "$BLOCKS" > "$NEW_TMP" <<'PY' || die "could not splice the block" 70
+# -X utf8: bodies are UTF-8, not the Windows ANSI code page.
+python3 -X utf8 - "$OLD_TMP" "$SRC" "$BLOCK" "$MODE_FLAG" "$BLOCKS" > "$NEW_TMP" <<'PY' || die "could not splice the block" 70
 import sys
 old_path, src_path, block, mode, order = sys.argv[1:6]
 order = order.split()

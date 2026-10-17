@@ -12,6 +12,8 @@ import time
 import unittest
 
 KIT = Path(os.environ.get('SB_TEST_PACK', Path(__file__).resolve().parents[1]))
+# PATH's bash: on Windows a bare 'bash' finds System32's WSL bash before Git Bash.
+BASH = shutil.which('bash') or 'bash'
 NAMES = ['super-board','super-build','super-qa','super-review','super-collect','visual','git-sync','ui-refine-loop',
          'tdd','implement','codebase-design','code-review','diagnosing-bugs','verification-before-completion','testing-strategy']
 
@@ -73,8 +75,9 @@ output.write_text(json.dumps(result))
         path=self.base/'calls.jsonl'
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
+    # json.dumps keeps its spaces: Git Bash splits an unspaced argument at its quotes on Windows.
     def invoke(self,script,*args):
-        return subprocess.run(['bash',str(KIT/'scripts'/script),*args],cwd=self.root,env=self.env,text=True,capture_output=True)
+        return subprocess.run([BASH,str(KIT/'scripts'/script),*args],cwd=self.root,env=self.env,text=True,capture_output=True)
 
     def preserved(self):
         self.assertEqual((self.state/'inflight/99').read_text(),'PID=99999\nLANE=review\n')
@@ -97,7 +100,7 @@ output.write_text(json.dumps(result))
 
     def test_passing_wave_progresses_all_lanes_and_hydrates_body(self):
         self.full()
-        result=self.invoke('super-board-codex-wave.sh','--config',str(self.config),'--cards','[{"number":1,"status":"Ready"}]','--codex=fixture')
+        result=self.invoke('super-board-codex-wave.sh','--config',str(self.config),'--cards',json.dumps([dict(number=1,status='Ready')]),'--codex=fixture')
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual(json.loads(result.stdout)['cards'][0]['column'],'Done')
         host=[c for c in self.calls() if c['tool']=='codex']
@@ -108,7 +111,7 @@ output.write_text(json.dumps(result))
     def test_removed_skill_after_wave_check_halts_before_worker(self):
         self.full()
         self.env['REMOVE_AFTER_GRADE']=str(self.root/'.agents/skills/code-review/SKILL.md')
-        result=self.invoke('super-board-codex-wave.sh','--config',str(self.config),'--cards','[{"number":1,"status":"Ready","body":""}]','--codex')
+        result=self.invoke('super-board-codex-wave.sh','--config',str(self.config),'--cards',json.dumps([dict(number=1,status='Ready',body='')]),'--codex')
         self.assertEqual(result.returncode,10,result.stderr)
         calls=[c for c in self.calls() if c['tool']=='codex']
         self.assertEqual(len(calls),1);self.assertIn('Grade complexity',calls[0]['prompt'])
@@ -137,7 +140,7 @@ INFLIGHT_DIR=.claude/super-board/inflight
 WORKER_LOG_DIR="$PWD"
 dispatch_lane build 1
 '''
-        result=subprocess.run(['bash','-c',body,'fixture',str(KIT)],cwd=self.root,env=self.env,text=True,capture_output=True)
+        result=subprocess.run([BASH,'-c',body,'fixture',str(KIT)],cwd=self.root,env=self.env,text=True,capture_output=True)
         self.assertEqual(result.returncode,10,result.stderr)
         self.assertTrue(all(c['tool']=='gh' and c['args'][:2]==['issue','view'] for c in self.calls()))
         self.assertFalse((self.root/'worker-build-1.log').exists())
@@ -149,13 +152,14 @@ dispatch_lane build 1
         for name in ['super-board-github-read.py','super-board-skills-ready.py']:
             shutil.copy2(KIT/'scripts'/name,directory/name)
         self.env.update(REPO_DIR=str(self.root),BASE_BRANCH=subprocess.check_output(['git','-C',str(self.root),'branch','--show-current'],text=True).strip())
-        result=subprocess.run(['bash',str(KIT/'skills/super-build/scripts/super-build-dispatch.sh'),'1'],cwd=self.root,env=self.env,text=True,capture_output=True)
+        result=subprocess.run([BASH,str(KIT/'skills/super-build/scripts/super-build-dispatch.sh'),'1'],cwd=self.root,env=self.env,text=True,capture_output=True)
         self.assertEqual(result.returncode,10,result.stderr)
         self.assertFalse((self.root/'.planning/super-build-logs').exists())
         self.assertFalse((self.root/'.claude/worktrees/issue-1').exists())
         self.assertTrue(all(c['tool']=='gh' and c['args'][:2]==['issue','view'] for c in self.calls()))
         self.preserved()
 
+    @unittest.skipIf(os.name == 'nt', 'legacy claude-p: Git Bash kill cannot see or signal the Windows PIDs these Python fixtures record')
     def test_legacy_halt_stops_owned_worker_preserves_unrelated_and_evidence(self):
         self.full('claude')
         def reap_owned():
@@ -263,7 +267,7 @@ elif args[:2]==['issue','view']:
 elif args[:2]==['issue','edit'] and '--add-assignee' in args:pass
 else:sys.exit('unexpected gh call: '+str(args))
 """)
-        result = subprocess.run(['bash',str(KIT/'scripts/super-board-run.sh'),'fixture'],cwd=self.root,
+        result = subprocess.run([BASH,str(KIT/'scripts/super-board-run.sh'),'fixture'],cwd=self.root,
                                 env=self.env,text=True,capture_output=True,timeout=15)
         self.assertEqual(result.returncode,10,result.stderr + result.stdout)
         deadline = __import__('time').monotonic()+3

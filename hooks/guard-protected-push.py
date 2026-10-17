@@ -124,7 +124,7 @@ def current_branch(d):
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     try:
         r = subprocess.run(["git", "-C", d, "symbolic-ref", "--short", "-q", "HEAD"],
-                           capture_output=True, text=True, env=env, timeout=10)
+                           capture_output=True, text=True, encoding="utf-8", env=env, timeout=10)
         return r.stdout.strip() or None
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -134,7 +134,7 @@ def protected_branches(project_dir):
     names = {"main", "master"}
     for p in glob.glob(os.path.join(project_dir, ".claude", "super-board", "configs", "*.json")):
         try:
-            base = json.load(open(p)).get("base_branch")
+            base = json.load(open(p, encoding="utf-8")).get("base_branch")
             if isinstance(base, str) and base:
                 names.add(base)
         except (OSError, ValueError, AttributeError):
@@ -200,4 +200,10 @@ def main():
 
 
 if __name__ == "__main__":
+    # Windows pipes default to the ANSI code page; super-board text is UTF-8.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     main()

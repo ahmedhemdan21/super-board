@@ -3,11 +3,14 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+# PATH's bash: on Windows a bare 'bash' finds System32's WSL bash before Git Bash.
+BASH = shutil.which('bash') or 'bash'
 HELPER = ROOT / 'scripts/super-board-github-read.py'
 
 
@@ -30,7 +33,7 @@ print(r.get('err', ''), file=sys.stderr)
 sys.exit(r.get('rc', 0))
 ''')
         gh.chmod(0o755)
-        self.env = dict(os.environ, PATH=f'{self.root}:{os.environ["PATH"]}',
+        self.env = dict(os.environ, PATH=f'{self.root}{os.pathsep}{os.environ["PATH"]}',
                         READ_CALLS=str(self.log), SB_GITHUB_HALT_FILE=str(self.halt),
                         SB_GITHUB_RETRY_DELAY='0')
 
@@ -134,7 +137,7 @@ fetch_project_items; rc=$?
 printf '%s %s\n' "$rc" "$PROJECT_ITEMS_JSON"
 dispatch_lane build 7
 """
-        result = subprocess.run(['bash', '-c', script, 'test', str(ROOT / 'scripts/super-board-run.sh')],
+        result = subprocess.run([BASH, '-c', script, 'test', str(ROOT / 'scripts/super-board-run.sh')],
                                 cwd=self.root, env=self.env, text=True, capture_output=True)
         self.assertEqual(result.returncode, 79, result.stderr)
         self.assertIn('79 {"items":[{"id":"preserved"}]}', result.stdout)
@@ -143,14 +146,14 @@ dispatch_lane build 7
     def test_unknown_issue_state_never_means_open(self):
         self.env['READ_RESPONSES'] = json.dumps([{'rc': 1}])
         script = 'SB_LIB_ONLY=1 . "$1"; issue_is_open 7'
-        result = subprocess.run(['bash', '-c', script, 'test', str(ROOT / 'scripts/super-board-run.sh')],
+        result = subprocess.run([BASH, '-c', script, 'test', str(ROOT / 'scripts/super-board-run.sh')],
                                 cwd=self.root, env=self.env, capture_output=True)
         self.assertEqual(result.returncode, 79)
         self.assertEqual(self.log.read_text(), '3')
 
     def test_missing_quota_never_means_full_allowance(self):
         self.env['READ_RESPONSES'] = json.dumps([{'rc': 1}])
-        result = subprocess.run(['bash', '-c', '. "$1"; sb_gh_guard_check 200', 'test',
+        result = subprocess.run([BASH, '-c', '. "$1"; sb_gh_guard_check 200', 'test',
                                  str(ROOT / 'scripts/super-board-gh-guard.sh')], cwd=self.root,
                                 env=self.env, capture_output=True)
         self.assertEqual(result.returncode, 79)
@@ -190,7 +193,7 @@ STATUS_FIELD_ID=field; STATUS_OPTIONS_JSON='[{"id":"done","name":"Done"}]'
 PROJECT_ITEMS_JSON='{"items":[{"id":"item","status":"Review","content":{"number":7,"type":"Issue","assignees":[]}}]}'
 top_card_in_column Review
 """
-        result = subprocess.run(['bash','-c',script,'test',str(ROOT / 'scripts/super-board-run.sh'),str(self.root)],
+        result = subprocess.run([BASH,'-c',script,'test',str(ROOT / 'scripts/super-board-run.sh'),str(self.root)],
                                 env=self.env,cwd=self.root,capture_output=True)
         self.assertEqual(result.returncode,79,result.stderr)
         self.assertEqual(self.log.read_text(),'4','one state read, three failed project reads, no claim release')
@@ -208,7 +211,7 @@ top_card_in_column Review
         lock = inflight / '7'; lock.write_text('PID=\nLANE=build\n')
         self.env['READ_RESPONSES'] = json.dumps([{'rc':1}])
         script = 'SB_LIB_ONLY=1 . "$1"; INFLIGHT_DIR="$2/inflight"; RUN_MANIFEST="$2/run.log"; BOT_LOGIN=robot; reap_finished_locks'
-        result = subprocess.run(['bash','-c',script,'test',str(ROOT / 'scripts/super-board-run.sh'),str(self.root)],
+        result = subprocess.run([BASH,'-c',script,'test',str(ROOT / 'scripts/super-board-run.sh'),str(self.root)],
                                 env=self.env,cwd=self.root,capture_output=True)
         self.assertEqual(result.returncode,79)
         self.assertEqual(self.log.read_text(),'1')

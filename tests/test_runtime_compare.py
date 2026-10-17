@@ -285,6 +285,7 @@ class FailureTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 runtime.measure(root/'config.json',root/'evidence')
 
+@unittest.skipIf(os.name == 'nt', 'POSIX process groups; Windows stop() ends the tree with taskkill')
 class ProcessCleanupTests(unittest.TestCase):
     def test_timeout_kills_stubborn_descendant_holding_output_pipe(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -332,6 +333,7 @@ class ProcessCleanupTests(unittest.TestCase):
                     os.killpg(proc.pid,signal.SIGKILL)
                 proc.communicate(timeout=1)
 
+@unittest.skipIf(os.name == 'nt', 'POSIX process groups; Windows stop() ends the tree with taskkill')
 class GroupSafetyTests(unittest.TestCase):
     def process(self, exited=False):
         p=mock.Mock(pid=999991)

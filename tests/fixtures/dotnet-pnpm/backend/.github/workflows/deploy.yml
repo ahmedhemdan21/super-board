@@ -1,0 +1,10 @@
+name: deploy
+on:
+  push:
+    branches: [dev]
+jobs:
+  deploy:
+    runs-on: ${{ vars.RUNNER_LABEL }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose -f deploy/compose.yml up -d --build

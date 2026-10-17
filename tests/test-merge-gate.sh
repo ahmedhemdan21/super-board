@@ -196,6 +196,19 @@ RC=0; STUB_OID="$SHA" gate --expect-head "$SHA" --body-file /nope.md >/dev/null 
 [ "$RC" -eq 66 ] || fail "an unreadable --body-file should exit 66, got $RC"
 teardown
 
+# 9c — conventional projects: the gate adds GitHub's (#PR) suffix, and refuses a subject
+#      commitlint would reject before anything merges.
+head_setup
+jq '. + {writing: {commit_format: "conventional", header_max: 110}}' "$TMP/c.json" > "$TMP/c2.json" && mv "$TMP/c2.json" "$TMP/c.json"
+RC=0; STUB_OID="$SHA" gate --expect-head "$SHA" --subject "fix(receipts): show a size error" >/dev/null 2>&1 || RC=$?
+[ "$RC" -eq 0 ] || fail "a conventional subject should merge, got $RC"
+grep -q -- "--subject fix(receipts): show a size error (#1)" "$GH_LOG" || fail "the (#PR) suffix must be added, got: $(cat "$GH_LOG")"
+: > "$GH_LOG"
+RC=0; STUB_OID="$SHA" gate --expect-head "$SHA" --subject "🐛 [fix] receipts: show a size error" >/dev/null 2>&1 || RC=$?
+[ "$RC" -eq 64 ] || fail "an emoji subject in a conventional project should exit 64, got $RC"
+grep -q -- "pr merge" "$GH_LOG" && fail "a refused subject must not merge"
+teardown
+
 # 10 — a push lands during verification: GitHub refuses the pinned merge and the
 #      head has moved, so this is void evidence (6), not branch protection (3).
 head_setup
@@ -226,7 +239,9 @@ teardown
 #      merge that already happened.
 head_setup
 mkdir -p "$TMP/.claude/hooks"
-printf 'import sys\nopen("%s/cleanup.args","w").write(" ".join(sys.argv[1:]))\nsys.exit(1)\n' "$TMP" \
+# Python opens the path itself: on Windows it needs C:/..., not Git Bash's /tmp/...
+PYTMP=$(cygpath -m "$TMP" 2>/dev/null || echo "$TMP")
+printf 'import sys\nopen("%s/cleanup.args","w").write(" ".join(sys.argv[1:]))\nsys.exit(1)\n' "$PYTMP" \
   > "$TMP/.claude/hooks/cleanup-wt.py"
 RC=0; STUB_OID="$SHA" gate --expect-head "$SHA" >/dev/null 2>&1 || RC=$?
 [ "$RC" -eq 0 ] || fail "a failing cleanup must not fail the merge, got $RC"
@@ -237,7 +252,7 @@ teardown
 # 13 — a refused merge never cleans up. (Scenario 9 is the no-cleanup-wt path.)
 head_setup
 mkdir -p "$TMP/.claude/hooks"
-printf 'open("%s/cleanup.ran","w")\n' "$TMP" > "$TMP/.claude/hooks/cleanup-wt.py"
+printf 'open("%s/cleanup.ran","w")\n' "$PYTMP" > "$TMP/.claude/hooks/cleanup-wt.py"
 RC=0; STUB_OID="$SHA" STUB_MERGE_RC=1 gate --expect-head "$SHA" >/dev/null 2>&1 || RC=$?
 [ "$RC" -eq 79 ] || fail "an unconfirmed merge should halt, got $RC"
 [ ! -f "$TMP/cleanup.ran" ] || fail "cleanup must not run when the merge was refused"
@@ -500,6 +515,56 @@ jq '.verify_commands = ["", " ", "git rev-parse --verify nonexistent-ref"]' "$TM
 RC=0; STUB_OID="$SHA" "$GATE" --config "$TMP/failing.json" --pr 1 --expect-head "$SHA" >/dev/null 2>&1 || RC=$?
 [ "$RC" -eq 2 ] || fail "failed configured project check must exit 2, got $RC"
 grep -q '^pr merge' "$GH_LOG" && fail "failed check must not merge"
+teardown
+
+# EF Core: Migrations/*.cs are migrations, the designer and snapshot are not, and
+# neither counts toward the size cap (nor do packages.lock.json / pnpm-lock.yaml).
+T26=$(mktemp -d); echo '{"base_branch":"staging"}' > "$T26/c.json"
+EF=$(jq -cn '{labels: [], body: "", files: [
+  {path: "src/Modules/Billing/Persistence/Migrations/20260101_AddInvoice.cs", additions: 50, deletions: 0},
+  {path: "src/Modules/Billing/Persistence/Migrations/20260101_AddInvoice.Designer.cs", additions: 900, deletions: 0},
+  {path: "src/Modules/Billing/Persistence/Migrations/BillingDbContextModelSnapshot.cs", additions: 900, deletions: 0},
+  {path: "src/Infrastructure/PrimeCore.Persistence/Migrations/TenantStore/20260102_AddTenant.cs", additions: 40, deletions: 0},
+  {path: "src/Infrastructure/PrimeCore.Persistence/Migrations/TenantStore/20260102_AddTenant.Designer.cs", additions: 900, deletions: 0},
+  {path: "src/Infrastructure/PrimeCore.Persistence/Migrations/TenantStore/TenantStoreDbContextModelSnapshot.cs", additions: 900, deletions: 0},
+  {path: "src/Api/packages.lock.json", additions: 900, deletions: 0},
+  {path: "frontend/pnpm-lock.yaml", additions: 900, deletions: 0},
+  {path: "src/Api/Program.cs", additions: 10, deletions: 0}]}')
+printf '%s' "$EF" > "$T26/m.json"
+OUT=$(python3 "$P" --config "$T26/c.json" --meta "$T26/m.json" --diff /dev/null)
+echo "$OUT" | jq -e '.migrations == ["src/Modules/Billing/Persistence/Migrations/20260101_AddInvoice.cs","src/Infrastructure/PrimeCore.Persistence/Migrations/TenantStore/20260102_AddTenant.cs"]' >/dev/null \
+  || fail "only the EF migrations, nested folders too (not Designer/ModelSnapshot) is a migration, got: $OUT"
+echo "$OUT" | jq -e '[.human[] | select(.category == "size")] | length == 0' >/dev/null \
+  || fail "EF generated files and lockfiles must not count toward the size cap, got: $OUT"
+rm -rf "$T26"
+
+# merge_gate.requires: a failing `docker info` is a setup halt (9) before GitHub.
+head_setup
+printf '#!/usr/bin/env bash\nexit 1\n' > "$TMP/bin/docker"; chmod +x "$TMP/bin/docker"
+jq '.merge_gate = {requires: ["docker"]}' "$TMP/c.json" > "$TMP/dock.json"
+RC=0; OUT=$(STUB_OID="$SHA" PATH="$TMP/bin:$PATH" "$GATE" --config "$TMP/dock.json" --pr 1 --dry-run 2>&1) || RC=$?
+[ "$RC" -eq 9 ] || fail "docker down with requires docker must exit 9, got $RC: $OUT"
+echo "$OUT" | grep -q "docker info" || fail "the docker halt must say what failed, got: $OUT"
+[ ! -s "$GH_LOG" ] || fail "a missing requirement must not call GitHub"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP/bin/docker"
+RC=0; STUB_OID="$SHA" PATH="$TMP/bin:$PATH" "$GATE" --config "$TMP/dock.json" --pr 1 --expect-head "$SHA" >/dev/null 2>&1 || RC=$?
+[ "$RC" -eq 0 ] || fail "docker up should let the gate merge, got $RC"
+teardown
+
+# merge_gate.command_timeout_s: a check that runs past the cap is killed and fails (2).
+head_setup
+jq '.merge_gate = {command_timeout_s: 2} | .verify_commands = ["sleep 30"]' "$TMP/c.json" > "$TMP/slow.json"
+START=$(date +%s)
+RC=0; OUT=$(STUB_OID="$SHA" "$GATE" --config "$TMP/slow.json" --pr 1 --expect-head "$SHA" 2>&1) || RC=$?
+TOOK=$(( $(date +%s) - START ))
+[ "$RC" -eq 2 ] || fail "a timed-out check must exit 2, got $RC: $OUT"
+echo "$OUT" | grep -q "TIMED OUT after 2s" || fail "a timeout must be named, got: $OUT"
+echo "$OUT" | grep -q "stale against" && fail "a timeout is not a stale branch: $OUT"
+[ "$TOOK" -lt 25 ] || fail "the timeout must stop the check early, took ${TOOK}s"
+grep -q '^pr merge' "$GH_LOG" && fail "a timed-out check must not merge"
+jq '.merge_gate = {command_timeout_s: "x"}' "$TMP/c.json" > "$TMP/bad.json"
+RC=0; "$GATE" --config "$TMP/bad.json" --pr 1 --dry-run >/dev/null 2>&1 || RC=$?
+[ "$RC" -eq 64 ] || fail "a non-numeric timeout must exit 64, got $RC"
 teardown
 
 echo "PASS: test-merge-gate.sh (merge, policy and approval scenarios)"

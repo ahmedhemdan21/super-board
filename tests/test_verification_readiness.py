@@ -2,11 +2,14 @@
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+# PATH's bash: on Windows a bare 'bash' finds System32's WSL bash before Git Bash.
+BASH = shutil.which('bash') or 'bash'
 CHECK = ROOT / "scripts/super-board-verification-ready.py"
 
 
@@ -23,7 +26,7 @@ class VerificationReadiness(unittest.TestCase):
                 self.assertIn("verify_commands", result.stderr)
                 self.assertIn("verification-readiness", result.stderr)
                 # Planner must reject before it reads the supplied (nonexistent) items.
-                result = subprocess.run(["bash", str(ROOT / "scripts/super-board-wave-plan.sh"),
+                result = subprocess.run([BASH, str(ROOT / "scripts/super-board-wave-plan.sh"),
                                          "--config", str(path), "--items", str(path.parent / "absent")],
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, 9, result.stderr)
@@ -52,9 +55,9 @@ class VerificationReadiness(unittest.TestCase):
                 card = {"number": 1, "status": "Review", "title": "example"}
                 args = (["--card", json.dumps(card), "--lane", "review"] if "lane" in launcher
                         else ["--cards", json.dumps([card])])
-                result = subprocess.run(["bash", str(ROOT / "scripts" / launcher),
+                result = subprocess.run([BASH, str(ROOT / "scripts" / launcher),
                                          "--config", str(config), "--codex"] + args,
-                                        cwd=root, env=dict(os.environ, PATH=str(binary.parent) + ":" + os.environ["PATH"]),
+                                        cwd=root, env=dict(os.environ, PATH=str(binary.parent) + os.pathsep + os.environ["PATH"]),
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, 9, result.stderr)
                 self.assertTrue(json.loads(result.stdout)["status"] == "halted" if "lane" in launcher
@@ -85,7 +88,7 @@ class VerificationReadiness(unittest.TestCase):
             cfg = root / ".claude/super-board/configs/app.json"
             cfg.parent.mkdir(parents=True)
             cfg.write_text(json.dumps({"worker_backend": "claude-p", "verify_commands": []}))
-            result = subprocess.run(["bash", str(ROOT / "scripts/super-board-run.sh"), "app"],
+            result = subprocess.run([BASH, str(ROOT / "scripts/super-board-run.sh"), "app"],
                                     cwd=root, capture_output=True, text=True)
             self.assertEqual(result.returncode, 9, result.stderr)
             self.assertFalse((root / "docs").exists())

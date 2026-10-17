@@ -59,7 +59,9 @@
 #
 # `--subject` / `--body-file` set the squash commit message (writing-standard.md
 # § 1): subject = the PR title (`🐛 [fix] receipts: …`), body = the commit bullets
-# plus `Closes #N`. Without them GitHub writes its own message.
+# plus `Closes #N`. Without them GitHub writes its own message. With
+# `writing.commit_format: "conventional"` the gate appends ` (#<PR>)` to the subject
+# and exits 64 when super-board-commit-header.py check rejects it.
 #
 # `--lock-timeout` is how long THIS caller waits for its turn. `--stale-after` is
 # how old a lock must be before it is presumed abandoned. They are deliberately
@@ -99,8 +101,16 @@
 #
 #   merge_policy: { default: "auto"|"human", auto_max_lines: 400, size_exclude,
 #                   always_human: { <category>: {labels, paths, keywords} } }
-#   migrations:   { globs, allowed_envs, target_env, commands: {<env>: cmd},
+#   migrations:   { globs, exclude, allowed_envs, target_env, commands: {<env>: cmd},
 #                   human_steps }
+#   merge_gate:   { command_timeout_s: 2700, requires: ["docker"] }
+#
+# merge_gate.command_timeout_s caps EACH verify command (0 = no cap); a command
+# that runs out is killed with its process group and fails like any other (2).
+# The timer is a shell watchdog, not GNU `timeout`, which macOS does not ship.
+# merge_gate.requires names tools the checks need running: "docker" preflights
+# `docker info`, anything else `command -v`. A missing one exits 9 before the
+# lock: a stopped Docker daemon is a machine problem, not a stale branch.
 #
 # Detection reads the PR's labels, changed paths and the diff's ADDED lines
 # (keywords, case-insensitive). The policy is checked before verification — a
@@ -148,6 +158,13 @@ BASE=$(echo "$CONFIG_JSON" | jq -r '.base_branch // "main"')
 REPO=$(echo "$CONFIG_JSON" | jq -r '.repo.remote // ""' | sed -E 's#^https?://github\.com/##; s#\.git$##')
 REPO_PATH=$(echo "$CONFIG_JSON" | jq -r '.repo.path // "."')
 export SB_REPO_PATH="$REPO_PATH"
+# Conventional projects lint the squash subject on main (writing.commit_format): give it
+# the ` (#PR)` suffix GitHub's own message would carry, and refuse one commitlint rejects.
+if [ -n "$SUBJECT" ] && [ "$(echo "$CONFIG_JSON" | jq -r '.writing.commit_format // "emoji"')" = conventional ]; then
+  case "$SUBJECT" in *" (#$PR)") ;; *) SUBJECT="$SUBJECT (#$PR)" ;; esac
+  python3 "$HERE/super-board-commit-header.py" check --config "$CONFIG" --pr "$PR" "$SUBJECT" >&2 \
+    || { echo "--subject breaks the conventional format: $SUBJECT" >&2; exit 64; }
+fi
 # Read with a while-loop rather than `mapfile`: macOS ships bash 3.2 and every
 # other script in this repo runs there, so this one does too.
 VERIFY=()
@@ -160,6 +177,43 @@ if [ "${#VERIFY[@]}" -eq 0 ]; then
   echo "verification-readiness: verify_commands yielded no usable shell commands; repair the project config and restart the board." >&2
   exit 9
 fi
+
+CMD_TIMEOUT=$(echo "$CONFIG_JSON" | jq -r '.merge_gate.command_timeout_s // 2700' | tr -d '\r')
+case "$CMD_TIMEOUT" in ''|*[!0-9]*) echo "merge_gate.command_timeout_s must be a whole number of seconds, got: $CMD_TIMEOUT" >&2; exit 64 ;; esac
+while IFS= read -r need; do
+  need=${need%$'\r'}; [ -n "$need" ] || continue
+  case "$need" in
+    docker) docker info >/dev/null 2>&1 && continue
+            echo "verification-readiness: merge_gate.requires docker, but 'docker info' failed. Start Docker (the checks need it, e.g. Testcontainers) and restart the board." >&2
+            exit 9 ;;
+    *) command -v "$need" >/dev/null 2>&1 && continue
+       echo "verification-readiness: merge_gate.requires $need, but it is not on PATH. Install it and restart the board." >&2
+       exit 9 ;;
+  esac
+done < <(echo "$CONFIG_JSON" | jq -r '.merge_gate.requires // [] | .[]')
+
+# run_verify <cmd> <log>: run one check in the scratch tree, killed after
+# CMD_TIMEOUT seconds (0 = never). Returns the command's status, 124 on timeout.
+run_verify() {
+  local cmd=$1 log=$2 pid wd rc=0 flag="$2.timedout"
+  rm -f "$flag"
+  set -m  # own process group, so the watchdog also kills dotnet/node children
+  ( cd "$SCRATCH" && eval "$cmd" ) >"$log" 2>&1 &
+  pid=$!
+  set +m
+  wd=""
+  if [ "$CMD_TIMEOUT" -gt 0 ]; then
+    ( n=0; while [ "$n" -lt "$CMD_TIMEOUT" ]; do sleep 1; kill -0 "$pid" 2>/dev/null || exit 0; n=$((n + 1)); done
+      : > "$flag"; kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+      sleep 5; kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+    wd=$!
+  fi
+  wait "$pid" || rc=$?
+  [ -z "$wd" ] || { kill "$wd" 2>/dev/null || true; wait "$wd" 2>/dev/null || true; }
+  if [ -f "$flag" ]; then rm -f "$flag"; return 124; fi
+  return "$rc"
+}
+
 python3 "$GITHUB_READ" --check
 
 LOCK_DIR="${REPO_PATH}/.claude/super-board/inflight/merge.lock"
@@ -280,10 +334,16 @@ fi
 
 for cmd in "${VERIFY[@]}"; do
   say "verify: ${cmd}"
-  if ! ( cd "$SCRATCH" && eval "$cmd" ) >"$SCRATCH/.verify.log" 2>&1; then
-    say "FAILED: ${cmd}"
+  VRC=0; run_verify "$cmd" "$SCRATCH/.verify.log" || VRC=$?
+  if [ "$VRC" -ne 0 ]; then
+    if [ "$VRC" -eq 124 ]; then say "TIMED OUT after ${CMD_TIMEOUT}s (merge_gate.command_timeout_s): ${cmd}"
+    else say "FAILED: ${cmd}"; fi
     tail -30 "$SCRATCH/.verify.log" >&2
-    say "the branch is stale against ${BASE} — send it back to Build for a rebase pass"
+    if [ "$VRC" -eq 124 ]; then
+      say "a check ran out of time, not a stale branch: speed it up or raise merge_gate.command_timeout_s"
+    else
+      say "the branch is stale against ${BASE} — send it back to Build for a rebase pass"
+    fi
     exit 2
   fi
 done
@@ -300,6 +360,7 @@ while IFS= read -r line; do [ -n "$line" ] && NEEDS+=("$line"); done \
 if [ "$(echo "$PLAN" | jq '.migrations | length')" -gt 0 ]; then
   say "migrations in this PR: $(echo "$PLAN" | jq -r '.migrations | join(" ")')"
   while IFS=$'\t' read -r env cmd; do
+    cmd=${cmd%$'\r'}  # Windows jq.exe ends lines with CRLF
     [ -n "$env" ] || continue
     if [ "$DRY" -eq 1 ]; then say "dry run: would migrate ${env}: ${cmd}"; continue; fi
     say "migrate ${env}: ${cmd}"

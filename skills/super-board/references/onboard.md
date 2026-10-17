@@ -42,6 +42,7 @@ checkout, then re-run onboard.`
 | `python3 $SB/super-board-setup.py check / fix --text` | 1 Checks |
 | `python3 $SB/super-board-setup.py board-rank / board-migrate / names` | 1 (upgrade), 3 Board |
 | `python3 $SB/super-board-setup.py branch` | 4 Branch |
+| `python3 $SB/super-board-setup.py commit-format` | 0 Detect, 8 Review |
 | `python3 $SB/super-board-agents-md.py …` | 5 AGENTS.md |
 | `python3 $SB/super-board-settings.py allow … --dry-run` | 6 Policies |
 | `python3 .claude/skills/super-collect/scripts/collect_custom.py classify / ping / add` | 7 Bug sources |
@@ -131,14 +132,23 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
 0. SILENT DETECT (no questions, nothing printed but the start screen)
    ├─ answers file, .claude/super-board/configs/*.json → resume / re-run screens
    ├─ instruction files: python3 $SB/super-board-agents-md.py detect
-   ├─ manifests + README (board names), branches + deploy signals ($SB/super-board-setup.py branch)
+   ├─ manifests + README (board names), branches + deploy signals ($SB/super-board-setup.py branch;
+   │    a self-hosted runner + docker compose workflow reports its push branch in target_env_branches)
+   ├─ stacks, root or one level down: $SB/super-board-setup.py stack (.slnx/.sln/.csproj/global.json,
+   │    pnpm-workspace.yaml, turbo.json, package.json, pyproject.toml) with the checks their CI
+   │    `run:` steps or package.json scripts document; `unresolved` stacks have none
+   ├─ commit format: python3 $SB/super-board-setup.py commit-format → a commitlint config
+   │    extending config-conventional gives writing {commit_format: "conventional",
+   │    header_max: <literal header-max-length, else omitted>}; anything else leaves `writing` out
+   │    (emoji). Shown at step 8 as "Commits: conventional (commitlint, ≤ <n>)".
    ├─ migration dirs (supabase/migrations, prisma/migrations, drizzle, **/migrations/*.sql,
-   │    db/migrate, alembic/versions) and migrate scripts in the manifest (db:migrate, …)
+   │    db/migrate, alembic/versions, EF Core **/Migrations/**/*.cs) and migrate scripts in the manifest (db:migrate, …)
    ├─ collect signals: Sentry (@sentry/* / sentry-sdk in manifests, Sentry.init(, .sentryclirc),
    │    PostHog (posthog-js / posthog-node / posthog, posthog.init(, NEXT_PUBLIC_POSTHOG_* names);
    │    key names: bash $SB/super-board-env-check.sh SENTRY_AUTH_TOKEN POSTHOG_PERSONAL_API_KEY
    ├─ verification commands: preserve valid `verify_commands`; otherwise inspect the owning
-   │    project's documented checks and stage those commands. Unresolved checks are a setup
+   │    project's documented checks (start from `stack` → verify_commands, each with its
+   │    source file) and stage those commands. Unresolved checks are a setup
    │    halt. Never save placeholders or invent a universal runner.
    ├─ project verifier: detect `.agents/skills/verify-*/SKILL.md` and feature maps.
    │    For creation or upkeep read `../../super-qa/references/project-verifier.md`;
@@ -157,7 +167,7 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    │      ⏺ Fixed for you:
    │        ✓ super-board skills and scripts installed
    │        ✓ board engine (workflow) installed
-   │        ✓ 6 safety guards switched on
+   │        ✓ 7 safety guards switched on
    │        ✓ settings.json entries added (backup kept)
    │        ✓ git repo found
    ├─ Each `needs` item (a system tool): one line, then run its `command` with Bash — Claude
@@ -301,6 +311,9 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
        commits) / No]. Skipped when settings.json already wires guard-protected-push.py. Script
        missing (--no-hooks install) → record the answer and say: "Run ./install.sh --no-hooks
        --protect-main <this-dir> — it installs only this guard."
+       Prod guard: never asked. guard-prod.py is wired by default and does nothing until the
+       user adds `guard.prod` (patterns · hosts · ports · message, config-schema.json) by
+       hand, e.g. when dev and prod share one SSH server.
     c. "Databases" (multiSelect, only when migration dirs exist) — "Which databases may the robot
        migrate?" [test (Recommended) / staging (Recommended) / live] → migrations.allowed_envs;
        target_env "live" on a production base, else "staging"; commands from the manifest's
@@ -359,7 +372,7 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    ├─ Write, in order (each atomic; stop and report on the first failure — answers are kept):
    │    ├─ .claude/super-board/configs/<slug>.json (committed): description, project, target
    │    │    {type: repo | repo+url}, repo, base_branch, timezone, columns (the seven), labels,
-   │    │    paths, merge_policy, migrations, collect (incl. custom), notifications {channel:
+   │    │    paths, merge_policy, migrations, collect (incl. custom), writing (when detected), notifications {channel:
    │    │    "session", bot_identity}, worker_backend "workflow", verify_commands (non-blank project checks). No `variant`.
    │    ├─ .claude/super-board/active ← <slug>
    │    ├─ .gitignore += .claude/super-board/active, onboard-answers.json, onboard-staged/,

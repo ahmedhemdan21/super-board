@@ -39,7 +39,9 @@ skip a hook (`--no-verify`).
    (for example `#N: type: description`).
 2. Otherwise use section "1 · Commit" of the super-board writing standard
    (`.claude/skills/super-board/references/writing-standard.md`): emoji, `[type]`, scope,
-   subject, 1–4 bullets, `Closes #N` when the commit finishes a ticket.
+   subject, 1–4 bullets, `Closes #N` when the commit finishes a ticket. A board config with
+   `writing.commit_format: "conventional"` (or a commitlint config extending
+   config-conventional) means the conventional header from that section: `fix(scope): subject`.
 3. Keep any attribution trailer the session asks for.
 
 ## 3 · Supabase gate

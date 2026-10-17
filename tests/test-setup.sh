@@ -109,6 +109,58 @@ echo "$OUT" | q '.create_staging == true and .deploy == "Vercel deploys main" an
 git -C "$T" branch staging
 python3 "$SETUP" branch --root "$T" | q '.staging == "staging" and .create_staging == false' || fail "existing staging should be used"
 
+# 6b — .NET + pnpm/turbo in subdirectories: stacks and the checks their CI documents;
+#      a self-hosted runner with docker compose is a deploy signal, its push branch a target.
+T="$WORK/dn"; cp -R "$PACK/tests/fixtures/dotnet-pnpm" "$T"
+OUT=$(python3 "$SETUP" stack --root "$T")
+echo "$OUT" | q '[.stacks[] | "\(.stack):\(.dir)"] == ["dotnet:backend","pnpm:frontend","turbo:frontend"]' || fail "stacks wrong: $OUT"
+echo "$OUT" | q '.verify_commands | index("cd backend && dotnet format PrimeCore.Platform.slnx --verify-no-changes") != null' || fail "dotnet format from CI: $OUT"
+echo "$OUT" | q '.verify_commands | index("cd backend && dotnet test PrimeCore.Platform.slnx --no-build -c Release --filter \"Category=Integration\"") != null' || fail "block run: lines: $OUT"
+echo "$OUT" | q '.verify_commands | index("cd frontend && pnpm type-check") != null' || fail "pnpm from frontend CI: $OUT"
+echo "$OUT" | q '[.verify_commands[] | select(test("nuget|docker|\\$\\{"))] | length == 0' || fail "publish/deploy steps are not checks: $OUT"
+echo "$OUT" | q '.unresolved == []' || fail "every stack is covered: $OUT"
+# real PrimeCore CI: only pull_request workflows, no deploy/release, no setup, no shell fragments
+echo "$OUT" | q '[.verify_commands[] | select(test("install|dotnet restore|commitlint|lhci|playwright|[$|]|&& .*&&|[\\\\]|-p:Version|--filter dashboard|--filter=admin"))] | length == 0' \
+  || fail "junk CI lines proposed as checks: $OUT"
+echo "$OUT" | q '.verify_commands | index("cd frontend/apps/dashboard && pnpm build") != null' || fail "leading cd X && is kept: $OUT"
+echo "$OUT" | q '[.sources[] | .source | select(test("deploy|release|validate-commits|frontend-type-check"))] | length == 0' \
+  || fail "non-PR or deploy/release workflows harvested: $OUT"
+rm -rf "$T/frontend/.github"
+OUT=$(python3 "$SETUP" stack --root "$T")
+echo "$OUT" | q '[.verify_commands[] | select(startswith("cd frontend"))] == ["cd frontend && pnpm run lint","cd frontend && pnpm run type-check","cd frontend && pnpm run test","cd frontend && pnpm run format:check"]' \
+  || fail "no CI falls back to package.json scripts: $OUT"
+rm -rf "$T/backend/.github/workflows/ci.yml"
+python3 "$SETUP" stack --root "$T" | q '[.unresolved[] | .stack] == ["dotnet"]' || fail "a stack with no documented check is unresolved, never invented"
+git -C "$T" init -q -b main; git -C "$T" add . && git -C "$T" -c user.email=t@t -c user.name=t commit -qm init
+OUT=$(python3 "$SETUP" branch --root "$T")
+echo "$OUT" | q '(.deploy | startswith("self-hosted compose (backend/.github/workflows/deploy.yml deploys dev)")) and .target_env_branches == ["dev"]' \
+  || fail "self-hosted compose deploy signal: $OUT"
+git -C "$T" checkout -q --detach
+python3 "$SETUP" branch --root "$T" | q '[.branches[] | select(startswith("("))] == []' || fail "detached HEAD listed as a branch"
+PYTHONIOENCODING=cp1252 python3 "$SETUP" --help >/dev/null 2>&1 || fail "--help crashes on a cp1252 console"
+
+# 6b — commit format: a commitlint config extending config-conventional proposes
+#      writing.commit_format "conventional" with its literal header-max-length;
+#      package.json "commitlint" counts; no commitlint (or another preset) stays emoji.
+T="$WORK/cl"; mkdir -p "$T"
+python3 "$SETUP" commit-format --root "$T" | q '.commit_format == "emoji" and .source == null' || fail "no commitlint should stay emoji"
+cat > "$T/commitlint.config.js" <<'JS'
+module.exports = {
+  extends: ['@commitlint/config-conventional'],
+  rules: { 'header-max-length': [2, 'always', 110] },
+};
+JS
+python3 "$SETUP" commit-format --root "$T" \
+  | q '.commit_format == "conventional" and .header_max == 110 and .source == "commitlint.config.js"' \
+  || fail "commitlint config-conventional should propose conventional, max 110"
+rm "$T/commitlint.config.js"
+echo '{"name":"x","commitlint":{"extends":["@commitlint/config-conventional"]}}' > "$T/package.json"
+python3 "$SETUP" commit-format --root "$T" | q '.commit_format == "conventional" and .header_max == null and .source == "package.json"' \
+  || fail "package.json commitlint should be detected"
+printf 'extends:\n  - "@commitlint/config-angular"\n' > "$T/.commitlintrc.yml"; rm "$T/package.json"
+python3 "$SETUP" commit-format --root "$T" | q '.commit_format == "emoji" and .source == ".commitlintrc.yml"' \
+  || fail "a non-conventional preset should stay emoji"
+
 # ── gh stub: state in $GH_STATE, calls in $GH_LOG ──────────────────────────────
 mkdir -p "$WORK/bin"
 cat > "$WORK/bin/gh" <<'PY'
@@ -275,6 +327,7 @@ q '[.items[] | {(.id): .status}] | add == {"I1":"Done","I2":"Building","I3":"Rev
   || fail "prune-empty must put every wiped status back: $(jq -c .items "$GH_STATE")"
 echo "$OUT" | q '.restored == 3' || fail "three cards should be restored: $OUT"
 BK=$(echo "$OUT" | jq -r .status_backup)
+command -v cygpath >/dev/null && BK=$(cygpath -u "$BK")  # Windows Python prints C:\...
 case "$BK" in "$WORK/.claude/super-board/backup/board-2-"*.json) ;; *) fail "backup path wrong: $BK" ;; esac
 q '. == {"I1":"Done","I2":"Building","I3":"Review","I4":null}' "$BK" || fail "backup must hold the pre-rewrite statuses: $(cat "$BK")"
 

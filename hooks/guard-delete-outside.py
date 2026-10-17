@@ -17,7 +17,9 @@ Its own errors never block a tool call: anything unexpected exits 0 with no outp
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 
 RM_CMDS = {"rm", "rmdir", "unlink", "trash"}
 TEMP_ROOTS = ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"]
@@ -86,7 +88,21 @@ def expand(word, env, local):
     s = re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)", var, s)
     if unknowable:
         return None
-    return s.replace("\0", "$")
+    return native(s.replace("\0", "$"))
+
+
+def native(path):
+    """Windows: a Git Bash path (/c/x, /tmp/x) as the C:/x path os.path compares."""
+    if os.name != "nt" or not path.startswith("/") or path.startswith("//"):
+        return path
+    drive = re.match(r"^/([A-Za-z])(/|$)", path)
+    if drive:
+        return drive.group(1).upper() + ":/" + path[3:]
+    try:
+        r = subprocess.run(["cygpath", "-m", path], capture_output=True, text=True, encoding="utf-8", timeout=5)
+        return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else path
+    except (OSError, subprocess.TimeoutExpired):
+        return path
 
 
 def under(path, root):
@@ -97,12 +113,14 @@ def verdict(path, project, env):
     """None when the deletion target is fine, else why it is not."""
     home = os.path.normpath(env.get("HOME", "")) if env.get("HOME") else None
     forms = {path, os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))}
-    if any(p == os.sep for p in forms) or (home and any(p == home for p in forms)):
+    if any(os.path.dirname(p) == p for p in forms) or (home and any(p == home for p in forms)):
         return "is the filesystem root or your home directory"
     roots = {project, os.path.realpath(project)}
     if any(under(p, r) for p in forms for r in roots):
         return None
     temps = TEMP_ROOTS + ([os.path.normpath(env["TMPDIR"])] if env.get("TMPDIR") else [])
+    if os.name == "nt":  # Git Bash's /tmp is the Windows temp dir
+        temps.append(os.path.normpath(tempfile.gettempdir()))
     if any(under(p, t) and p.rstrip(os.sep) != t.rstrip(os.sep) for p in forms for t in temps):
         return None
     return "is outside the project (%s)" % project
@@ -201,4 +219,10 @@ def main():
 
 
 if __name__ == "__main__":
+    # Windows pipes default to the ANSI code page; super-board text is UTF-8.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     main()

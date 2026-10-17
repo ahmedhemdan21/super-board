@@ -1,11 +1,10 @@
 ---
-type: regex
-pattern: 'err\|sentry\|4490'
-match: not_contains
-target:
-  source: file
-  path: .git/gh-calls.log
+type: tool_used
+tool: Bash
+input_match: 'super-collect-file\.sh.*err\|sentry\|4490'
+min: 0
+max: 0
 weight: 1
 ---
 
-WEB-4490 is already fixed, so it never reaches the filer (no dedupe lookup, no issue).
+WEB-4490 is already fixed, so it never reaches the filer (no plan line, no issue).

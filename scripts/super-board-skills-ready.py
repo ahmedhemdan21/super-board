@@ -203,7 +203,7 @@ def codex_disabled(config_path, root, home):
             elif not quote and char == '#':
                 return line[:index].strip()
         return line.strip()
-    for raw in config_path.read_text().splitlines():
+    for raw in config_path.read_text(encoding='utf-8').splitlines():
         line = uncomment(raw)
         if not line:
             continue
@@ -267,7 +267,7 @@ class Inventory:
         else:
             # Codex discovery stops at this independent repository's root.
             process = subprocess.run(['git', '-C', str(self.root), 'rev-parse', '--show-toplevel'],
-                                     text=True, capture_output=True)
+                                     text=True, encoding='utf-8', capture_output=True)
             boundary = Path(process.stdout.strip()).resolve() if process.returncode == 0 else self.root
             scoped = [self.root]
             if boundary in self.root.parents:
@@ -301,7 +301,7 @@ class Inventory:
                     self.disabled.clear()
                     self.catalog_only = True
         if catalog:
-            data = json.loads(Path(catalog).read_text())
+            data = json.loads(Path(catalog).read_text(encoding='utf-8'))
             if not isinstance(data, dict) or data.get('host') != host or not isinstance(data.get('skills'), list):
                 raise ValueError('unsupported active skill catalog: expected host and skills array')
             for entry in data['skills']:
@@ -326,7 +326,7 @@ class Inventory:
         settings = {}
         for path in [self.home / '.claude/settings.json', self.root / '.claude/settings.json', self.root / '.claude/settings.local.json']:
             if path.exists():
-                data = json.loads(path.read_text())
+                data = json.loads(path.read_text(encoding='utf-8'))
                 if not isinstance(data, dict):
                     raise ValueError('unsupported Claude settings: expected an object')
                 enabled = data.get('enabledPlugins', {})
@@ -336,7 +336,7 @@ class Inventory:
         manifest = self.home / '.claude/plugins/installed_plugins.json'
         if not manifest.exists():
             return
-        data = json.loads(manifest.read_text())
+        data = json.loads(manifest.read_text(encoding='utf-8'))
         if not isinstance(data, dict):
             raise ValueError('unsupported Claude installed plugin metadata: expected an object')
         plugins = data.get('plugins')
@@ -423,7 +423,7 @@ def hydrate(cards, root):
     helper = Path(__file__).with_name('super-board-github-read.py')
     def read_issue(number, kind, fields):
         process = subprocess.run([sys.executable, str(helper), '--kind', kind, '--', 'issue', 'view', str(number),
-                                  '--json', fields], cwd=root, text=True, capture_output=True)
+                                  '--json', fields], cwd=root, text=True, encoding='utf-8', capture_output=True)
         if process.returncode:
             print(process.stderr, file=sys.stderr, end='')
             raise SystemExit(process.returncode)
@@ -469,7 +469,7 @@ def main(argv=None):
             worker_name(name)
         if args.profile and args.lane:
             raise ValueError('--profile setup checks the full union; --lane requires selected cards')
-        cards = json.loads(sys.stdin.read() if args.cards == '-' else Path(args.cards).read_text()) if args.cards else None
+        cards = json.loads(sys.stdin.read() if args.cards == '-' else Path(args.cards).read_text(encoding='utf-8')) if args.cards else None
         if cards is not None and not isinstance(cards, list):
             raise ValueError('cards must be an array')
         if args.hydrate and cards is not None:
@@ -485,4 +485,10 @@ def main(argv=None):
         return 64
 
 if __name__ == '__main__':
+    # Windows pipes default to the ANSI code page; super-board text is UTF-8.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8')
+        except Exception:
+            pass
     sys.exit(main())
