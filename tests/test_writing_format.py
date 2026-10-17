@@ -109,13 +109,100 @@ def test_dispatcher_greps_the_standard_loop_subjects():
 
 
 def test_no_old_commit_shapes_in_templates():
-    old = re.compile(r"chore\(loop\)|wip\(loop\)|fix\(super-qa\)|feat\(super-qa\)|refine\(\$?\{?[a-z<]")
+    # chore(loop) is not here: it is the conventional-format Builder subject (§ 1).
+    old = re.compile(r"wip\(loop\)|fix\(super-qa\)|feat\(super-qa\)|refine\(\$?\{?[a-z<]")
     allowed = {"super-build-dispatch.sh"}  # documents and still accepts the legacy shapes
     for p in list((ROOT / "skills").rglob("*.md")) + list((ROOT / "skills").rglob("*.sh")) + list((ROOT / "workflows").glob("*.js")):
         if p.name in allowed or "visual" in p.parts:
             continue
         for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
             assert not old.search(line), f"old commit shape at {p.relative_to(ROOT)}:{n}: {line.strip()}"
+
+
+# ── conventional format (writing.commit_format) ──────────────────────────────
+
+HEADER = ROOT / "scripts" / "super-board-commit-header.py"
+
+
+def header(*args: str, cfg: dict | None = None) -> tuple[int, str]:
+    extra: list[str] = []
+    if cfg is not None:
+        import json, tempfile
+        f = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+        json.dump(cfg, f); f.close()
+        extra = ["--config", f.name]
+    r = subprocess.run([sys.executable, str(HEADER), args[0], *extra, *args[1:]],
+                       capture_output=True, text=True, encoding="utf-8")
+    return r.returncode, (r.stdout + r.stderr).strip()
+
+
+CONV = {"writing": {"commit_format": "conventional", "header_max": 110}}
+
+
+def test_conventional_header_validation():
+    good = ["fix(receipts): show a size error over 10 MB", "feat(chat)!: stream replies",
+            "chore(loop): close #42 — stream replies", "test(super-qa): iter 3 (2 bugs, 9 items, 1 PRs opened)",
+            "docs: explain the board"]
+    bad = ["🐛 [fix] receipts: show a size error",   # emoji shape
+           "wip(loop): #42 partial — schema",         # wip is not conventional
+           "ui(reports): new chart",                   # not a config-conventional type
+           "fix(receipts): Show a size error",         # subject upper-case start
+           "fix(receipts): show a size error.",        # trailing period
+           "fix(Receipts): show a size error"]         # scope not lower-case
+    for s in good:
+        assert header("check", s, cfg=CONV)[0] == 0, f"should pass: {s}"
+    for s in bad:
+        assert header("check", s, cfg=CONV)[0] == 65, f"should fail: {s}"
+
+
+def test_header_length_counts_the_pr_suffix():
+    h = "feat(chat): " + "x" * (110 - len("feat(chat): ") - len(" (#1234)"))
+    assert header("check", "--pr", "1234", h, cfg=CONV)[0] == 0
+    assert header("check", "--pr", "12345", h, cfg=CONV)[0] == 65, "the (#n) suffix must count"
+    assert header("check", "--pr", "1234", h + " (#1234)", cfg=CONV)[0] == 0, "an added suffix counts once"
+    assert header("check", h + "x", cfg=CONV)[0] == 65, "no --pr reserves 8 characters"
+    rc, out = header("check", "fix(a): " + "x" * 95, cfg={"writing": {"commit_format": "conventional"}})
+    assert rc == 65 and '"max": 100' in out, f"conventional default is 100: {out}"
+
+
+def test_mapping_to_conventional():
+    cases = {("feat", "chat", ""): "feat(chat): stream replies", ("ui", "chat", ""): "feat(chat): stream replies",
+             ("ui", "chat", "--repairs-bug"): "fix(chat): stream replies",
+             ("security", "auth", ""): "fix(auth): stream replies", ("security", "", ""): "fix(security): stream replies",
+             ("perf", "chat", ""): "perf(chat): stream replies", ("revert", "chat", ""): "revert(chat): stream replies"}
+    for (t, scope, fl), want in cases.items():
+        args = ["format", "--type", t, "--scope", scope, "--subject", "Stream replies."] + ([fl] if fl else [])
+        rc, out = header(*args, cfg=CONV)
+        assert rc == 0 and out == want, f"{t}/{scope}{fl}: {out}"
+    for t in ("feat", "fix", "chore", "refactor", "test", "perf", "docs", "ci", "ui", "security", "revert"):
+        assert f"`{t}`" in STANDARD.split("### Conventional format", 1)[1].split("## 2 · PR")[0], f"mapping lacks {t}"
+
+
+def test_wip_is_refused_in_conventional():
+    rc, out = header("format", "--type", "wip", "--scope", "loop", "--subject", "partial", cfg=CONV)
+    assert rc == 65 and "wip" in out
+    assert header("format", "--type", "wip", "--scope", "loop", "--subject", "x")[0] == 0, "emoji keeps wip"
+
+
+def test_emoji_default_is_unchanged():
+    rc, out = header("format", "--type", "fix", "--scope", "receipts", "--subject", "show a size error")
+    assert rc == 0 and out == "🐛 [fix] receipts: show a size error"
+    assert header("check", "🐛 [fix] receipts: show a size error")[0] == 0
+    assert header("check", "🐛 [fix] receipts: " + "x" * 80)[0] == 65
+    assert header("check", "fix(receipts): show a size error")[0] == 65
+
+
+def test_conventional_machine_subjects_match_the_dispatcher():
+    src = (ROOT / "skills" / "super-build" / "scripts" / "super-build-dispatch.sh").read_text(encoding="utf-8")
+    close_pat, wip_pat = (p.replace("$N", "42").replace("\\\\", "\\")
+                          for p in re.findall(r'grep -E "\^\[0-9a-f\]\+ (.*?)" \| head', src))
+    for pat, subject in ((close_pat, "chore(loop): close #42 — stream replies"),
+                         (wip_pat, "chore(loop): #42 partial — schema only")):
+        r = subprocess.run(["grep", "-E", "^[0-9a-f]+ " + pat], input=f"abc123 {subject}\n",
+                           capture_output=True, text=True)
+        assert r.returncode == 0, f"dispatcher misses {subject}"
+        assert f"`{subject.split(' — ')[0].replace('42', '<N>')} — " in STANDARD, f"standard lacks {subject}"
+        assert header("check", subject, cfg=CONV)[0] == 0
 
 
 # ── ticket ───────────────────────────────────────────────────────────────────

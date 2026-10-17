@@ -10,6 +10,7 @@ so step 1 (Checks) can say "Fixed for you" without asking anything.
     super-board-setup.py migrate-config <config.json> [--dry-run]     old config keys → v3 keys
     super-board-setup.py names   [--root DIR]                          two board-name suggestions
     super-board-setup.py branch  [--root DIR]                          branches, deploy source, recommendation
+    super-board-setup.py commit-format [--root DIR]                    writing.commit_format from commitlint
     super-board-setup.py board-rank    --owner O                       the user's boards, best column match first
     super-board-setup.py board-migrate (--config C | --owner O --number N --repo R) [--qa-all] [--prune-empty] [--root DIR] [--dry-run]
                                                                        columns + labels + Skipped → Done
@@ -74,7 +75,7 @@ OLD_SKILL_DIRS = ["super-refine", "cleanup-wt", "arch-loop"]
 BIN = ["super-board-project-verifier.py", "super-board-skills-ready.py", "super-board-host.sh", "super-board-codex-wave.sh", "super-board-codex-lane.sh", "super-board-calibration.py", "super-board-verification-ready.py", "super-board-github-read.py", "super-board-collect-state.py", "super-board-run.sh", "super-board-gh-guard.sh", "super-board-card.sh", "super-board-status.py", "super-board-wave-plan.sh",
        "super-board-deps.sh", "super-board-preflight.sh", "super-board-merge-gate.sh",
        "super-board-merge-policy.py", "super-board-approval.py", "super-board-env-check.sh", "super-board-agents-md.py",
-       "super-board-settings.py", "super-board-setup.py", "super-board-usage.sh", "super-board-pr-body.sh",
+       "super-board-settings.py", "super-board-setup.py", "super-board-usage.sh", "super-board-pr-body.sh", "super-board-commit-header.py",
        "super-review-file-refactor.sh", "super-qa-file-bug.sh", "super-board-stop.sh"]
 WORKFLOWS = ["super-board-wave.js", "ui-refine-loop.js"]
 HELPERS_CMD = "npx -y skills@latest add mattpocock/skills --skill '*' -a claude-code -y"
@@ -516,6 +517,25 @@ def branch(root):
             "default": default, "staging": staging, "deploy": deploy,
             "recommend": staging or "staging", "create_staging": staging is None,
             "create_command": None if staging else f"git push origin {default}:staging"}
+
+
+COMMITLINT_FILES = ["commitlint.config." + e for e in ("js", "cjs", "mjs", "ts", "cts", "mts")] + \
+    [".commitlintrc"] + [".commitlintrc." + e for e in ("json", "yaml", "yml", "js", "cjs", "mjs", "ts")]
+
+
+def commit_format(root):
+    """writing.commit_format for this project: "conventional" when a commitlint config extends
+    @commitlint/config-conventional, else "emoji". header_max = a literal header-max-length."""
+    found = [(f, read(os.path.join(root, f))) for f in COMMITLINT_FILES if os.path.isfile(os.path.join(root, f))]
+    pkg = load_json(os.path.join(root, "package.json")) or {}
+    if isinstance(pkg, dict) and pkg.get("commitlint") is not None:
+        found.append(("package.json", json.dumps(pkg["commitlint"])))
+    for src, body in found:
+        if "config-conventional" not in body:
+            continue
+        m = re.search(r"""['"]?header-max-length['"]?\s*:\s*\[\s*\d+\s*,\s*['"]?\w+['"]?\s*,\s*(\d+)\s*\]""", body)
+        return {"commit_format": "conventional", "header_max": int(m.group(1)) if m else None, "source": src}
+    return {"commit_format": "emoji", "header_max": None, "source": found[0][0] if found else None}
 
 
 # ── GitHub board: rank and migrate ────────────────────────────────────────────
@@ -984,6 +1004,8 @@ def main(argv):
             return out(names(root))
         if cmd == "branch":
             return out(branch(root))
+        if cmd == "commit-format":
+            return out(commit_format(root))
         if cmd == "board-rank":
             owner = flag(rest, "--owner")
             if not owner:

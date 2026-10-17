@@ -406,6 +406,19 @@
     ]
   },
 
+  // Commit and PR-title header shape (writing-standard.md § 1). Optional.
+  //   "emoji"        — default: `✨ [feat] scope: subject`, ≤ 72 chars.
+  //   "conventional" — `feat(scope)!: subject` for a project that lints with
+  //                    @commitlint/config-conventional. No `wip`; ui → feat/fix,
+  //                    security → fix. Onboard sets it when it finds that config.
+  // `header_max` is the header limit counted WITH GitHub's ` (#<PR>)` squash suffix
+  // (conventional only; default 100, onboard copies commitlint's header-max-length).
+  // Check a header: .claude/bin/super-board-commit-header.py check --config <cfg> "<h>".
+  "writing": {
+    "commit_format": "emoji",
+    "header_max": null
+  },
+
   "notifications": {
     // super-board sends no messages of its own: reports go to the session and to
     // the issue/PR timeline. `channel` and `chat_id` are reserved and unused.
