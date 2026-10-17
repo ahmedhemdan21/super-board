@@ -20,6 +20,8 @@
 #                              a `🚧 [wip] loop: #N partial` commit exists on the branch
 #   Subjects follow writing-standard.md § 1. The old `chore(loop):` / `wip(loop):` shapes
 #   are still accepted so a branch started before the switch is not read as a failure.
+#   A conventional-format project (writing.commit_format) writes `chore(loop): close #N`
+#   and `chore(loop): #N partial` — both match.
 #
 # Notes:
 #   - The dispatcher never merges, never closes the issue, never edits labels — those
@@ -157,7 +159,7 @@ if [[ "$BASE_SHA" != "$HEAD_SHA" ]]; then
   CLOSE_COMMIT=$(git -C "$WORKTREE_DIR" log --format="%H %s" "$COMMITS_RANGE" 2>/dev/null \
     | grep -E "^[0-9a-f]+ ([^ ]+ \[chore\] loop|chore\(loop\)): close #$N( |$)" | head -1 || true)
   WIP_COMMIT=$(git -C "$WORKTREE_DIR" log --format="%H %s" "$COMMITS_RANGE" 2>/dev/null \
-    | grep -E "^[0-9a-f]+ ([^ ]+ \[wip\] loop|wip\(loop\)): #$N partial" | head -1 || true)
+    | grep -E "^[0-9a-f]+ ([^ ]+ \[wip\] loop|wip\(loop\)|chore\(loop\)): #$N partial" | head -1 || true)
 fi
 
 # Detect HUMAN GATE in log

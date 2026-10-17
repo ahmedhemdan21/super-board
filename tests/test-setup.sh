@@ -109,6 +109,28 @@ echo "$OUT" | q '.create_staging == true and .deploy == "Vercel deploys main" an
 git -C "$T" branch staging
 python3 "$SETUP" branch --root "$T" | q '.staging == "staging" and .create_staging == false' || fail "existing staging should be used"
 
+# 6b — commit format: a commitlint config extending config-conventional proposes
+#      writing.commit_format "conventional" with its literal header-max-length;
+#      package.json "commitlint" counts; no commitlint (or another preset) stays emoji.
+T="$WORK/cl"; mkdir -p "$T"
+python3 "$SETUP" commit-format --root "$T" | q '.commit_format == "emoji" and .source == null' || fail "no commitlint should stay emoji"
+cat > "$T/commitlint.config.js" <<'JS'
+module.exports = {
+  extends: ['@commitlint/config-conventional'],
+  rules: { 'header-max-length': [2, 'always', 110] },
+};
+JS
+python3 "$SETUP" commit-format --root "$T" \
+  | q '.commit_format == "conventional" and .header_max == 110 and .source == "commitlint.config.js"' \
+  || fail "commitlint config-conventional should propose conventional, max 110"
+rm "$T/commitlint.config.js"
+echo '{"name":"x","commitlint":{"extends":["@commitlint/config-conventional"]}}' > "$T/package.json"
+python3 "$SETUP" commit-format --root "$T" | q '.commit_format == "conventional" and .header_max == null and .source == "package.json"' \
+  || fail "package.json commitlint should be detected"
+printf 'extends:\n  - "@commitlint/config-angular"\n' > "$T/.commitlintrc.yml"; rm "$T/package.json"
+python3 "$SETUP" commit-format --root "$T" | q '.commit_format == "emoji" and .source == ".commitlintrc.yml"' \
+  || fail "a non-conventional preset should stay emoji"
+
 # ── gh stub: state in $GH_STATE, calls in $GH_LOG ──────────────────────────────
 mkdir -p "$WORK/bin"
 cat > "$WORK/bin/gh" <<'PY'

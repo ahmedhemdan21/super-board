@@ -32,7 +32,7 @@ Co-Authored-By: …
 
 | Field | Rule | Required |
 |---|---|---|
-| Subject | `<emoji> [<type>] <scope>: <subject>` · imperative · ≤ 72 chars | yes |
+| Subject | `<emoji> [<type>] <scope>: <subject>` · imperative · ≤ 72 chars (conventional mode: see below) | yes |
 | Body | 1–4 short bullets: what changed, what proves it | yes, except trivial commits |
 | `Closes #N` | when the commit finishes a ticket | when it applies |
 | `--- decision ---` trailer | a rung-3 fork (super-build decision policy) | when it applies |
@@ -79,9 +79,60 @@ Example:
 Closes #790
 ```
 
+### Conventional format
+
+The project config picks the header shape: `writing.commit_format` is `"emoji"` (default,
+everything above) or `"conventional"`, for a project that lints with
+`@commitlint/config-conventional`. Onboard sets `"conventional"` when it finds that
+commitlint config. Only the header changes; the bullets, `Closes #N` and trailers stay.
+
+```
+fix(receipts): show a size error over 10 MB
+
+- 413 now shows "File too large"
+Closes #790
+```
+
+| Field | Rule |
+|---|---|
+| Header | `<type>(<scope>)!: <subject>` · `!` only for a breaking change · scope lower-case |
+| Subject | starts lower-case · imperative · no trailing period |
+| Length | header + ` (#<PR>)` ≤ `writing.header_max` (default 100; onboard copies commitlint's `header-max-length`) |
+| Types | `build` `chore` `ci` `docs` `feat` `fix` `perf` `refactor` `revert` `style` `test` |
+
+GitHub's squash subject is `<PR title> (#<PR>)`, so the length counts that suffix. Without a
+PR number yet, reserve 8 characters (` (#nnnn)`). Emoji mode keeps its ≤ 72 subject rule
+and adds no suffix.
+
+| super-board type | Conventional header |
+|---|---|
+| ✨ `feat` | `feat(<scope>)` |
+| 🐛 `fix` | `fix(<scope>)` |
+| 🔧 `chore` · ♻️ `refactor` · 🧪 `test` · ⚡ `perf` · 📝 `docs` · 👷 `ci` · ⏪ `revert` | same type |
+| 💄 `ui` | `feat(<scope>)`, or `fix(<scope>)` when it repairs a bug |
+| 🔒 `security` | `fix(<scope>)`; `fix(security)` when there is no other scope |
+| 🚧 `wip` | NEVER: config-conventional has no `wip`. Use the partial shapes below |
+
+Machine-read subjects in conventional mode (the dispatcher greps both formats):
+
+| Commit | Subject |
+|---|---|
+| Builder done | `chore(loop): close #<N> — <summary>` |
+| Builder partial | `chore(loop): #<N> partial — <slice or reason>` |
+| super-qa iteration done | `test(super-qa): iter <N> (<X> bugs, <Y> items, <Z> PRs opened)` |
+| super-qa checkpoint | `chore(super-qa): iter <N> partial — <one-liner>` |
+
+Check or build a header with `.claude/bin/super-board-commit-header.py`:
+`check --config <cfg> [--pr <N>] "<header>"` exits 65 with the reason when the header breaks
+the config's format; `format --config <cfg> --type <t> --scope <s> --subject "<s>" [--repairs-bug]`
+prints the header (exit 65 for `wip` in conventional mode). In conventional mode the merge
+gate adds the ` (#<PR>)` suffix GitHub would to `--subject`, then refuses (exit 64) a subject
+that fails `check`.
+
 ## 2 · PR
 
-**Title** = commit subject format: `🐛 [fix] receipts: show a size error over 10 MB`.
+**Title** = commit subject format: `🐛 [fix] receipts: show a size error over 10 MB`. In
+conventional mode it is the conventional header: `fix(receipts): show a size error over 10 MB`.
 
 **Body** = marker blocks, in this order. A lane rewrites only its own blocks, with
 `.claude/bin/super-board-pr-body.sh` (it refuses when the PR head moved since you read it).

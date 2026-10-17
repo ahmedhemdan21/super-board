@@ -144,7 +144,8 @@ There is **exactly one branch per issue** and **exactly one PR per issue**. All 
 ## PR description template
 
 Format: `writing-standard.md` § 2. Title = the commit subject format
-(`✨ [feat] chat: stream replies`). The body is marker blocks; each lane rewrites only its own
+(`✨ [feat] chat: stream replies`; with config `writing.commit_format: "conventional"` it is
+`feat(chat): stream replies`, checked by `.claude/bin/super-board-commit-header.py check --config <cfg>`). The body is marker blocks; each lane rewrites only its own
 with `.claude/bin/super-board-pr-body.sh --pr <P> --block <name> --expect-head <sha>
 (--body-file | --append-file) <md>`. The script refuses (exit 6) when the PR head moved since you
 read it — re-read, then redo the edit. Builder opens the PR with every block filled
@@ -310,7 +311,7 @@ column), never built unchecked. `qa` cards are not pre-flighted: nothing is buil
    (`merge_policy.auto_max_lines`, default 400 changed lines). Growing past it mid-build → stop,
    push what you have, propose the split (vertical slices via `/to-tickets`) in a PR comment and
    move the card to Blocked `❓` — never push on past the cap (super-build → "Keep each PR small").
-5. Commit + push (always). Commits follow writing-standard.md § 1 (`✨ [feat] chat: stream replies` + short bullets).
+5. Commit + push (always). Commits follow writing-standard.md § 1 (`✨ [feat] chat: stream replies` + short bullets; the conventional header when the config's `writing.commit_format` is `"conventional"`).
 6. Open draft PR linked to the issue with the PR description template (title in commit-subject format, every block filled).
 7. Follow [PR author notes](pr-author-notes.md), then post the `[builder] [report]` PR comment (see "Commenting cadence").
 8. Post a short status comment on the issue with the PR URL.
