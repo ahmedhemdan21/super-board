@@ -8,6 +8,7 @@ export const meta = {
     { title: 'Build', detail: 'Builder lifecycle (run.md): worktree, branch, draft PR' },
     { title: 'QA', detail: 'Tester lifecycle (run.md): test plan, evidence, screenshots' },
     { title: 'Review', detail: 'Reviewer lifecycle (run.md): gates, rerun tests, merge' },
+    { title: 'Deploy', detail: 'Post-merge dev check (run.md): deploy run, health, smoke; failure files a bug, never reverts' },
   ],
 }
 
@@ -17,6 +18,8 @@ export const meta = {
 //     lane: 'build' | 'qa' | 'review' — a Ready card labelled `qa` has lane 'qa'
 //     and skips the Builder; every other Ready card is built first (v3.0.0).
 //   tier: 'low' | 'medium' | 'high' (optional, default 'medium'),  // run model ladder
+//   deploy: true (optional) — config.deploy is set and deploy.branch is the base
+//     branch: every card the Reviewer merges gets the post-merge dev check.
 // }
 // The harness can deliver `args` as a JSON-encoded string (the tool param is
 // untyped) — normalize before validating.
@@ -143,6 +146,20 @@ const SKILLS_CHECK = (cards, lane) => [
   `Load the exact resolved_path files. Only declared fallback IDs are allowed. Before using a conditional/custom helper repeat this CLI with --require <exact-name>.`,
 ].join('\n')
 
+// QA targets (run.md → Tester step 2): pass one runs the PR's app locally when
+// config.qa.local is set, else tests the configured target URLs. The lane's Bash
+// calls are fresh shells, so the target script reprints the env on demand.
+const QA_TARGETS = (card) => {
+  const cmd = `bash .claude/bin/super-board-qa-target.sh`
+  const opts = `--config ${input.configPath} --issue ${card.number}`
+  return [
+    `QA targets (run.md → Tester step 2): config qa.local set → ${cmd} start ${opts} --worktree <your qa worktree>, then eval "$(${cmd} env ${opts})" at the top of every later Bash call.`,
+    `start exit 4 = the PR's app never became healthy: QA fail (bounce to Ready with the log path), not a Block. ALWAYS run ${cmd} stop ${opts} before you exit — pass, fail, block or error.`,
+    `No qa.local → ${cmd} check --config ${input.configPath}; exit 3 = a target is unhealthy → Block. Targets reach your tests as SB_TARGET_URL / SB_TARGET_<NAME> / BASE_URL.`,
+    `qa.auth_command set → eval "$(${cmd} auth ${opts})" and log in from SB_AUTH_FILE (JSON or Playwright storageState) instead of the Supabase admin-key bootstrap. Never print that file.`,
+  ]
+}
+
 const lanePrompt = (lane, card) => [
   SKILLS_CHECK([card], lane),
   READ_FAILURE,
@@ -153,6 +170,10 @@ const lanePrompt = (lane, card) => [
   BOARD_IO(),
   `Commits, PR title, PR body blocks, comments: .claude/skills/super-board/references/writing-standard.md. Rewrite only your own PR body blocks, with .claude/bin/super-board-pr-body.sh.`,
   ...(lane === 'review' ? REVIEW_MEMORY : []),
+  ...(lane === 'review' && input.deploy
+    ? [`Do not run the post-merge dev check yourself: after you return Done, this wave's Deploy step runs it.`]
+    : []),
+  ...(lane === 'qa' ? QA_TARGETS(card) : []),
   ...(lane === 'qa' && card.status === 'Ready'
     ? [`This card is labelled qa: it skips Building. Move it Ready → QA yourself, create the issue branch from the base branch, and test what is already there (run.md → "qa cards").`]
     : []),
@@ -285,6 +306,46 @@ const preflightExit = (card) => {
   }
 }
 
+// Post-merge dev check (run.md → "Post-merge dev check"). QA pass two: after the
+// Reviewer merges into the deploy branch, a cheap agent waits for the deploy
+// workflow run of the merge commit, checks health + version and runs smoke —
+// all inside super-board-deploy-wait.sh. A failure files a bug card linked to
+// this card and PR; the PR stays merged and the card stays Done. The script's
+// `post_deploy_checks` function is where later checks on the deployed build go.
+const DEPLOY_SCHEMA = {
+  type: 'object',
+  properties: {
+    status: { type: 'string', enum: ['healthy', 'skipped', 'failed', 'halted'] },
+    bug: { type: 'integer' },
+    detail: { type: 'string' },
+  },
+  required: ['status', 'detail'],
+}
+const deployModel = (input.tier || 'medium') === 'low' ? 'haiku' : 'sonnet'
+const deployPrompt = (card, review) => [
+  SKILLS_CHECK([card]),
+  READ_FAILURE,
+  `Post-merge dev check for issue #${card.number} ("${card.title}"), merged PR ${review.prUrl || '(the merged PR that closes this issue)'}. Config: ${input.configPath}.`,
+  `Read .claude/skills/super-board/references/run.md → "Post-merge dev check" and follow it. You write no code and move no card.`,
+  `Run: bash .claude/bin/super-board-deploy-wait.sh --config ${input.configPath} --pr <PR number> --issue ${card.number} --budget-s 540`,
+  `Exit 75 = still waiting: run the same command again (the timeout clock carries over) until it exits with anything else.`,
+  `Exit 0 → status healthy, or skipped when its output says skipped. 10 → failed, bug = the number after "bug: #". 11 → failed, no bug filed (say why). 79 → halted.`,
+  `In every case the PR stays merged and the card stays Done: never revert, reopen, block or move anything. detail = the script's last line.`,
+].join('\n')
+const runDeploy = async (card, review) => {
+  if (halted) return { status: 'halted', detail: 'run halted before the post-merge dev check' }
+  const r = await agent(deployPrompt(card, review), {
+    label: `deploy:#${card.number}`,
+    phase: 'Deploy',
+    model: deployModel,
+    schema: DEPLOY_SCHEMA,
+  })
+  const result = r || { status: 'failed', detail: 'deploy agent returned no result' }
+  if (result.status === 'halted') halted = true
+  return result
+}
+const merged = (r) => r && r.status === 'advanced' && String(r.column || '').toLowerCase() === 'done'
+
 const results = await pipeline(
   input.cards,
   // Stage 1: classify cards entering at Ready (router for model tiering)
@@ -334,7 +395,10 @@ const results = await pipeline(
     if (at === 'Review') {
       // Reviewer always on session model. No lane-level serialisation: the merge
       // gate holds the mutex for the merge alone (see the note above).
-      await runLane('review', card, undefined, history)
+      const rv = await runLane('review', card, undefined, history)
+      if (input.deploy && merged(rv)) {
+        return { number: card.number, history, deploy: await runDeploy(card, rv) }
+      }
     }
     return { number: card.number, history }
   }
@@ -351,7 +415,9 @@ const summary = results.filter(Boolean).map((r) => {
     detail: last.detail,
     prUrl: last.prUrl || null,
     priorFindings: last.priorFindings || null,
-    lanesRun: r.history.map((h) => `${h.lane}:${h.status}`).join(' → ') || 'none',
+    // The dev check never changes finalStatus: a merged card stays Done.
+    deploy: r.deploy || null,
+    lanesRun: [...r.history.map((h) => `${h.lane}:${h.status}`), ...(r.deploy ? [`deploy:${r.deploy.status}`] : [])].join(' → ') || 'none',
   }
 })
 log(`wave complete: ${summary.length} cards — ` +
