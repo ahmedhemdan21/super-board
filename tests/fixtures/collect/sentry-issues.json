@@ -7,7 +7,7 @@
   "permalink": "https://acme.sentry.io/issues/4411/"},
  {"id": "4490", "shortId": "WEB-4490", "title": "TypeError: Cannot read properties of null (reading 'url')",
   "culprit": "src/profile/Avatar.tsx in Avatar", "level": "error", "isUnhandled": true,
-  "status": "unresolved", "substatus": "ongoing", "count": "9", "userCount": 4,
+  "status": "resolved", "substatus": null, "count": "9", "userCount": 4,
   "firstSeen": "{{ago:13d}}", "lastSeen": "{{ago:11d}}",
   "stats": {"24h": [[0, 0]]},
   "permalink": "https://acme.sentry.io/issues/4490/"},
