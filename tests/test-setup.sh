@@ -109,6 +109,27 @@ echo "$OUT" | q '.create_staging == true and .deploy == "Vercel deploys main" an
 git -C "$T" branch staging
 python3 "$SETUP" branch --root "$T" | q '.staging == "staging" and .create_staging == false' || fail "existing staging should be used"
 
+# 6b — .NET + pnpm/turbo in subdirectories: stacks and the checks their CI documents;
+#      a self-hosted runner with docker compose is a deploy signal, its push branch a target.
+T="$WORK/dn"; cp -R "$PACK/tests/fixtures/dotnet-pnpm" "$T"
+OUT=$(python3 "$SETUP" stack --root "$T")
+echo "$OUT" | q '[.stacks[] | "\(.stack):\(.dir)"] == ["dotnet:backend","pnpm:frontend","turbo:frontend"]' || fail "stacks wrong: $OUT"
+echo "$OUT" | q '.verify_commands | index("cd backend && dotnet format PrimeCore.Platform.slnx --verify-no-changes") != null' || fail "dotnet format from CI: $OUT"
+echo "$OUT" | q '.verify_commands | index("cd backend && dotnet test PrimeCore.Platform.slnx --no-build -c Release --filter \"Category=Integration\"") != null' || fail "block run: lines: $OUT"
+echo "$OUT" | q '.verify_commands | index("cd frontend && pnpm type-check") != null' || fail "pnpm from frontend CI: $OUT"
+echo "$OUT" | q '[.verify_commands[] | select(test("nuget|docker|\\$\\{"))] | length == 0' || fail "publish/deploy steps are not checks: $OUT"
+echo "$OUT" | q '.unresolved == []' || fail "every stack is covered: $OUT"
+rm -rf "$T/frontend/.github"
+OUT=$(python3 "$SETUP" stack --root "$T")
+echo "$OUT" | q '[.verify_commands[] | select(startswith("cd frontend"))] == ["cd frontend && pnpm run lint","cd frontend && pnpm run type-check","cd frontend && pnpm run test","cd frontend && pnpm run format:check"]' \
+  || fail "no CI falls back to package.json scripts: $OUT"
+rm -rf "$T/backend/.github/workflows/ci.yml"
+python3 "$SETUP" stack --root "$T" | q '[.unresolved[] | .stack] == ["dotnet"]' || fail "a stack with no documented check is unresolved, never invented"
+git -C "$T" init -q -b main; git -C "$T" add . && git -C "$T" -c user.email=t@t -c user.name=t commit -qm init
+OUT=$(python3 "$SETUP" branch --root "$T")
+echo "$OUT" | q '(.deploy | startswith("self-hosted compose (backend/.github/workflows/deploy.yml deploys dev)")) and .target_env_branches == ["dev"]' \
+  || fail "self-hosted compose deploy signal: $OUT"
+
 # ── gh stub: state in $GH_STATE, calls in $GH_LOG ──────────────────────────────
 mkdir -p "$WORK/bin"
 cat > "$WORK/bin/gh" <<'PY'

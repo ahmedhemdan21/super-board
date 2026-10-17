@@ -131,14 +131,19 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
 0. SILENT DETECT (no questions, nothing printed but the start screen)
    ├─ answers file, .claude/super-board/configs/*.json → resume / re-run screens
    ├─ instruction files: python3 $SB/super-board-agents-md.py detect
-   ├─ manifests + README (board names), branches + deploy signals ($SB/super-board-setup.py branch)
+   ├─ manifests + README (board names), branches + deploy signals ($SB/super-board-setup.py branch;
+   │    a self-hosted runner + docker compose workflow reports its push branch in target_env_branches)
+   ├─ stacks, root or one level down: $SB/super-board-setup.py stack (.slnx/.sln/.csproj/global.json,
+   │    pnpm-workspace.yaml, turbo.json, package.json, pyproject.toml) with the checks their CI
+   │    `run:` steps or package.json scripts document; `unresolved` stacks have none
    ├─ migration dirs (supabase/migrations, prisma/migrations, drizzle, **/migrations/*.sql,
-   │    db/migrate, alembic/versions) and migrate scripts in the manifest (db:migrate, …)
+   │    db/migrate, alembic/versions, EF Core **/Migrations/*.cs) and migrate scripts in the manifest (db:migrate, …)
    ├─ collect signals: Sentry (@sentry/* / sentry-sdk in manifests, Sentry.init(, .sentryclirc),
    │    PostHog (posthog-js / posthog-node / posthog, posthog.init(, NEXT_PUBLIC_POSTHOG_* names);
    │    key names: bash $SB/super-board-env-check.sh SENTRY_AUTH_TOKEN POSTHOG_PERSONAL_API_KEY
    ├─ verification commands: preserve valid `verify_commands`; otherwise inspect the owning
-   │    project's documented checks and stage those commands. Unresolved checks are a setup
+   │    project's documented checks (start from `stack` → verify_commands, each with its
+   │    source file) and stage those commands. Unresolved checks are a setup
    │    halt. Never save placeholders or invent a universal runner.
    ├─ project verifier: detect `.agents/skills/verify-*/SKILL.md` and feature maps.
    │    For creation or upkeep read `../../super-qa/references/project-verifier.md`;

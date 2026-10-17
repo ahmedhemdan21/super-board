@@ -1,0 +1,16 @@
+name: ci
+on:
+  pull_request:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: dotnet restore PrimeCore.Platform.slnx
+      - run: dotnet build PrimeCore.Platform.slnx --no-restore -c Release
+      - run: dotnet format PrimeCore.Platform.slnx --verify-no-changes
+      - name: test
+        run: |
+          dotnet test PrimeCore.Platform.slnx --no-build -c Release --filter "Category!=Integration"
+          dotnet test PrimeCore.Platform.slnx --no-build -c Release --filter "Category=Integration"
+      - run: dotnet nuget push out/*.nupkg --api-key ${{ secrets.NUGET }}

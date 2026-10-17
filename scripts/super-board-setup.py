@@ -10,6 +10,8 @@ so step 1 (Checks) can say "Fixed for you" without asking anything.
     super-board-setup.py migrate-config <config.json> [--dry-run]     old config keys → v3 keys
     super-board-setup.py names   [--root DIR]                          two board-name suggestions
     super-board-setup.py branch  [--root DIR]                          branches, deploy source, recommendation
+    super-board-setup.py stack   [--root DIR]                          stacks (.NET, pnpm, turbo, node, python) and
+                                                                       the checks their CI / package.json documents
     super-board-setup.py board-rank    --owner O                       the user's boards, best column match first
     super-board-setup.py board-migrate (--config C | --owner O --number N --repo R) [--qa-all] [--prune-empty] [--root DIR] [--dry-run]
                                                                        columns + labels + Skipped → Done
@@ -500,7 +502,7 @@ def branch(root):
     head = git("symbolic-ref", "--short", "refs/remotes/origin/HEAD").stdout.strip().split("/", 1)[-1]
     default = head or ("main" if "main" in allb else ("master" if "master" in allb else (local[0] if local else "main")))
     staging = next((b for b in ("staging", "develop", "dev") if b in allb), None)
-    deploy = None
+    deploy, target_branches = None, []
     if os.path.exists(os.path.join(root, "vercel.json")) or os.path.isdir(os.path.join(root, ".vercel")):
         deploy = f"Vercel deploys {default}"
     elif os.path.exists(os.path.join(root, "netlify.toml")):
@@ -512,10 +514,142 @@ def branch(root):
                     rf"branches:\s*\[?\s*['\"]?{re.escape(default)}\b", body):
                 deploy = f"{os.path.basename(wf)} deploys {default}"
                 break
-    return {"git": True, "branches": [b for b in allb if not b.startswith(("issue-", "feat/", "fix/"))][:8],
+    if deploy is None:
+        for wf in workflow_files(root):
+            body = read(wf)
+            if SELF_HOSTED_RE.search(body) and COMPOSE_RE.search(body):
+                target_branches = push_branches(body)
+                deploy = f"self-hosted compose ({os.path.relpath(wf, root).replace(os.sep, '/')}" + (
+                    f" deploys {', '.join(target_branches)})" if target_branches else ")")
+                break
+    return {"git": True, "target_env_branches": target_branches, "branches": [b for b in allb if not b.startswith(("issue-", "feat/", "fix/"))][:8],
             "default": default, "staging": staging, "deploy": deploy,
             "recommend": staging or "staging", "create_staging": staging is None,
             "create_command": None if staging else f"git push origin {default}:staging"}
+
+
+# ── Stack detection and documented checks ─────────────────────────────────────
+
+SELF_HOSTED_RE = re.compile(r"runs-on:.*(?:self-hosted|vars\.RUNNER_LABEL)", re.I)
+COMPOSE_RE = re.compile(r"docker[ -]compose\b")
+CHECK_TOOLS = re.compile(r"^(?:cd \S+ && )?(?:dotnet|pnpm|npx turbo|turbo|npm|yarn|bun)\s")
+NOT_A_CHECK = re.compile(r"\b(?:publish|push|deploy|login|pack|nuget|docker|release|workload)\b|\$\{\{")
+PKG_CHECKS = ("lint", "type-check", "typecheck", "test", "format:check", "build")
+SKIP_DIRS = {"node_modules", "bin", "obj", "dist", "build", "out", "vendor"}
+
+
+def workflow_files(root):
+    """CI workflows of the repo and of a project one level down (backend/.github/…)."""
+    found = glob.glob(os.path.join(root, ".github", "workflows", "*.y*ml"))
+    found += glob.glob(os.path.join(root, "*", ".github", "workflows", "*.y*ml"))
+    return sorted(found)
+
+
+def push_branches(body):
+    """`on.push.branches` of a workflow, inline list or block list."""
+    m = re.search(r"^\s*push:\s*\n(?:\s*#.*\n)*\s*branches:\s*(\[[^\]]*\]|(?:\n\s*-\s*.+)+)", body, re.M)
+    if not m:
+        return []
+    items = (b.strip().lstrip("-").strip().strip("'\"") for b in re.split(r"[,\n]", m.group(1).strip("[] \n")))
+    return [b for b in items if b]
+
+
+def workflow_checks(body):
+    """Check commands from a workflow's `run:` steps, prefixed with their working-directory."""
+    lines, out = body.splitlines(), []
+    default_wd = ""
+    m = re.search(r"^defaults:\s*\n\s+run:\s*\n\s+working-directory:\s*(\S+)", body, re.M)
+    if m:
+        default_wd = m.group(1).strip("'\"")
+    i = 0
+    while i < len(lines):
+        m = re.match(r"^(\s*)(?:-\s+)?run:\s*(.*)$", lines[i])
+        if not m:
+            i += 1
+            continue
+        indent, first = len(m.group(1)), m.group(2).strip()
+        cmds = []
+        if first in ("|", ">", "|-", ">-"):
+            i += 1
+            while i < len(lines) and (not lines[i].strip() or len(lines[i]) - len(lines[i].lstrip()) > indent):
+                if lines[i].strip() and not lines[i].strip().startswith("#"):
+                    cmds.append(lines[i].strip())
+                i += 1
+        else:
+            cmds.append(first.strip("'\""))
+            i += 1
+        wd = default_wd
+        for j in range(max(0, i - 8), min(len(lines), i + 4)):  # the step's own working-directory
+            w = re.match(r"^\s*working-directory:\s*(\S+)", lines[j])
+            if w:
+                wd = w.group(1).strip("'\"")
+        for c in cmds:
+            if NOT_A_CHECK.search(c):
+                continue
+            c = f"cd {wd} && {c}" if wd and wd != "." else c
+            if CHECK_TOOLS.match(c):
+                out.append(c)
+    return out
+
+
+def stack(root):
+    """Which stacks live here (root or one level down) and the checks they document.
+
+    Commands come only from CI `run:` steps (dotnet / pnpm / turbo / npm …) or, for a
+    Node project without CI, its package.json check scripts. Nothing is invented: a stack
+    with no documented check is listed under `unresolved` for onboard to ask about.
+    """
+    dirs = [root] + sorted(d for d in glob.glob(os.path.join(root, "*"))
+                           if os.path.isdir(d) and os.path.basename(d) not in SKIP_DIRS
+                           and not os.path.basename(d).startswith("."))
+    stacks = []
+    for d in dirs:
+        rel = os.path.relpath(d, root).replace(os.sep, "/")
+        has = lambda *pats: next((os.path.basename(f) for pat in pats for f in glob.glob(os.path.join(d, pat))), None)
+        found = {}
+        if has("*.slnx", "*.sln", "*.csproj", "global.json"):
+            found["dotnet"] = has("*.slnx", "*.sln", "*.csproj", "global.json")
+        if has("pnpm-workspace.yaml"):
+            found["pnpm"] = "pnpm-workspace.yaml"
+        if has("turbo.json"):
+            found["turbo"] = "turbo.json"
+        if has("package.json") and "pnpm" not in found:
+            found["node"] = "package.json"
+        if has("pyproject.toml"):
+            found["python"] = "pyproject.toml"
+        for kind, marker in found.items():
+            stacks.append({"stack": kind, "dir": rel, "marker": marker})
+    commands, seen = [], set()
+    for wf in workflow_files(root):
+        rel_wf = os.path.relpath(wf, root).replace(os.sep, "/")
+        sub = rel_wf.split("/.github/")[0] if not rel_wf.startswith(".github/") else ""
+        for c in workflow_checks(read(wf)):
+            c = f"cd {sub} && {c}" if sub else c
+            if c not in seen:
+                seen.add(c)
+                commands.append({"cmd": c, "source": rel_wf})
+    unresolved = []
+    for st in stacks:
+        prefix = "" if st["dir"] == "." else f"cd {st['dir']} && "
+        tool = {"dotnet": "dotnet", "pnpm": "pnpm", "turbo": "turbo"}.get(st["stack"])
+        covered = any(c["cmd"].startswith(prefix) and (not tool or tool in c["cmd"]) for c in commands) \
+            if prefix else any(not c["cmd"].startswith("cd ") and (not tool or tool in c["cmd"]) for c in commands)
+        if covered:
+            continue
+        if st["stack"] in ("pnpm", "node"):
+            scripts = (load_json(os.path.join(root, st["dir"], "package.json")) or {}).get("scripts") or {}
+            runner = "pnpm" if st["stack"] == "pnpm" else "npm"
+            picked = [f"{prefix}{runner} run {k}" for k in PKG_CHECKS if k in scripts]
+            if picked:
+                for c in picked:
+                    if c not in seen:
+                        seen.add(c)
+                        commands.append({"cmd": c, "source": f"{st['dir']}/package.json".lstrip("./")})
+                continue
+        if st["stack"] != "turbo":
+            unresolved.append(st)
+    return {"stacks": stacks, "verify_commands": [c["cmd"] for c in commands],
+            "sources": commands, "unresolved": unresolved}
 
 
 # ── GitHub board: rank and migrate ────────────────────────────────────────────
@@ -984,6 +1118,8 @@ def main(argv):
             return out(names(root))
         if cmd == "branch":
             return out(branch(root))
+        if cmd == "stack":
+            return out(stack(root))
         if cmd == "board-rank":
             owner = flag(rest, "--owner")
             if not owner:
