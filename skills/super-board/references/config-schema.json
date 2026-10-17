@@ -184,7 +184,7 @@
   "migrations": {
     "globs": ["supabase/migrations/**", "prisma/migrations/**", "drizzle/**",
               "**/migrations/*.sql", "db/migrate/**", "alembic/versions/**",
-              "**/Migrations/*.cs"],
+              "**/Migrations/**/*.cs"],
     // Paths a glob matches that are not migrations. Default: EF Core's generated
     // designer and snapshot ("**/*.Designer.cs", "**/*ModelSnapshot.cs").
     "exclude": ["**/*.Designer.cs", "**/*ModelSnapshot.cs"],

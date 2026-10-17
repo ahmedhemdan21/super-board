@@ -509,13 +509,16 @@ EF=$(jq -cn '{labels: [], body: "", files: [
   {path: "src/Modules/Billing/Persistence/Migrations/20260101_AddInvoice.cs", additions: 50, deletions: 0},
   {path: "src/Modules/Billing/Persistence/Migrations/20260101_AddInvoice.Designer.cs", additions: 900, deletions: 0},
   {path: "src/Modules/Billing/Persistence/Migrations/BillingDbContextModelSnapshot.cs", additions: 900, deletions: 0},
+  {path: "src/Infrastructure/PrimeCore.Persistence/Migrations/TenantStore/20260102_AddTenant.cs", additions: 40, deletions: 0},
+  {path: "src/Infrastructure/PrimeCore.Persistence/Migrations/TenantStore/20260102_AddTenant.Designer.cs", additions: 900, deletions: 0},
+  {path: "src/Infrastructure/PrimeCore.Persistence/Migrations/TenantStore/TenantStoreDbContextModelSnapshot.cs", additions: 900, deletions: 0},
   {path: "src/Api/packages.lock.json", additions: 900, deletions: 0},
   {path: "frontend/pnpm-lock.yaml", additions: 900, deletions: 0},
   {path: "src/Api/Program.cs", additions: 10, deletions: 0}]}')
 printf '%s' "$EF" > "$T26/m.json"
 OUT=$(python3 "$P" --config "$T26/c.json" --meta "$T26/m.json" --diff /dev/null)
-echo "$OUT" | jq -e '.migrations == ["src/Modules/Billing/Persistence/Migrations/20260101_AddInvoice.cs"]' >/dev/null \
-  || fail "only the EF migration (not Designer/ModelSnapshot) is a migration, got: $OUT"
+echo "$OUT" | jq -e '.migrations == ["src/Modules/Billing/Persistence/Migrations/20260101_AddInvoice.cs","src/Infrastructure/PrimeCore.Persistence/Migrations/TenantStore/20260102_AddTenant.cs"]' >/dev/null \
+  || fail "only the EF migrations, nested folders too (not Designer/ModelSnapshot) is a migration, got: $OUT"
 echo "$OUT" | jq -e '[.human[] | select(.category == "size")] | length == 0' >/dev/null \
   || fail "EF generated files and lockfiles must not count toward the size cap, got: $OUT"
 rm -rf "$T26"

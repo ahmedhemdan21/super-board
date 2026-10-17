@@ -67,8 +67,8 @@ DEFAULT_ALWAYS_HUMAN = {
 DEFAULT_MIGRATION_GLOBS = [
     "supabase/migrations/**", "prisma/migrations/**", "drizzle/**",
     "**/migrations/*.sql", "db/migrate/**", "alembic/versions/**",
-    # EF Core: src/Modules/X/Persistence/Migrations/20260101_Add.cs
-    "**/Migrations/*.cs",
+    # EF Core: src/Modules/X/Persistence/Migrations/20260101_Add.cs, also Migrations/<Context>/*.cs
+    "**/Migrations/**/*.cs",
 ]
 # Matched by a migration glob but not a migration: EF Core's generated designer
 # and model snapshot. They fall back to size counting (and size_exclude below).

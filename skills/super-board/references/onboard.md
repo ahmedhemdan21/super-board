@@ -137,7 +137,7 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    │    pnpm-workspace.yaml, turbo.json, package.json, pyproject.toml) with the checks their CI
    │    `run:` steps or package.json scripts document; `unresolved` stacks have none
    ├─ migration dirs (supabase/migrations, prisma/migrations, drizzle, **/migrations/*.sql,
-   │    db/migrate, alembic/versions, EF Core **/Migrations/*.cs) and migrate scripts in the manifest (db:migrate, …)
+   │    db/migrate, alembic/versions, EF Core **/Migrations/**/*.cs) and migrate scripts in the manifest (db:migrate, …)
    ├─ collect signals: Sentry (@sentry/* / sentry-sdk in manifests, Sentry.init(, .sentryclirc),
    │    PostHog (posthog-js / posthog-node / posthog, posthog.init(, NEXT_PUBLIC_POSTHOG_* names);
    │    key names: bash $SB/super-board-env-check.sh SENTRY_AUTH_TOKEN POSTHOG_PERSONAL_API_KEY
