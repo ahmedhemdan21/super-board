@@ -13,6 +13,8 @@ trap 'rm -rf "$T"' EXIT
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 OLD="2020-01-01T00:00:00"
 GH_STUB="$T/gh"; printf '#!/bin/sh\necho "[]"\n' > "$GH_STUB"; chmod +x "$GH_STUB"
+# Windows Python cannot exec a #! script; a .bat stub answers the same.
+if command -v cygpath >/dev/null; then GH_STUB="$T/gh.bat"; printf '@echo []\r\n' > "$GH_STUB"; fi
 export CLEANUP_WT_GH="$GH_STUB"
 
 git init -q --bare -b trunk "$T/origin.git"

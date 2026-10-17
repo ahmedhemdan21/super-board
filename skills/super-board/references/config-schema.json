@@ -419,8 +419,21 @@
       "patterns": ["primecore-prod-"],
       "hosts": [],
       "ports": [25432, 28200, 18080],
-      "message": "Dev and prod share one server; only dev (primecore-dev-*) is in scope."
+      "message": "Dev and prod share one server; only the dev containers (primecore-*, never primecore-prod-*) are in scope."
     }
+  },
+
+  // Commit and PR-title header shape (writing-standard.md § 1). Optional.
+  //   "emoji"        — default: `✨ [feat] scope: subject`, ≤ 72 chars.
+  //   "conventional" — `feat(scope)!: subject` for a project that lints with
+  //                    @commitlint/config-conventional. No `wip`; ui → feat/fix,
+  //                    security → fix. Onboard sets it when it finds that config.
+  // `header_max` is the header limit counted WITH GitHub's ` (#<PR>)` squash suffix
+  // (conventional only; default 100, onboard copies commitlint's header-max-length).
+  // Check a header: .claude/bin/super-board-commit-header.py check --config <cfg> "<h>".
+  "writing": {
+    "commit_format": "emoji",
+    "header_max": null
   },
 
   "notifications": {

@@ -175,7 +175,7 @@ class SentryFixture(unittest.TestCase):
             _, quiet = run("check", "4490", "--after", fix_merged)
         self.assertTrue(live["seenAfter"])
         self.assertFalse(quiet["seenAfter"])
-        self.assertIsNone(quiet["seenAfterRelease"])  # unresolved in Sentry: no release to compare
+        self.assertFalse(quiet["seenAfterRelease"])  # resolved in web@1.4.0, not seen since
 
     def test_missing_fixture_is_unavailable_not_empty(self):
         with cli(sn, {"sentry": dict(SENTRY, project="mobile")}) as (run, _):

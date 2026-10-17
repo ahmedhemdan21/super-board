@@ -21,7 +21,9 @@ Run **one iteration** of the loop:
    push children to the back of the queue.
 3. **Report** — write `docs/super-qa/iter/iteration-N.md`, regenerate
    `docs/super-qa/report/QA-REPORT.md`, commit `🧪 [test] super-qa: iter N (X bugs, Y items, Z PRs opened)`,
-   exit cleanly.
+   exit cleanly. With config `writing.commit_format: "conventional"` every commit header is
+   conventional instead: `test(super-qa): iter N (…)`, checkpoints `chore(super-qa): iter N partial — …`
+   (writing-standard.md § 1, no `wip`).
 
 ## Your iteration
 

@@ -7,7 +7,10 @@
 # Model: --codex=<model>, else codex.model, else CODEX_LADDERS[tier][complexity]
 # when --tier is given (an ungraded card takes the medium cell), else Codex's default.
 set -euo pipefail
-exec python3 - "${BASH_SOURCE[0]}" "$@" <<'PY'
+# --script keeps this path out of the first argument slot: the Windows Python install
+# manager runs a first file argument by its #! line (bash) instead of reading stdin.
+# -X utf8: prompts and results are UTF-8, not the Windows ANSI code page.
+exec python3 -X utf8 - --script "${BASH_SOURCE[0]}" "$@" <<'PY'
 import argparse
 import importlib.util
 import json
@@ -28,7 +31,7 @@ parser.add_argument('--card', required=True, help='card JSON or a JSON file')
 parser.add_argument('--lane', required=True, choices=['build', 'qa', 'review'])
 parser.add_argument('--tier', choices=['low', 'medium', 'high'], help='run ladder (--low / default / --high)')
 parser.add_argument('--complexity', choices=['low', 'medium', 'high'], help="router's grade for this card")
-raw = sys.argv[2:]
+raw = sys.argv[3:]
 explicit = False
 model = None
 rest = []
@@ -43,7 +46,7 @@ for arg in raw:
     else:
         rest.append(arg)
 args = parser.parse_args(rest)
-script_path = Path(sys.argv[1]).resolve()
+script_path = Path(sys.argv[2]).resolve()
 if args.lane == 'review' and not explicit:
     fail('Codex review refused: run must be started with explicit --codex; usage fallback cannot review.', 78)
 try:
@@ -100,6 +103,9 @@ helper = script_path.with_name('super-board-github-read.py')
 if not helper.exists() or subprocess.run([sys.executable, str(helper), '--check']).returncode:
     result('halted', 'required GitHub reads halted or helper missing; preserve claims and worktrees')
     sys.exit(79)
+spec = importlib.util.spec_from_file_location('github_read', helper)
+github_read = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(github_read)
 
 resolver_path = script_path.with_name('super-board-skills-ready.py')
 try:
@@ -176,15 +182,15 @@ with tempfile.TemporaryDirectory(prefix='super-board-codex-') as temporary:
     filesystem = {':root': 'read', ':slash_tmp': 'write', ':tmpdir': 'write',
                   str(root): 'write', str(git_dir): 'write', str(common_dir): 'write'}
     grants = '{' + ', '.join(json.dumps(key) + '=' + json.dumps(value) for key, value in filesystem.items()) + '}'
-    command = ['codex', 'exec', '-C', str(root), '-c', 'approval_policy="never"',
+    command = ['exec', '-C', str(root), '-c', 'approval_policy="never"',
                '-c', 'default_permissions="super-board-lane"',
                '-c', 'permissions.super-board-lane.filesystem=' + grants,
                '-c', 'permissions.super-board-lane.network.enabled=true',
                '--output-schema', str(schema_path), '--output-last-message', str(output), '-']
     if model and model.strip():
-        command[2:2] = ['-m', model]
+        command[1:1] = ['-m', model]
     try:
-        child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=sys.stderr, text=True)
+        child = subprocess.Popen(github_read.command('codex', command), stdin=subprocess.PIPE, stdout=sys.stderr, text=True)
         child.communicate(prompt)
         require_verification_ready()
         if child.returncode:

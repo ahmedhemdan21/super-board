@@ -2,13 +2,17 @@
 """Exercise project-map inspection and selection through the shipped CLI."""
 import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 
 KIT = Path(__file__).resolve().parents[1]
+# PATH's bash: on Windows a bare 'bash' finds System32's WSL bash before Git Bash.
+BASH = shutil.which('bash') or 'bash'
 CLI = KIT / 'scripts/super-board-project-verifier.py'
 
 
@@ -43,7 +47,7 @@ class ProjectVerifier(unittest.TestCase):
         process = subprocess.run([sys.executable, str(CLI), command, '--root', str(self.root),
                                   '--map', self.map, *(['--changed', '-'] if changed is not None else []), *extra],
                                  input=json.dumps(changed) if changed is not None else None,
-                                 capture_output=True, text=True)
+                                 capture_output=True, text=True, encoding='utf-8')
         self.assertEqual(process.returncode, expected, process.stderr or process.stdout)
         return json.loads(process.stdout)
 
@@ -92,11 +96,17 @@ class ProjectVerifier(unittest.TestCase):
             path = self.root / name
             original = path.read_bytes()
             path.write_text(''); self.run_cli(expected=9)
-            path.write_bytes(original); path.chmod(0)
-            self.run_cli(expected=9)
-            path.chmod(0o644); path.unlink(); self.run_cli(expected=9)
-            path.symlink_to(self.root / 'absent'); self.run_cli(expected=9)
-            path.unlink(); path.write_bytes(original)
+            path.write_bytes(original)
+            if os.name != 'nt':  # Windows mode bits cannot make a file unreadable
+                path.chmod(0); self.run_cli(expected=9); path.chmod(0o644)
+            path.unlink(); self.run_cli(expected=9)
+            try:
+                path.symlink_to(self.root / 'absent')
+            except OSError:  # Windows without symlink rights
+                pass
+            else:
+                self.run_cli(expected=9); path.unlink()
+            path.write_bytes(original)
         self.data['features'][0]['owners'] = ['missing/*.py']
         self.save(); self.run_cli(expected=9)
 
@@ -139,12 +149,12 @@ class ProjectVerifier(unittest.TestCase):
         self.assertNotEqual(initial['inputs']['map'], self.run_cli()['inputs']['map'])
 
     def test_installed_helper_inspects_project_without_creating_verifier_coverage(self):
-        process = subprocess.run(['bash', str(KIT / 'install.sh'), '--no-hooks', str(self.root)],
-                                 capture_output=True, text=True)
+        process = subprocess.run([BASH, str(KIT / 'install.sh'), '--no-hooks', str(self.root)],
+                                 capture_output=True, text=True, encoding='utf-8')
         self.assertEqual(process.returncode, 0, process.stderr)
         installed = self.root / '.claude/bin/super-board-project-verifier.py'
         process = subprocess.run([sys.executable, str(installed), 'inspect', '--root', str(self.root),
-                                  '--map', self.map], capture_output=True, text=True)
+                                  '--map', self.map], capture_output=True, text=True, encoding='utf-8')
         self.assertEqual(process.returncode, 0, process.stderr or process.stdout)
         self.assertEqual(json.loads(process.stdout)['features'], ['cart.total'])
         starter = self.root / '.claude/skills/super-qa/templates/project-verifier/feature-map.json'

@@ -42,6 +42,7 @@ checkout, then re-run onboard.`
 | `python3 $SB/super-board-setup.py check / fix --text` | 1 Checks |
 | `python3 $SB/super-board-setup.py board-rank / board-migrate / names` | 1 (upgrade), 3 Board |
 | `python3 $SB/super-board-setup.py branch` | 4 Branch |
+| `python3 $SB/super-board-setup.py commit-format` | 0 Detect, 8 Review |
 | `python3 $SB/super-board-agents-md.py …` | 5 AGENTS.md |
 | `python3 $SB/super-board-settings.py allow … --dry-run` | 6 Policies |
 | `python3 .claude/skills/super-collect/scripts/collect_custom.py classify / ping / add` | 7 Bug sources |
@@ -132,6 +133,10 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    ├─ answers file, .claude/super-board/configs/*.json → resume / re-run screens
    ├─ instruction files: python3 $SB/super-board-agents-md.py detect
    ├─ manifests + README (board names), branches + deploy signals ($SB/super-board-setup.py branch)
+   ├─ commit format: python3 $SB/super-board-setup.py commit-format → a commitlint config
+   │    extending config-conventional gives writing {commit_format: "conventional",
+   │    header_max: <literal header-max-length, else omitted>}; anything else leaves `writing` out
+   │    (emoji). Shown at step 8 as "Commits: conventional (commitlint, ≤ <n>)".
    ├─ migration dirs (supabase/migrations, prisma/migrations, drizzle, **/migrations/*.sql,
    │    db/migrate, alembic/versions) and migrate scripts in the manifest (db:migrate, …)
    ├─ collect signals: Sentry (@sentry/* / sentry-sdk in manifests, Sentry.init(, .sentryclirc),
@@ -362,7 +367,7 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    ├─ Write, in order (each atomic; stop and report on the first failure — answers are kept):
    │    ├─ .claude/super-board/configs/<slug>.json (committed): description, project, target
    │    │    {type: repo | repo+url}, repo, base_branch, timezone, columns (the seven), labels,
-   │    │    paths, merge_policy, migrations, collect (incl. custom), notifications {channel:
+   │    │    paths, merge_policy, migrations, collect (incl. custom), writing (when detected), notifications {channel:
    │    │    "session", bot_identity}, worker_backend "workflow", verify_commands (non-blank project checks). No `variant`.
    │    ├─ .claude/super-board/active ← <slug>
    │    ├─ .gitignore += .claude/super-board/active, onboard-answers.json, onboard-staged/,

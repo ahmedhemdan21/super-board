@@ -6,7 +6,10 @@
 # (ROUTER_MODEL) grades each Ready card low/medium/high; the lane launcher maps
 # tier x grade to a model through its CODEX_LADDERS table.
 set -euo pipefail
-exec python3 - "${BASH_SOURCE[0]}" "$@" <<'PY'
+# --script keeps this path out of the first argument slot: the Windows Python install
+# manager runs a first file argument by its #! line (bash) instead of reading stdin.
+# -X utf8: prompts and results are UTF-8, not the Windows ANSI code page.
+exec python3 -X utf8 - --script "${BASH_SOURCE[0]}" "$@" <<'PY'
 import argparse
 import importlib.util
 from concurrent.futures import ThreadPoolExecutor
@@ -25,13 +28,13 @@ parser.add_argument('--config', required=True)
 parser.add_argument('--cards', required=True, help='planner card array JSON or JSON file')
 parser.add_argument('--output')
 parser.add_argument('--tier', default='medium', choices=['low', 'medium', 'high'])
-raw = sys.argv[2:]
+raw = sys.argv[3:]
 codex = [arg for arg in raw if arg == '--codex' or arg.startswith('--codex=')]
 if len(codex) != 1 or (codex[0].startswith('--codex=') and not codex[0].partition('=')[2].strip()):
     parser.error('exactly one explicit --codex[=<non-empty-model>] is required')
 args = parser.parse_args([arg for arg in raw if arg not in codex])
 output_path = Path(args.output).resolve() if args.output else None
-launcher = Path(sys.argv[1]).resolve().with_name('super-board-codex-lane.sh')
+launcher = Path(sys.argv[2]).resolve().with_name('super-board-codex-lane.sh')
 try:
     config_path = Path(args.config).resolve()
     config = json.loads(config_path.read_text())
@@ -74,6 +77,9 @@ try:
     spec = importlib.util.spec_from_file_location('skills_ready', resolver_path)
     resolver = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(resolver)
+    spec = importlib.util.spec_from_file_location('github_read', launcher.with_name('super-board-github-read.py'))
+    github_read = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(github_read)
     resolver.hydrate(cards, root)
     skills = resolver.report(root, 'codex', cards, home=os.environ.get('SUPER_BOARD_SKILLS_HOME'),
                              catalog=os.environ.get('SUPER_BOARD_SKILLS_CATALOG'))
@@ -101,23 +107,27 @@ marker = root / '.claude/super-board/codex-wave.pid'
 inflight.mkdir(parents=True, exist_ok=True)
 owner = str(os.getpid())
 
+def kill_group(pid, signame):
+    # Windows has no process groups (or SIGKILL): taskkill /T ends the launcher's tree.
+    if os.name == 'nt':
+        subprocess.run(['taskkill', '/T', '/F', '/PID', str(pid)], capture_output=True)
+        return
+    try:
+        os.killpg(pid, getattr(signal, signame))
+    except ProcessLookupError:
+        pass
+
 def cancel(signum, frame):
     halted.set()
     with mutex:
         processes = list(active)
         for process in processes:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+            kill_group(process.pid, 'SIGTERM')
     # Process groups include the launcher, Codex, and shell descendants. Kill
     # lingering descendants too, even when their launcher already exited.
     time.sleep(2)
     for process in processes:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        kill_group(process.pid, 'SIGKILL')
 
 signal.signal(signal.SIGTERM, cancel)
 signal.signal(signal.SIGINT, cancel)
@@ -147,7 +157,7 @@ def grade(card):
     with tempfile.TemporaryDirectory(prefix='super-board-codex-grade-') as temporary:
         schema_path, output = Path(temporary) / 'schema.json', Path(temporary) / 'grade.json'
         schema_path.write_text(json.dumps(GRADE_SCHEMA))
-        command = ['codex', 'exec', '-m', ROUTER_MODEL, '-C', str(root), '-c', 'approval_policy="never"',
+        command = ['exec', '-m', ROUTER_MODEL, '-C', str(root), '-c', 'approval_policy="never"',
                    '-c', 'default_permissions="super-board-grade"',
                    '-c', 'permissions.super-board-grade.filesystem={":root"="read", ":slash_tmp"="write", ":tmpdir"="write"}',
                    '-c', 'permissions.super-board-grade.network.enabled=true',
@@ -156,7 +166,7 @@ def grade(card):
             if halted.is_set():
                 return None, True
             try:
-                process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                process = subprocess.Popen(github_read.command('codex', command), stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                                            text=True, start_new_session=True)
             except OSError:
                 return None, False
@@ -203,18 +213,15 @@ def run_card(card):
             process = None
             lock = inflight / str(card['number'])
             try:
-                process = subprocess.Popen(['bash', str(launcher), '--config', str(config_path),
+                process = subprocess.Popen(github_read.command('bash', [str(launcher), '--config', str(config_path),
                                             '--card', json.dumps(current), '--lane', lane, codex[0],
-                                            '--tier', args.tier] + (['--complexity', complexity] if complexity else []),
+                                            '--tier', args.tier] + (['--complexity', complexity] if complexity else [])),
                                            stdout=subprocess.PIPE, text=True, start_new_session=True)
                 active.add(process)
                 lock.write_text(f'PID={process.pid}\nLANE={lane}\nSTARTED={time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}\n')
             except OSError as error:
                 if process is not None:
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
+                    kill_group(process.pid, 'SIGKILL')
                     process.wait()
                     active.discard(process)
                 history.append(dict(lane=lane, status='failed', column=current['status'],

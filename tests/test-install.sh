@@ -18,6 +18,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 INSTALL="../install.sh"
+# Git Bash's ln -s copies unless told to make native links (needs Developer Mode).
+case "$(uname -s)" in MINGW*|MSYS*) export MSYS="${MSYS:+$MSYS }winsymlinks:nativestrict" ;; esac
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 plant_decoys() { for d in decoy-one decoy-two decoy-three; do mkdir -p "$1/.claude/skills/$d"; touch "$1/.claude/skills/$d/SKILL.md"; done; }
@@ -167,7 +169,7 @@ T=$(mktemp -d)
 "$INSTALL" "$T" >/dev/null 2>&1
 for s in super-board-run.sh super-board-stop.sh super-board-wave-plan.sh \
          super-board-codex-lane.sh super-board-codex-wave.sh super-board-card.sh super-board-throttle.sh super-board-host.sh \
-         super-board-deps.sh super-board-preflight.sh super-board-merge-gate.sh super-board-usage.sh super-board-pr-body.sh \
+         super-board-deps.sh super-board-preflight.sh super-board-merge-gate.sh super-board-usage.sh super-board-pr-body.sh super-board-commit-header.py \
          super-review-file-refactor.sh super-qa-file-bug.sh; do
   [ -x "$T/.claude/bin/$s" ] || fail "$s was not installed, or is not executable"
 done

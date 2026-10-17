@@ -47,7 +47,7 @@ ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 
 def git(root, *args):
     try:
-        r = subprocess.run(["git", "-C", root] + list(args), capture_output=True, text=True, env=ENV, timeout=20)
+        r = subprocess.run(["git", "-C", root] + list(args), capture_output=True, text=True, encoding="utf-8", env=ENV, timeout=20)
         return r.stdout if r.returncode == 0 else ""
     except (OSError, subprocess.TimeoutExpired):
         return ""
@@ -207,4 +207,10 @@ def main():
 
 
 if __name__ == "__main__":
+    # Windows pipes default to the ANSI code page; super-board text is UTF-8.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     sys.exit(main())

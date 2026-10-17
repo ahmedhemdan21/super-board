@@ -54,8 +54,8 @@ def main():
         for name, delay, number in [('baseline', 180, ports[0]), ('changed', a.changed_delay, ports[1])]:
             app = root / name
             app.mkdir()
-            (app / 'server.py').write_text(SERVER)
-            (app / 'index.html').write_text(PAGE.replace('DELAY', str(delay)))
+            (app / 'server.py').write_text(SERVER, encoding='utf-8')
+            (app / 'index.html').write_text(PAGE.replace('DELAY', str(delay)), encoding='utf-8')
             sides[name] = {'cwd': name, 'revision': f'demo-{name}-delay-{delay}',
                            'start_command': [sys.executable, 'server.py', str(number)],
                            'source_files': ['server.py', 'index.html'],
@@ -65,7 +65,7 @@ def main():
                       scenario_files=[str(here / 'scenario.mjs')],
                       environment={'SB_RUNTIME_PROJECT': str(Path(a.playwright_project).resolve())},
                       scenario_command=['node', str(scripts / 'runtime_browser.mjs'), str(here / 'scenario.mjs')])
-        (root / 'runtime.json').write_text(json.dumps(config))
+        (root / 'runtime.json').write_text(json.dumps(config), encoding='utf-8')
         return subprocess.run([sys.executable, str(scripts / 'runtime_compare.py'), '--config',
                                str(root / 'runtime.json'), '--output', str(Path(a.output).resolve())]).returncode
 
