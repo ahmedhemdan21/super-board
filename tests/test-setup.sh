@@ -119,6 +119,12 @@ echo "$OUT" | q '.verify_commands | index("cd backend && dotnet test PrimeCore.P
 echo "$OUT" | q '.verify_commands | index("cd frontend && pnpm type-check") != null' || fail "pnpm from frontend CI: $OUT"
 echo "$OUT" | q '[.verify_commands[] | select(test("nuget|docker|\\$\\{"))] | length == 0' || fail "publish/deploy steps are not checks: $OUT"
 echo "$OUT" | q '.unresolved == []' || fail "every stack is covered: $OUT"
+# real PrimeCore CI: only pull_request workflows, no deploy/release, no setup, no shell fragments
+echo "$OUT" | q '[.verify_commands[] | select(test("install|dotnet restore|commitlint|lhci|playwright|[$|]|&& .*&&|[\\\\]|-p:Version|--filter dashboard|--filter=admin"))] | length == 0' \
+  || fail "junk CI lines proposed as checks: $OUT"
+echo "$OUT" | q '.verify_commands | index("cd frontend/apps/dashboard && pnpm build") != null' || fail "leading cd X && is kept: $OUT"
+echo "$OUT" | q '[.sources[] | .source | select(test("deploy|release|validate-commits|frontend-type-check"))] | length == 0' \
+  || fail "non-PR or deploy/release workflows harvested: $OUT"
 rm -rf "$T/frontend/.github"
 OUT=$(python3 "$SETUP" stack --root "$T")
 echo "$OUT" | q '[.verify_commands[] | select(startswith("cd frontend"))] == ["cd frontend && pnpm run lint","cd frontend && pnpm run type-check","cd frontend && pnpm run test","cd frontend && pnpm run format:check"]' \
@@ -129,6 +135,9 @@ git -C "$T" init -q -b main; git -C "$T" add . && git -C "$T" -c user.email=t@t 
 OUT=$(python3 "$SETUP" branch --root "$T")
 echo "$OUT" | q '(.deploy | startswith("self-hosted compose (backend/.github/workflows/deploy.yml deploys dev)")) and .target_env_branches == ["dev"]' \
   || fail "self-hosted compose deploy signal: $OUT"
+git -C "$T" checkout -q --detach
+python3 "$SETUP" branch --root "$T" | q '[.branches[] | select(startswith("("))] == []' || fail "detached HEAD listed as a branch"
+PYTHONIOENCODING=cp1252 python3 "$SETUP" --help >/dev/null 2>&1 || fail "--help crashes on a cp1252 console"
 
 # ── gh stub: state in $GH_STATE, calls in $GH_LOG ──────────────────────────────
 mkdir -p "$WORK/bin"

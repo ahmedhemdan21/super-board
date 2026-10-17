@@ -495,7 +495,9 @@ def branch(root):
     if not is_git_repo(root):
         return {"git": False, "branches": [], "staging": False, "deploy": None,
                 "recommend": "main", "create_staging": False}
-    local = [b for b in git("branch", "--format=%(refname:short)").stdout.split() if b]
+    # one name per line; a detached HEAD prints "(no branch)" / "(HEAD detached at …)"
+    local = [b.strip() for b in git("branch", "--format=%(refname:short)").stdout.splitlines()
+             if b.strip() and not b.strip().startswith("(")]
     remote = [b.split("/", 1)[1] for b in git("branch", "-r", "--format=%(refname:short)").stdout.split()
               if "/" in b and not b.endswith("/HEAD")]
     allb = sorted(set(local + remote))
@@ -533,7 +535,15 @@ def branch(root):
 SELF_HOSTED_RE = re.compile(r"runs-on:.*(?:self-hosted|vars\.RUNNER_LABEL)", re.I)
 COMPOSE_RE = re.compile(r"docker[ -]compose\b")
 CHECK_TOOLS = re.compile(r"^(?:cd \S+ && )?(?:dotnet|pnpm|npx turbo|turbo|npm|yarn|bun)\s")
-NOT_A_CHECK = re.compile(r"\b(?:publish|push|deploy|login|pack|nuget|docker|release|workload)\b|\$\{\{")
+NOT_A_CHECK = re.compile(
+    r"\b(?:publish|push|deploy|login|pack|nuget|docker|release|workload|playwright|commitlint|lhci|lighthouse)\b"
+    r"|(?<![-\w])(?:install|restore|setup(?:-\S*)?)\b|^(?:npm|pnpm|yarn|bun)\s+(?:ci|i|add)\b"
+    r"|\bdotnet\s+tool\b|[$|<>;`]|&&")
+IS_CHECK = re.compile(
+    r"^(?:dotnet\s+(?:build|test)\b|dotnet\s+format\b.*--verify-no-changes"
+    r"|(?:pnpm|npx turbo|turbo|npm|yarn|bun)\s.*\b(?:lint|type-?check|test|format:check|build)\b)")
+NON_PR_WORKFLOW = re.compile(r"^(?:deploy|release|publish)", re.I)
+PR_TRIGGER = re.compile(r"\bpull_request\b(?!_target)")
 PKG_CHECKS = ("lint", "type-check", "typecheck", "test", "format:check", "build")
 SKIP_DIRS = {"node_modules", "bin", "obj", "dist", "build", "out", "vendor"}
 
@@ -571,10 +581,19 @@ def workflow_checks(body):
         cmds = []
         if first in ("|", ">", "|-", ">-"):
             i += 1
+            joined = ""
             while i < len(lines) and (not lines[i].strip() or len(lines[i]) - len(lines[i].lstrip()) > indent):
-                if lines[i].strip() and not lines[i].strip().startswith("#"):
-                    cmds.append(lines[i].strip())
+                ln = lines[i].strip()
                 i += 1
+                if not ln or (ln.startswith("#") and not joined):
+                    continue
+                if ln.endswith("\\"):  # a backslash-continued command: join, then judge
+                    joined += ln[:-1].strip() + " "
+                    continue
+                cmds.append(joined + ln)
+                joined = ""
+            if joined:
+                cmds.append(joined.strip())
         else:
             cmds.append(first.strip("'\""))
             i += 1
@@ -584,9 +603,12 @@ def workflow_checks(body):
             if w:
                 wd = w.group(1).strip("'\"")
         for c in cmds:
-            if NOT_A_CHECK.search(c):
+            m = re.match(r"^cd (\S+) && (.*)$", c)  # a leading `cd X &&` is fine, nothing else chained
+            body_cmd = m.group(2) if m else c
+            if NOT_A_CHECK.search(body_cmd) or not IS_CHECK.match(body_cmd):
                 continue
-            c = f"cd {wd} && {c}" if wd and wd != "." else c
+            here = (m.group(1) if m.group(1).startswith("/") or not wd or wd == "." else f"{wd}/{m.group(1)}") if m else wd
+            c = f"cd {here} && {body_cmd}" if here and here != "." else body_cmd
             if CHECK_TOOLS.match(c):
                 out.append(c)
     return out
@@ -622,9 +644,15 @@ def stack(root):
     commands, seen = [], set()
     for wf in workflow_files(root):
         rel_wf = os.path.relpath(wf, root).replace(os.sep, "/")
+        body = read(wf)
+        # only checks a pull request runs; deploy/release workflows are not checks
+        if NON_PR_WORKFLOW.match(os.path.basename(wf)) or not PR_TRIGGER.search(body):
+            continue
         sub = rel_wf.split("/.github/")[0] if not rel_wf.startswith(".github/") else ""
-        for c in workflow_checks(read(wf)):
-            c = f"cd {sub} && {c}" if sub else c
+        for c in workflow_checks(body):
+            if sub:
+                m = re.match(r"^cd (\S+) && (.*)$", c)
+                c = f"cd {sub}/{m.group(1)} && {m.group(2)}" if m and not m.group(1).startswith("/") else f"cd {sub} && {c}"
             if c not in seen:
                 seen.add(c)
                 commands.append({"cmd": c, "source": rel_wf})
@@ -1152,4 +1180,9 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    for _stream in (sys.stdin, sys.stdout, sys.stderr):  # cp1252 consoles: --help has non-ASCII
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main(sys.argv[1:]))

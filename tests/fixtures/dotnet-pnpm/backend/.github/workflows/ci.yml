@@ -14,3 +14,12 @@ jobs:
           dotnet test PrimeCore.Platform.slnx --no-build -c Release --filter "Category!=Integration"
           dotnet test PrimeCore.Platform.slnx --no-build -c Release --filter "Category=Integration"
       - run: dotnet nuget push out/*.nupkg --api-key ${{ secrets.NUGET }}
+      - run: dotnet tool install -g dotnet-reportgenerator-globaltool
+      - name: per-project tests
+        run: |
+          for project in tests/*/*.csproj; do
+            dotnet test \
+              "$project" "${args[@]}"
+          done
+      - run: dotnet test PrimeCore.Platform.slnx --no-build | tee test.log
+      - run: dotnet build ${{ matrix.project }}
