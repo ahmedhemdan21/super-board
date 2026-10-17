@@ -541,6 +541,7 @@ RC=0; OUT=$(STUB_OID="$SHA" "$GATE" --config "$TMP/slow.json" --pr 1 --expect-he
 TOOK=$(( $(date +%s) - START ))
 [ "$RC" -eq 2 ] || fail "a timed-out check must exit 2, got $RC: $OUT"
 echo "$OUT" | grep -q "TIMED OUT after 2s" || fail "a timeout must be named, got: $OUT"
+echo "$OUT" | grep -q "stale against" && fail "a timeout is not a stale branch: $OUT"
 [ "$TOOK" -lt 25 ] || fail "the timeout must stop the check early, took ${TOOK}s"
 grep -q '^pr merge' "$GH_LOG" && fail "a timed-out check must not merge"
 jq '.merge_gate = {command_timeout_s: "x"}' "$TMP/c.json" > "$TMP/bad.json"

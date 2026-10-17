@@ -330,7 +330,11 @@ for cmd in "${VERIFY[@]}"; do
     if [ "$VRC" -eq 124 ]; then say "TIMED OUT after ${CMD_TIMEOUT}s (merge_gate.command_timeout_s): ${cmd}"
     else say "FAILED: ${cmd}"; fi
     tail -30 "$SCRATCH/.verify.log" >&2
-    say "the branch is stale against ${BASE} — send it back to Build for a rebase pass"
+    if [ "$VRC" -eq 124 ]; then
+      say "a check ran out of time, not a stale branch: speed it up or raise merge_gate.command_timeout_s"
+    else
+      say "the branch is stale against ${BASE} — send it back to Build for a rebase pass"
+    fi
     exit 2
   fi
 done
