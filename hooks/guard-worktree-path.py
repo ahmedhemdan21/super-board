@@ -81,7 +81,21 @@ def expand(word, env):
     s = re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)", var, s)
     if unknown or "$(" in s or "`" in s:
         return None
-    return s
+    return native(s)
+
+
+def native(path):
+    """Windows: a Git Bash path (/c/x, /tmp/x) as the C:/x path git.exe and os.path use."""
+    if os.name != "nt" or not path.startswith("/") or path.startswith("//"):
+        return path
+    drive = re.match(r"^/([A-Za-z])(/|$)", path)
+    if drive:
+        return drive.group(1).upper() + ":/" + path[3:]
+    try:
+        r = subprocess.run(["cygpath", "-m", path], capture_output=True, text=True, encoding="utf-8", timeout=5)
+        return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else path
+    except (OSError, subprocess.TimeoutExpired):
+        return path
 
 
 def worktree_targets(command, cwd, env):
@@ -151,7 +165,7 @@ def check(command, cwd, root_of, env):
         repo = root_of(git_dir) or root_of(cwd)
         if not repo:
             continue  # not a repository: git itself will refuse
-        allowed = os.path.join(repo, ALLOWED_DIR)
+        allowed = os.path.normpath(os.path.join(repo, ALLOWED_DIR))
         if resolved and resolved.startswith(allowed + os.sep):
             continue
         where = ("resolves to " + resolved) if resolved else "cannot be resolved before it runs"
@@ -169,7 +183,7 @@ def toplevel_of(d):
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     try:
         r = subprocess.run(["git", "-C", d, "rev-parse", "--show-toplevel"], capture_output=True,
-                           text=True, env=env, timeout=10)
+                           text=True, encoding="utf-8", env=env, timeout=10)
         return r.stdout.strip() if r.returncode == 0 else None
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -185,7 +199,7 @@ def main():
 
         def root_of(d):
             top = toplevel_of(d) or (os.environ.get("CLAUDE_PROJECT_DIR") if d == cwd else None)
-            return repo_root(top) if top else None
+            return repo_root(os.path.normpath(top)) if top else None  # git prints C:/x on Windows
 
         reason = check(command, cwd, root_of, dict(os.environ))
         if reason:
@@ -197,4 +211,10 @@ def main():
 
 
 if __name__ == "__main__":
+    # Windows pipes default to the ANSI code page; super-board text is UTF-8.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     main()

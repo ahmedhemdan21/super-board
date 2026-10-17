@@ -21,9 +21,9 @@ render() {
 import sys
 sys.path.insert(0, sys.argv[1])
 import fixture_http
-with open(sys.argv[2]) as f:
+with open(sys.argv[2], encoding="utf-8") as f:
     text = fixture_http.render(f.read())
-with open(sys.argv[3], "w") as f:
+with open(sys.argv[3], "w", encoding="utf-8") as f:
     f.write(text)
 PY
 }
@@ -166,7 +166,7 @@ TS
 
   # --- super-board install (scripts only, so the plugin's SKILL.md is the one in play) ----
   mkdir -p .claude/skills/super-collect .claude/skills/super-board .claude/bin .claude/super-board/configs
-  cp -R "$PACK/skills/super-collect/scripts" .claude/skills/super-collect/
+  cp -R "$PACK/skills/super-collect/scripts" "$PACK/skills/super-collect/references" .claude/skills/super-collect/
   cp -R "$PACK/skills/super-board/references" .claude/skills/super-board/
   cp "$PACK"/scripts/*.sh "$PACK"/scripts/*.py .claude/bin/
   echo shop > .claude/super-board/active

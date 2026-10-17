@@ -1,6 +1,7 @@
 name: cross-platform
 
-# All offline safety suites run on Linux/macOS. Windows checks the status reader.
+# All offline safety suites run on Linux/macOS. Windows checks the status reader and
+# tests/test_windows_portability.py.
 # Reused by release.yml so a failed suite prevents the publish job from running.
 permissions:
   contents: read
@@ -59,6 +60,11 @@ jobs:
       # what the dispatcher actually emits.
       - name: status — parser fixture tests
         run: python tests/test_status_parse.py
+
+      # Step 4 — what broke super-board on Windows: UTF-8 output and gh reads,
+      # the collector lock without fcntl, and Git Bash instead of WSL's bash.exe.
+      - name: portability — UTF-8, collector lock, Git Bash
+        run: python tests/test_windows_portability.py
 
   safety:
     name: safety (${{ matrix.os }} / py${{ matrix.python }})

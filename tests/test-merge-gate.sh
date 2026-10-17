@@ -196,6 +196,19 @@ RC=0; STUB_OID="$SHA" gate --expect-head "$SHA" --body-file /nope.md >/dev/null 
 [ "$RC" -eq 66 ] || fail "an unreadable --body-file should exit 66, got $RC"
 teardown
 
+# 9c — conventional projects: the gate adds GitHub's (#PR) suffix, and refuses a subject
+#      commitlint would reject before anything merges.
+head_setup
+jq '. + {writing: {commit_format: "conventional", header_max: 110}}' "$TMP/c.json" > "$TMP/c2.json" && mv "$TMP/c2.json" "$TMP/c.json"
+RC=0; STUB_OID="$SHA" gate --expect-head "$SHA" --subject "fix(receipts): show a size error" >/dev/null 2>&1 || RC=$?
+[ "$RC" -eq 0 ] || fail "a conventional subject should merge, got $RC"
+grep -q -- "--subject fix(receipts): show a size error (#1)" "$GH_LOG" || fail "the (#PR) suffix must be added, got: $(cat "$GH_LOG")"
+: > "$GH_LOG"
+RC=0; STUB_OID="$SHA" gate --expect-head "$SHA" --subject "🐛 [fix] receipts: show a size error" >/dev/null 2>&1 || RC=$?
+[ "$RC" -eq 64 ] || fail "an emoji subject in a conventional project should exit 64, got $RC"
+grep -q -- "pr merge" "$GH_LOG" && fail "a refused subject must not merge"
+teardown
+
 # 10 — a push lands during verification: GitHub refuses the pinned merge and the
 #      head has moved, so this is void evidence (6), not branch protection (3).
 head_setup
@@ -226,7 +239,9 @@ teardown
 #      merge that already happened.
 head_setup
 mkdir -p "$TMP/.claude/hooks"
-printf 'import sys\nopen("%s/cleanup.args","w").write(" ".join(sys.argv[1:]))\nsys.exit(1)\n' "$TMP" \
+# Python opens the path itself: on Windows it needs C:/..., not Git Bash's /tmp/...
+PYTMP=$(cygpath -m "$TMP" 2>/dev/null || echo "$TMP")
+printf 'import sys\nopen("%s/cleanup.args","w").write(" ".join(sys.argv[1:]))\nsys.exit(1)\n' "$PYTMP" \
   > "$TMP/.claude/hooks/cleanup-wt.py"
 RC=0; STUB_OID="$SHA" gate --expect-head "$SHA" >/dev/null 2>&1 || RC=$?
 [ "$RC" -eq 0 ] || fail "a failing cleanup must not fail the merge, got $RC"
@@ -237,7 +252,7 @@ teardown
 # 13 — a refused merge never cleans up. (Scenario 9 is the no-cleanup-wt path.)
 head_setup
 mkdir -p "$TMP/.claude/hooks"
-printf 'open("%s/cleanup.ran","w")\n' "$TMP" > "$TMP/.claude/hooks/cleanup-wt.py"
+printf 'open("%s/cleanup.ran","w")\n' "$PYTMP" > "$TMP/.claude/hooks/cleanup-wt.py"
 RC=0; STUB_OID="$SHA" STUB_MERGE_RC=1 gate --expect-head "$SHA" >/dev/null 2>&1 || RC=$?
 [ "$RC" -eq 79 ] || fail "an unconfirmed merge should halt, got $RC"
 [ ! -f "$TMP/cleanup.ran" ] || fail "cleanup must not run when the merge was refused"

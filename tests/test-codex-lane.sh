@@ -22,13 +22,19 @@ export SB_CODEX_TEST_LOG="$T/calls.jsonl"
 export PATH="$T/bin:$PATH"
 cat > "$T/bin/codex" <<'PY'
 #!/usr/bin/env python3
-import fcntl, json, os, re, subprocess, sys, time
+import json, os, re, subprocess, sys, time
 from pathlib import Path
+try:
+    import fcntl
+    def lock(log): fcntl.flock(log, fcntl.LOCK_EX)
+except ImportError:  # Windows: lock byte 0; closing the log releases it
+    import msvcrt
+    def lock(log): log.seek(0); msvcrt.locking(log.fileno(), msvcrt.LK_LOCK, 1)
 args = sys.argv[1:]
 prompt = sys.stdin.read()
 if 'Grade complexity' in prompt:
     with open(os.environ['SB_CODEX_TEST_LOG'], 'a') as log:
-        fcntl.flock(log, fcntl.LOCK_EX)
+        lock(log)
         log.write(json.dumps(dict(args=args, number=int(re.search(r'issue #(\d+)', prompt).group(1)), lane='grade', active=1)) + '\n')
     output = Path(args[args.index('--output-last-message') + 1])
     output.write_text(json.dumps(dict(complexity=os.environ.get('SB_CODEX_TEST_GRADE', 'medium'))))
@@ -36,7 +42,7 @@ if 'Grade complexity' in prompt:
 card = json.loads(re.search(r'^Card: (.+)$', prompt, re.M).group(1))
 lane = re.search(r'Run super-(build|qa|review)', prompt).group(1)
 with open(os.environ['SB_CODEX_TEST_LOG'], 'a') as log:
-    fcntl.flock(log, fcntl.LOCK_EX)
+    lock(log)
     counter = Path(os.environ['SB_CODEX_TEST_LOG'] + '.active')
     active = int(counter.read_text()) + 1 if counter.exists() else 1
     counter.write_text(str(active))
@@ -55,7 +61,7 @@ else:
     output.write_text(json.dumps(dict(status=status, column=column, detail=os.environ.get('SB_CODEX_TEST_DETAIL', 'stub lane result'), prUrl=None, branch=None, priorFindings=None)))
 print('codex log noise must not appear in result stdout')
 with open(os.environ['SB_CODEX_TEST_LOG'], 'a') as log:
-    fcntl.flock(log, fcntl.LOCK_EX)
+    lock(log)
     counter.write_text(str(int(counter.read_text()) - 1))
 sys.exit(int(os.environ.get('SB_CODEX_TEST_EXIT', '0')))
 PY
@@ -239,6 +245,13 @@ jq -e '.cards[0].finalStatus == "failed" and (.cards[0].detail | contains("could
 rmdir .claude/super-board/inflight/1
 
 # TERM reaps the Codex process group and its descendants before lock cleanup.
+# Windows: Git Bash cannot deliver SIGTERM to native Python (its PIDs are Windows
+# PIDs), so the wave's TERM handler never runs there; the cancellation path is POSIX-only.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*)
+  echo 'SKIP (Windows): TERM cancellation needs POSIX signals and process groups'
+  echo 'PASS: test-codex-lane.sh (model/ladders/router/review/sandbox/results/wave/halt)'
+  exit 0 ;;
+esac
 CARDS='[{"number":1,"status":"Review"}]'
 SB_CODEX_TEST_SLEEP=1 SB_CODEX_TEST_PID="$T/descendant.pid" wave --codex >"$T/out" &
 JOB=$!

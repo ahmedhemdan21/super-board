@@ -13,6 +13,7 @@ import contextlib
 import io
 import json
 import os
+import shlex
 import sys
 import tempfile
 import unittest
@@ -113,7 +114,9 @@ class Ping(Base):
         self.assertNotIn("t0k", json.dumps(r))
 
     def test_cli_ok(self):
-        code, r = run(["ping", "--kind", "cli", "--target", 'printf \'{"items":[{"id":1,"title":"boom"}]}\'', "--name", "logs"])
+        # A native program: Git Bash's printf re-parses a Windows command line and loses the quotes.
+        target = shlex.join([sys.executable, "-c", 'print(\'{"items":[{"id":1,"title":"boom"}]}\')'])
+        code, r = run(["ping", "--kind", "cli", "--target", target, "--name", "logs"])
         self.assertEqual((code, r["status"], r["count"]), (0, "ok", 1))
         self.assertEqual(r["sample"][0]["title"], "boom")
 

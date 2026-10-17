@@ -27,7 +27,7 @@ def load(path: str):
     if not os.path.exists(path):
         return {}
     try:
-        data = json.load(open(path))
+        data = json.load(open(path, encoding="utf-8"))
     except ValueError as e:
         print(f"    ✗ {path} is not valid JSON ({e}); left untouched — merge by hand", file=sys.stderr)
         sys.exit(2)
@@ -44,7 +44,7 @@ def save(path: str, data: dict) -> None:
         print(f"    ✓ backup: {backup}")
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
         f.write("\n")
         f.flush()
@@ -93,7 +93,7 @@ def main(argv: list[str]) -> int:
     verb, path, rest = args[0], args[1], args[2:]
     settings = load(path)
     if verb == "hooks":
-        added = merge_hooks(settings, [json.load(open(p)) for p in rest])
+        added = merge_hooks(settings, [json.load(open(p, encoding="utf-8")) for p in rest])
         noun = "hook command(s)"
     else:
         added = merge_allow(settings, rest)
@@ -111,4 +111,10 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    # Windows pipes default to the ANSI code page; super-board text is UTF-8.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     sys.exit(main(sys.argv[1:]))

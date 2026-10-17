@@ -341,7 +341,7 @@ def resolve_config_slug(argv: list[str]) -> str:
         return argv[1]
     active = Path(".claude/super-board/active")
     if active.is_file():
-        return active.read_text().strip()
+        return active.read_text(encoding="utf-8").strip()
     cfgs = sorted(Path(".claude/super-board/configs").glob("*.json"))
     if len(cfgs) == 1:
         return cfgs[0].stem
@@ -508,7 +508,7 @@ def main() -> int:
         print(f"config not found: {config_path}", file=sys.stderr)
         return 66
 
-    cfg = json.loads(config_path.read_text())
+    cfg = json.loads(config_path.read_text(encoding="utf-8"))
     project_owner: str = cfg["project"]["owner"]
     project_number: int = int(cfg["project"]["number"])
     runs_dir = cfg.get("paths", {}).get("runs_dir", "docs/super-board/runs")
@@ -583,7 +583,7 @@ def main() -> int:
         reasons[n] = body[:4000]
 
     # ── parse manifest ──
-    manifest_text = manifest_path.read_text() if manifest_path.is_file() else ""
+    manifest_text = manifest_path.read_text(encoding="utf-8") if manifest_path.is_file() else ""
     now_epoch = int(time.time())
     state = parse_manifest(manifest_text, run_date)
     inflight = state["inflight"]

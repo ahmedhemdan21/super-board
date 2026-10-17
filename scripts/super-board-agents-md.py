@@ -153,7 +153,7 @@ def render_block(template: Path, version: str) -> list[str]:
 def cmd_block(a) -> int:
     root = Path(a.root)
     path = root / a.file
-    version = a.version or (DEFAULT_VERSION_FILE.read_text().strip()
+    version = a.version or (DEFAULT_VERSION_FILE.read_text(encoding="utf-8").strip()
                             if DEFAULT_VERSION_FILE.is_file() else "0.0.0")
     block = render_block(Path(a.template) if a.template else DEFAULT_TEMPLATE, version)
     if not path.exists():
@@ -277,7 +277,7 @@ def norm(s: str) -> str:
 
 
 def cmd_coverage(a) -> int:
-    units = json.load(open(a.units))
+    units = json.load(open(a.units, encoding="utf-8"))
     target_lines = set()
     for t in a.target:
         if Path(t).is_file():
@@ -340,4 +340,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Windows pipes default to the ANSI code page; super-board text is UTF-8.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     sys.exit(main())

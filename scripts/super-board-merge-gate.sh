@@ -59,7 +59,9 @@
 #
 # `--subject` / `--body-file` set the squash commit message (writing-standard.md
 # § 1): subject = the PR title (`🐛 [fix] receipts: …`), body = the commit bullets
-# plus `Closes #N`. Without them GitHub writes its own message.
+# plus `Closes #N`. Without them GitHub writes its own message. With
+# `writing.commit_format: "conventional"` the gate appends ` (#<PR>)` to the subject
+# and exits 64 when super-board-commit-header.py check rejects it.
 #
 # `--lock-timeout` is how long THIS caller waits for its turn. `--stale-after` is
 # how old a lock must be before it is presumed abandoned. They are deliberately
@@ -156,6 +158,13 @@ BASE=$(echo "$CONFIG_JSON" | jq -r '.base_branch // "main"')
 REPO=$(echo "$CONFIG_JSON" | jq -r '.repo.remote // ""' | sed -E 's#^https?://github\.com/##; s#\.git$##')
 REPO_PATH=$(echo "$CONFIG_JSON" | jq -r '.repo.path // "."')
 export SB_REPO_PATH="$REPO_PATH"
+# Conventional projects lint the squash subject on main (writing.commit_format): give it
+# the ` (#PR)` suffix GitHub's own message would carry, and refuse one commitlint rejects.
+if [ -n "$SUBJECT" ] && [ "$(echo "$CONFIG_JSON" | jq -r '.writing.commit_format // "emoji"')" = conventional ]; then
+  case "$SUBJECT" in *" (#$PR)") ;; *) SUBJECT="$SUBJECT (#$PR)" ;; esac
+  python3 "$HERE/super-board-commit-header.py" check --config "$CONFIG" --pr "$PR" "$SUBJECT" >&2 \
+    || { echo "--subject breaks the conventional format: $SUBJECT" >&2; exit 64; }
+fi
 # Read with a while-loop rather than `mapfile`: macOS ships bash 3.2 and every
 # other script in this repo runs there, so this one does too.
 VERIFY=()
@@ -351,6 +360,7 @@ while IFS= read -r line; do [ -n "$line" ] && NEEDS+=("$line"); done \
 if [ "$(echo "$PLAN" | jq '.migrations | length')" -gt 0 ]; then
   say "migrations in this PR: $(echo "$PLAN" | jq -r '.migrations | join(" ")')"
   while IFS=$'\t' read -r env cmd; do
+    cmd=${cmd%$'\r'}  # Windows jq.exe ends lines with CRLF
     [ -n "$env" ] || continue
     if [ "$DRY" -eq 1 ]; then say "dry run: would migrate ${env}: ${cmd}"; continue; fi
     say "migrate ${env}: ${cmd}"

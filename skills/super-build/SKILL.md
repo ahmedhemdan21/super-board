@@ -133,7 +133,7 @@ handoff complete. Add file summaries and critical inline notes on the PR, not in
 
 **On dispatcher exit 0 (success):**
 - `git -C .claude/worktrees/issue-N push -u origin loop/issue-N`
-- `gh pr create --draft --base <base-branch> --head loop/issue-N --title "<emoji> [<type>] <scope>: <subject>" --body-file <body.md>` — title in commit-subject format, body = the marker-block template from `skills/super-board/references/run.md` (writing-standard.md § 2), `Closes #N` in the status card, `Docs:` bullets in Solution
+- `gh pr create --draft --base <base-branch> --head loop/issue-N --title "<emoji> [<type>] <scope>: <subject>" --body-file <body.md>` — title in commit-subject format (config `writing.commit_format: "conventional"` → `<type>(<scope>): <subject>`, checked with `.claude/bin/super-board-commit-header.py check --config <cfg> "<title>"`), body = the marker-block template from `skills/super-board/references/run.md` (writing-standard.md § 2), `Closes #N` in the status card, `Docs:` bullets in Solution
 - `gh issue edit N --remove-label loop:in-progress`
 - `gh issue comment N --body "[builder] [report] ✅ built · PR <URL>"` (Next line: `qa`)
 - Move the project card to `QA`. The Tester and Reviewer take it from there; the issue closes when the Reviewer merges through the merge gate.
@@ -143,7 +143,7 @@ handoff complete. Add file summaries and critical inline notes on the PR, not in
 
 **On dispatcher exit 5 (intentional WIP-PARTIAL — open a partial PR, do NOT close):**
 - `git -C .claude/worktrees/issue-N push -u origin loop/issue-N`
-- `gh pr create --draft --base <base-branch> --head loop/issue-N --title "🚧 [wip] <scope>: <slice from worker's final message>"` — the status card says `Refs #N`, never `Closes`, so the merge does not close the issue.
+- `gh pr create --draft --base <base-branch> --head loop/issue-N --title "🚧 [wip] <scope>: <slice from worker's final message>"` (conventional: `chore(<scope>): partial — <slice>`, never `wip`) — the status card says `Refs #N`, never `Closes`, so the merge does not close the issue.
 - `gh issue edit N --remove-label loop:in-progress --add-label human-gated`
 - `gh issue comment N --body "[builder] [report] ⚠️ partial · PR <URL>\nDid: <slice>\n❌ Not done: <worker's reason for stopping>\nNext: Eric"` — the issue stays open with `human-gated` until the rest lands.
 - Report: `🟡 Issue #N partial PR opened — issue stays open (human-gated)`

@@ -14,9 +14,11 @@ trap 'rm -rf "$WORK"' EXIT
 
 # A tarball shaped like GitHub's: one top-level folder holding the pack.
 mkdir -p "$WORK/src/super-board-test"
-tar -cf - --exclude ./.git --exclude ./evals --exclude ./docs . | tar -xf - -C "$WORK/src/super-board-test"
+tar -cf - --exclude ./.git --exclude ./.claude/worktrees --exclude ./evals --exclude ./docs . | tar -xf - -C "$WORK/src/super-board-test"
 tar -czf "$WORK/pack.tgz" -C "$WORK/src" super-board-test
-export SUPER_BOARD_TARBALL="file://$WORK/pack.tgz"
+# Git Bash's curl is a native Windows program: give it file:///C:/... not /tmp/...
+url_path() { if command -v cygpath >/dev/null; then echo "/$(cygpath -m "$1")"; else echo "$1"; fi; }
+export SUPER_BOARD_TARBALL="file://$(url_path "$WORK/pack.tgz")"
 
 # Stubs: npx records its argv; gh and jq exist so no warnings fire.
 mkdir -p "$WORK/bin"
@@ -79,7 +81,7 @@ if bash "$GET" --bogus --no-helper-skills --target "$T" >/dev/null 2>&1; then fa
 # 7 — a bad tarball URL fails cleanly and leaves no temp folder behind.
 T="$WORK/t7"; mkdir -p "$T"
 mkdir -p "$WORK/tmp7"
-if TMPDIR="$WORK/tmp7" SUPER_BOARD_TARBALL="file://$WORK/nope.tgz" bash "$GET" --no-helper-skills --target "$T" >/dev/null 2>&1; then
+if TMPDIR="$WORK/tmp7" SUPER_BOARD_TARBALL="file://$(url_path "$WORK/nope.tgz")" bash "$GET" --no-helper-skills --target "$T" >/dev/null 2>&1; then
   fail "missing tarball was accepted"
 fi
 [ -z "$(ls -A "$WORK/tmp7")" ] || fail "temp folder was left behind after a failed download"
@@ -91,7 +93,7 @@ out=$(bash "$GET" --target "$T" 2>&1) || fail "grouped-output install failed: $o
 order=$(printf '%s\n' "$out" | grep -oE '^(🧩|🔍|📦|🔧|🧠|🎉|👉)' | tr -d '\n')
 [ "$order" = "🧩🔍📦🔧🧠🎉👉" ] || fail "groups out of order ($order): $out"
 printf '%s\n' "$out" | grep -q '^   ✓ curl · tar · python3 · gh · jq · node$' || fail "checks line wrong: $out"
-printf '%s\n' "$out" | grep -q '^   🛡️  6 guard hooks → .claude/settings.json (new file)$' || fail "guard line wrong: $out"
+printf '%s\n' "$out" | grep -q '^   🛡️  7 guard hooks → .claude/settings.json (new file)$' || fail "guard line wrong: $out"
 printf '%s\n' "$out" | grep -q '^   ! CLAUDE.md holds its own rules — onboard offers a merge$' || fail "CLAUDE.md hint missing: $out"
 printf '%s\n' "$out" | grep -q '^🧠 helper skills: installed$' || fail "helper line wrong: $out"
 [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" -le 12 ] || fail "output should stay ≤ 12 lines: $out"
@@ -101,7 +103,12 @@ T="$WORK/t9"; mkdir -p "$T"
 # /usr/bin can contain node on Linux. Keep only the tools this install uses.
 NOBIN="$WORK/bin-nonode"; mkdir -p "$NOBIN"
 for t in bash id curl tar gzip python3 mktemp mkdir rm dirname tr cp chmod grep basename sed gh jq; do
-  ln -s "$(command -v "$t")" "$NOBIN/$t"
+  if command -v cygpath >/dev/null; then
+    # Git Bash's ln -s copies, and a copied .exe misses its DLLs: wrap it instead.
+    printf '#!/bin/sh\nexec "%s" "$@"\n' "$(command -v "$t")" > "$NOBIN/$t"; chmod +x "$NOBIN/$t"
+  else
+    ln -s "$(command -v "$t")" "$NOBIN/$t"
+  fi
 done
 out=$(PATH="$NOBIN" bash "$GET" --target "$T" 2>&1) || fail "install without node failed: $out"
 printf '%s\n' "$out" | grep -q '✗ node' || fail "missing node should be marked ✗: $out"

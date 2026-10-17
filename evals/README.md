@@ -38,6 +38,10 @@ Offline regression tests for the same skill (no model, no cost) run in `tests/ru
   `issues.json`, `prs-merged.json`, `project-items.json`, `fields.json` and `graphql.json`.
   Writes are recorded, never sent: `issue create` bodies go to `.git/gh-created.md`, comments
   to `.git/gh-comments.md`, and every call to `.git/gh-calls.log` (plain text, for graders).
+  `issues.json` also answers the filers' complete issue-history read (`api graphql --paginate
+  --slurp`) as one page. That read carries no fingerprint, so fingerprint graders match the
+  agent's `super-collect-file.sh --fingerprint` call. `tests/test-eval-stubs.sh` replays the
+  filer on two seeds offline, so a stub that drifts from the filer fails the safety suite.
 - `py/sitecustomize.py` — offline Sentry and PostHog. `collect-seed.sh` puts it on `PYTHONPATH`
   with `SC_FIXTURES` pointing at a rendered copy of `tests/fixtures/collect/`, so the real
   `collect_sentry.py` / `collect_posthog.py` read canned payloads through

@@ -139,6 +139,28 @@ git -C "$T" checkout -q --detach
 python3 "$SETUP" branch --root "$T" | q '[.branches[] | select(startswith("("))] == []' || fail "detached HEAD listed as a branch"
 PYTHONIOENCODING=cp1252 python3 "$SETUP" --help >/dev/null 2>&1 || fail "--help crashes on a cp1252 console"
 
+# 6b — commit format: a commitlint config extending config-conventional proposes
+#      writing.commit_format "conventional" with its literal header-max-length;
+#      package.json "commitlint" counts; no commitlint (or another preset) stays emoji.
+T="$WORK/cl"; mkdir -p "$T"
+python3 "$SETUP" commit-format --root "$T" | q '.commit_format == "emoji" and .source == null' || fail "no commitlint should stay emoji"
+cat > "$T/commitlint.config.js" <<'JS'
+module.exports = {
+  extends: ['@commitlint/config-conventional'],
+  rules: { 'header-max-length': [2, 'always', 110] },
+};
+JS
+python3 "$SETUP" commit-format --root "$T" \
+  | q '.commit_format == "conventional" and .header_max == 110 and .source == "commitlint.config.js"' \
+  || fail "commitlint config-conventional should propose conventional, max 110"
+rm "$T/commitlint.config.js"
+echo '{"name":"x","commitlint":{"extends":["@commitlint/config-conventional"]}}' > "$T/package.json"
+python3 "$SETUP" commit-format --root "$T" | q '.commit_format == "conventional" and .header_max == null and .source == "package.json"' \
+  || fail "package.json commitlint should be detected"
+printf 'extends:\n  - "@commitlint/config-angular"\n' > "$T/.commitlintrc.yml"; rm "$T/package.json"
+python3 "$SETUP" commit-format --root "$T" | q '.commit_format == "emoji" and .source == ".commitlintrc.yml"' \
+  || fail "a non-conventional preset should stay emoji"
+
 # ── gh stub: state in $GH_STATE, calls in $GH_LOG ──────────────────────────────
 mkdir -p "$WORK/bin"
 cat > "$WORK/bin/gh" <<'PY'
@@ -305,6 +327,7 @@ q '[.items[] | {(.id): .status}] | add == {"I1":"Done","I2":"Building","I3":"Rev
   || fail "prune-empty must put every wiped status back: $(jq -c .items "$GH_STATE")"
 echo "$OUT" | q '.restored == 3' || fail "three cards should be restored: $OUT"
 BK=$(echo "$OUT" | jq -r .status_backup)
+command -v cygpath >/dev/null && BK=$(cygpath -u "$BK")  # Windows Python prints C:\...
 case "$BK" in "$WORK/.claude/super-board/backup/board-2-"*.json) ;; *) fail "backup path wrong: $BK" ;; esac
 q '. == {"I1":"Done","I2":"Building","I3":"Review","I4":null}' "$BK" || fail "backup must hold the pre-rewrite statuses: $(cat "$BK")"
 
