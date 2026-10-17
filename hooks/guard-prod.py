@@ -70,7 +70,13 @@ def check(command, rules):
     return None
 
 
+def deny(reason):
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}))
+
+
 def main():
+    rules = None
     try:
         payload = json.loads(sys.stdin.read() or "{}")
         if payload.get("hook_event_name", "PreToolUse") != "PreToolUse":
@@ -91,10 +97,13 @@ def main():
                   % hit)
         if rules["message"]:
             reason += " " + " ".join(rules["message"])
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}))
+        deny(reason)
     except Exception:
-        pass
+        # No prod rules configured: stay a no-op like the sibling guards. With rules, a guard
+        # that cannot decide must not wave a possible prod command through.
+        if rules and any(rules[k] for k in ("patterns", "hosts", "ports")):
+            deny("guard-prod could not check this command against the configured guard.prod rules, so it "
+                 "is blocked. Stop and report to the user; do not retry it in another form.")
 
 
 if __name__ == "__main__":
