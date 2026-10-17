@@ -183,7 +183,11 @@
   // work; a live database, or a destructive schema change, waits for you.
   "migrations": {
     "globs": ["supabase/migrations/**", "prisma/migrations/**", "drizzle/**",
-              "**/migrations/*.sql", "db/migrate/**", "alembic/versions/**"],
+              "**/migrations/*.sql", "db/migrate/**", "alembic/versions/**",
+              "**/Migrations/*.cs"],
+    // Paths a glob matches that are not migrations. Default: EF Core's generated
+    // designer and snapshot ("**/*.Designer.cs", "**/*ModelSnapshot.cs").
+    "exclude": ["**/*.Designer.cs", "**/*ModelSnapshot.cs"],
     // Which databases the robot may migrate. Any of "test", "staging", "live".
     // Default ["test", "staging"]. Onboard asks (multi-select).
     "allowed_envs": ["test", "staging"],
@@ -281,6 +285,26 @@
   "verify_commands": [
     "cd server && npm ci --silent && npm run typecheck && npm test"
   ],
+
+  // Optional limits for the merge gate's verify_commands run.
+  "merge_gate": {
+    // Seconds each verify command may run before it is killed and counts as a
+    // failure (exit 2). Default 2700 (45 min, room for Testcontainers suites);
+    // 0 = no limit.
+    "command_timeout_s": 2700,
+    // Tools the checks need running before they start. "docker" preflights
+    // `docker info`; when it fails the gate exits 9 (verification-readiness)
+    // before verifying, so a stopped daemon is never read as a stale branch.
+    "requires": ["docker"]
+  },
+
+  // Optional: where super-board-env-check.sh looks for keys. Dotenv files and
+  // appsettings*.json, relative to the repo root; first file that has the key wins.
+  // JSON keys are named Section:Key or Section__Key (nested objects).
+  "env_check": {
+    "files": ["backend/.env", "frontend/apps/dashboard/.env.local",
+              "backend/src/Host/appsettings.Development.json"]
+  },
 
   // Optional throttle on how many cards a single wave dispatches. ABSENT OR 0
   // MEANS UNLIMITED, which is the default and is usually what you want.
