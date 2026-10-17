@@ -108,7 +108,8 @@ class GitBash(unittest.TestCase):
         bash = setup.bash()
         self.assertNotRegex(bash.lower(), r'system32|windowsapps')
         result = subprocess.run([bash, '-c', 'echo $OSTYPE'], capture_output=True, text=True, timeout=60)
-        self.assertIn('msys', result.stdout, result.stderr)
+        # Git Bash reports msys or cygwin depending on the Git for Windows build; WSL reports linux-gnu.
+        self.assertRegex(result.stdout, r'msys|cygwin', result.stderr)
 
 
 if __name__ == '__main__':
