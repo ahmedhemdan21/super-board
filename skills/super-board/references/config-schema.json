@@ -419,7 +419,8 @@
 
   // Optional. super-collect sources for THIS project (skills/super-collect/SKILL.md).
   // Written by `super-board onboard` (collect step). IDs and hosts only: secrets
-  // live in .env — SENTRY_AUTH_TOKEN, POSTHOG_PERSONAL_API_KEY — never here.
+  // live in a gitignored env file (.env.local when .env is tracked by git) —
+  // SENTRY_AUTH_TOKEN, POSTHOG_PERSONAL_API_KEY — never here.
   "collect": {
     // Sources `/super-collect` runs with no argument. Any of:
     // "sentry", "posthog", "loki", "prometheus", "github", "prs", "architecture", plus the `name` of
@@ -500,7 +501,7 @@
     //              one of the three at setup).
     //   target   — the MCP server name, the URL, or the command.
     //   auth_env — optional env var holding a token (http: sent as Bearer). The
-    //              name only; the value stays in .env.
+    //              name only; the value stays in .env.local / .env (never a tracked file).
     //   map      — optional dot-paths into each record: items (the list), id,
     //              title, body, url, count. Absent = best guess per record.
     "custom": [

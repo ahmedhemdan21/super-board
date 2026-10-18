@@ -320,6 +320,52 @@ def migrate_config(cfg):
 
 # ── check / fix ────────────────────────────────────────────────────────────────
 
+# Collector token names — a copy of collect_common.SECRET_KEYS / SECRET_PATTERN (this script
+# ships to .claude/bin and cannot import it); tests/test_collect_telemetry.py checks they agree.
+SECRET_KEYS = ("SENTRY_AUTH_TOKEN", "POSTHOG_PERSONAL_API_KEY")
+SECRET_PATTERN = re.compile(r"(?:LOKI|PROMETHEUS)_\w*(?:TOKEN|KEY|PASSWORD|SECRET)\w*")
+
+
+def tracked_env_secrets(root, extra_keys=()):
+    """Collector key NAMES found in a git-tracked `.env` (any folder). Values are read only
+    to tell empty from filled and are never returned. A branch switch rewrites a tracked
+    file, so a key there is lost or committed: filled → must fix, empty → warning."""
+    if not is_git_repo(root):
+        return []
+    r = run(["git", "ls-files", "-z", "--", ".env", "*/.env"], cwd=root)
+    found = []
+    for rel in sorted(p for p in (r.stdout or "").split("\0") if p and os.path.basename(p) == ".env"):
+        names, filled = [], []
+        for line in read(os.path.join(root, rel)).splitlines():
+            line = line.strip()
+            if line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k = k.strip()
+            k = k[len("export "):].strip() if k.startswith("export ") else k
+            if k in SECRET_KEYS or k in extra_keys or SECRET_PATTERN.fullmatch(k):
+                names.append(k)
+                if v.strip().strip('"').strip("'"):
+                    filled.append(k)
+        if names:
+            local = os.path.join(os.path.dirname(rel), ".env.local").replace(os.sep, "/")
+            found.append({"file": rel, "keys": names, "filled": filled, "level": "must" if filled else "warn",
+                          "remedy": f"move {', '.join(names)} to {local} (gitignored: git check-ignore {local}), "
+                                    f"blank them in {rel}" + (", and rotate the filled tokens: they are in git history"
+                                                               if filled else "")})
+    return found
+
+
+def custom_auth_envs(root):
+    keys = set()
+    for p in glob.glob(os.path.join(root, ".claude", "super-board", "configs", "*.json")):
+        cfg = load_json(p)
+        for src in (((cfg or {}).get("collect") or {}).get("custom") or []) if isinstance(cfg, dict) else []:
+            if isinstance(src, dict) and src.get("auth_env"):
+                keys.add(str(src["auth_env"]))
+    return tuple(sorted(keys))
+
+
 def installed_version(root):
     return read(os.path.join(root, ".claude", "skills", "super-board", "VERSION")) or None
 
@@ -379,13 +425,15 @@ def check(root, pack, host="claude", home=None, catalog=None):
         ok.append("git repo found")
     if helpers:
         ok.append("required worker skills resolved for " + host)
-    red = bool(missing or old_dirs or configs or verification or not git or needs or not helpers)
+    env_secrets = tracked_env_secrets(root, custom_auth_envs(root))
+    red = bool(missing or old_dirs or configs or verification or not git or needs or not helpers
+               or any(e["level"] == "must" for e in env_secrets))
     return {
         "root": root, "pack": pack, "pack_version": pack_version, "installed_version": have_v,
         "upgrade": older, "from": from_v or ("older" if older else None),
         "added_skills": upgrade_rec.get("added_skills", []),
         "missing": missing, "old_dirs": old_dirs, "configs": configs, "verification": verification, "git": git,
-        "helper_skills": helpers, "helper_readiness": readiness, "needs": needs, "os": fam, "ok": ok, "green": not red,
+        "helper_skills": helpers, "helper_readiness": readiness, "env_secrets": env_secrets, "needs": needs, "os": fam, "ok": ok, "green": not red,
     }
 
 
@@ -502,6 +550,11 @@ def text_report(res):
             lines.append(f"  ✗ missing {entry['name']} for {res['helper_readiness']['host']}; install it in that host and restart")
     if res.get("helper_readiness", {}).get("error"):
         lines.append("  ✗ " + res["helper_readiness"]["error"])
+    for e in res.get("env_secrets", []):
+        mark = "✗" if e["level"] == "must" else "!"
+        what = "filled collector keys" if e["level"] == "must" else "collector key names"
+        lines.append(f"  {mark} tracked {e['file']} holds {what}: {', '.join(e['keys'])}")
+        lines.append(f"    → {e['remedy']}")
     for path, error in res.get("verification", {}).items():
         lines.append(f"  ✗ {path}: {error}")
     for n in res.get("needs", []):

@@ -363,4 +363,21 @@ cmp -s "$GH_STATE" "$WORK/before.json" || fail "dry-run changed board state: $(c
 [ ! -e "$WORK/dry/.claude" ] || fail "dry-run must not write a backup file"
 echo "$OUT" | q '.status_backup == null and .restored == 0 and .added_columns != []' || fail "dry-run report wrong: $OUT"
 
-echo "PASS: test-setup.sh (12 scenarios)"
+# 13 — a tracked .env with collector key names: empty → warning, filled → must fix (red).
+#      Only names are reported, never values.
+T="$WORK/envtracked"; mkdir -p "$T/frontend"; git -C "$T" init -q -b main
+printf 'VITE_API=x\nSENTRY_AUTH_TOKEN=\nLOKI_BASIC_AUTH_PASSWORD=\n' > "$T/frontend/.env"
+git -C "$T" add . && git -C "$T" -c user.email=t@t -c user.name=t commit -qm init
+OUT=$(python3 "$SETUP" check --root "$T" || true)
+echo "$OUT" | q '.env_secrets == [{"file":"frontend/.env","keys":["SENTRY_AUTH_TOKEN","LOKI_BASIC_AUTH_PASSWORD"],"filled":[],"level":"warn"} + (.env_secrets[0] | {remedy})]' \
+  || fail "empty keys in a tracked .env are a warning: $OUT"
+printf 'SENTRY_AUTH_TOKEN=sntrys_offline_value\nPOSTHOG_PERSONAL_API_KEY=\n' > "$T/frontend/.env"
+OUT=$(python3 "$SETUP" check --root "$T" || true)
+echo "$OUT" | q '.env_secrets[0].level == "must" and .env_secrets[0].filled == ["SENTRY_AUTH_TOKEN"] and .green == false' \
+  || fail "a filled key in a tracked .env is a must-fix: $OUT"
+echo "$OUT" | grep -q 'sntrys_offline_value' && fail "a secret value leaked into check output"
+TXT=$(python3 "$SETUP" check --root "$T" --text || true)
+echo "$TXT" | grep -q 'frontend/.env.local' || fail "remedy names .env.local: $TXT"
+echo "$TXT" | grep -q 'sntrys_offline_value' && fail "a secret value leaked into the text report"
+
+echo "PASS: test-setup.sh (13 scenarios)"

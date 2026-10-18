@@ -194,14 +194,14 @@ def fetch(src, since=None):
         if src.get("auth_env"):
             tok = cc.secret(src["auth_env"])
             if not tok:
-                return "unavailable", f"key missing: add {src['auth_env']} to .env"
+                return "unavailable", f"key missing: add {src['auth_env']} to {cc.secret_hint()}"
             req.add_header("Authorization", f"Bearer {tok}")
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
                 raw = r.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
             if e.code in (401, 403):
-                return "unavailable", (f"HTTP {e.code}: it needs a token. Add it to .env"
+                return "unavailable", (f"HTTP {e.code}: it needs a token. Add it to {cc.secret_hint()}"
                                        + (f" as {src['auth_env']}" if src.get("auth_env") else " and give its name (auth_env)")
                                        + ", then test again")
             return "unavailable", f"HTTP {e.code}"

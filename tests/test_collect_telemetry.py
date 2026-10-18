@@ -178,6 +178,57 @@ class Loki(unittest.TestCase):
         self.assertEqual(json.loads(out.getvalue())["status"], "unavailable")
 
 
+class SecretFile(unittest.TestCase):
+    """Collector keys never go in a git-tracked .env: a branch switch rewrites it."""
+
+    def repo(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        subprocess.run(["git", "init", "-q", d], check=True)
+        return d
+
+    def write(self, d, name, text):
+        with open(os.path.join(d, name), "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def test_untracked_env_is_used(self):
+        d = self.repo()
+        self.write(d, ".env", "A=1\n")
+        self.assertEqual(cc.secret_file(d), os.path.join(d, ".env"))
+
+    def test_tracked_env_means_env_local(self):
+        d = self.repo()
+        self.write(d, ".env", "VITE_X=1\n")
+        subprocess.run(["git", "-C", d, "add", ".env"], check=True)
+        self.assertEqual(cc.secret_file(d), os.path.join(d, ".env.local"))
+
+    def test_only_env_local_present(self):
+        d = self.repo()
+        self.write(d, ".env.local", "A=1\n")
+        self.assertEqual(cc.secret_file(d), os.path.join(d, ".env.local"))
+
+    def test_env_local_wins_on_conflict(self):
+        d = self.repo()
+        self.write(d, ".env", "SENTRY_AUTH_TOKEN=from_env\n")
+        self.write(d, ".env.local", "SENTRY_AUTH_TOKEN=from_local\n")
+        old = os.getcwd()
+        os.chdir(d)
+        self.addCleanup(os.chdir, old)
+        with mock.patch.dict(os.environ, {"SENTRY_AUTH_TOKEN": ""}):
+            self.assertEqual(cc.secret("SENTRY_AUTH_TOKEN"), "from_local")
+            self.write(d, ".env.local", "SENTRY_AUTH_TOKEN=\n")
+            self.assertEqual(cc.secret("SENTRY_AUTH_TOKEN"), "from_env")  # empty never shadows
+
+    def test_setup_copy_of_key_names_agrees(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "sb_setup", os.path.join(HERE, "..", "scripts", "super-board-setup.py"))
+        setup = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(setup)
+        self.assertEqual(setup.SECRET_KEYS, cc.SECRET_KEYS)
+        self.assertEqual(setup.SECRET_PATTERN.pattern, cc.SECRET_PATTERN.pattern)
+
+
 class LokiStructuredMetadata(unittest.TestCase):
     """Serilog -> OTLP -> Loki: the line is often empty and the error lives in structured
     metadata, merged into `stream` or sent as a third value element (categorize-labels)."""

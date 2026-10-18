@@ -2,7 +2,7 @@
 """super-collect source `sentry`: pull unresolved issues through the Sentry REST API.
 
 Stdlib only, read-only. Ported from BookKeepingApp's sentry-bug-hunt/sentry_issues.py.
-Token: SENTRY_AUTH_TOKEN (env, else nearest .env / .env.local), scopes event:read
+Token: SENTRY_AUTH_TOKEN (env, else nearest .env.local / .env; .env.local wins), scopes event:read
 project:read. Org / project / host / environment come from the config's
 `collect.sentry` block, falling back to SENTRY_ORG / SENTRY_PROJECT / SENTRY_URL.
 Never prints the token.
@@ -49,7 +49,7 @@ def settings(cfg):
     project = s.get("project") or cc.secret("SENTRY_PROJECT")
     base = (s.get("host") or cc.secret("SENTRY_URL") or "https://sentry.io").rstrip("/")
     if not (token and org):
-        raise SentryError("Missing SENTRY_AUTH_TOKEN (.env) or collect.sentry.org (config). "
+        raise SentryError(f"Missing SENTRY_AUTH_TOKEN ({cc.secret_hint()}) or collect.sentry.org (config). "
                           "Token needs scopes event:read, project:read.")
     return {"token": token, "org": org, "project": project, "base": base,
             "env": s.get("environment", "production"),
