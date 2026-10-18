@@ -112,4 +112,80 @@ RC=0; card items >/dev/null 2>&1 || RC=$?
 [ "$RC" != 0 ] || fail "incomplete board read must fail"
 ok "incomplete board read refused"
 
+# ── link: the cross-board pair (acme/web card → acme/api counterpart) ─────
+cat > "$TMP/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+# Fake gh for `link`: one log line per call, a copy of every body written.
+q=""; for a in "$@"; do case "$a" in query=*) q="${a#query=}" ;; esac; done
+printf '%s\n' "$*" | tr '\n' ' ' >> "$FAKE_LOG"; echo >> "$FAKE_LOG"
+bodyfile() { while [ $# -gt 0 ]; do [ "$1" = --body-file ] && { echo "$2"; return; }; shift; done; }
+case "$1 $2" in
+  "issue view") cat "$FAKE_DIR/cur.json" ;;
+  "issue create") cp "$(bodyfile "$@")" "$FAKE_DIR/created.md"; echo "https://github.com/acme/api/issues/77" ;;
+  "issue edit") cp "$(bodyfile "$@")" "$FAKE_DIR/edited.md" ;;
+  "project item-add") [ -f "$FAKE_DIR/fail-item-add" ] && exit 1; echo '{"id":"PVTI_new"}' ;;
+  "api graphql")
+    case "$q" in
+      *mutation*) echo '{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_new"}}}}' ;;
+      *'field(name:"Status")'*) echo '{"data":{"repositoryOwner":{"projectV2":{"id":"PVT_api","field":{"id":"F_api","options":[{"id":"opt_backlog","name":"Backlog"},{"id":"opt_ready","name":"Ready"}]}}}}}' ;;
+      *) exit 1 ;;
+    esac ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$TMP/bin/gh"
+jq -n '{number: 12, title: "Show invoices", comments: [],
+        body: "## Problem\nNo invoice list.\n\n## Context\n- **Where:** `/invoices`\n- **Who:** owner\n\n## Fix\nList them.\n\n## Acceptance Criteria\n- [ ] list renders\n\n## Risk\n🟢 Low\n\n## Blocked by\n- None.\n"}' > "$TMP/cur.json"
+printf '{"project":{"owner":"acme","number":15},"repo":{"remote":"https://github.com/acme/web"},"linked_repos":["acme/api"]}' > "$TMP/cfg.json"
+lnk() { "$CARD" --config "$TMP/cfg.json" link 12 "$@"; }
+
+# 10 — --new blocks: the counterpart is created in acme/api, put on ITS board in
+#      Backlog, and the web card gets the Blocked-by ref plus a Linked bullet.
+reset_log
+OUT=$(lnk --to acme/api --project acme/9 --new blocks --title "✨ [feat] invoices: list endpoint" --why "the endpoint")
+echo "$OUT" | jq -e '.created == "acme/api#77" and .blocker == "acme/api#77" and .dependent == "acme/web#12"' >/dev/null || fail "link output: $OUT"
+grep -q '^project item-add 9 --owner acme --url https://github.com/acme/api/issues/77' "$FAKE_LOG" || fail "counterpart not added to the other board: $(cat "$FAKE_LOG")"
+grep -q 'o=opt_backlog' "$FAKE_LOG" || fail "counterpart not moved to Backlog: $(cat "$FAKE_LOG")"
+grep -q -- '- \*\*Linked:\*\* acme/web#12 — waits on this card' "$TMP/created.md" || fail "new body lacks Linked: $(cat "$TMP/created.md")"
+python3 - "$TMP/edited.md" <<'PY' || fail "web card body wrong: $(cat "$TMP/edited.md")"
+import sys, re
+b = open(sys.argv[1], encoding="utf-8").read()
+blocked = b.split("## Blocked by")[-1]
+assert "- acme/api#77 — the endpoint" in blocked, blocked
+assert "None" not in blocked, "a lone - None. must give way to the blocker"
+context = b.split("## Context")[1].split("## Fix")[0]
+assert "- **Linked:** acme/api#77 — blocks this card" in context, context
+assert "\r" not in b
+PY
+ok "link --new blocks: created, Backlog on the other board, refs both ways"
+
+# 11 — the written ref parses: deps.sh frees the web card once acme/api#77 is done.
+jq -n --rawfile b "$TMP/edited.md" '{issues: [{number: 12, title: "web", state: "OPEN", body: $b}],
+  foreign: {"acme/api#77": {__typename: "Issue", state: "CLOSED", stateReason: "COMPLETED"}}}' > "$TMP/deps.json"
+"$PWD/../scripts/super-board-deps.sh" --from "$TMP/deps.json" --repo acme/web --linked acme/api \
+  | jq -e '.["12"].blockers == ["acme/api#77"] and .["12"].runnable == true' >/dev/null || fail "deps.sh cannot read what link wrote"
+ok "link output round-trips through deps.sh"
+
+# 12 — --new waits: the NEW card carries the Blocked-by ref; the web card only Linked.
+reset_log
+lnk --to acme/api --project acme/9 --new waits --title "🧪 [test] invoices: contract test" >/dev/null 2>&1 || fail "link --new waits failed"
+grep -q -- '^- acme/web#12' "$TMP/created.md" || fail "the waiting card needs the blocker ref: $(cat "$TMP/created.md")"
+grep -q -- '- acme/api#77' "$TMP/edited.md" && fail "the blocker card must not wait on its dependent"
+grep -q -- '- \*\*Linked:\*\* acme/api#77 — waits on this card' "$TMP/edited.md" || fail "web card lacks Linked"
+ok "link --new waits: ref on the new card"
+
+# 13 — refusals before any write: repo not in linked_repos, missing --project.
+reset_log; RC=0; lnk --to evil/other --project acme/9 --new blocks --title t >/dev/null 2>&1 || RC=$?
+[ "$RC" = 64 ] && ! grep -qE '^(issue create|issue edit|project item-add)' "$FAKE_LOG" || fail "unlinked repo must refuse before writing (rc=$RC)"
+RC=0; ERR=$(lnk --to acme/api --new blocks --title t 2>&1 >/dev/null) || RC=$?
+[ "$RC" = 64 ] && echo "$ERR" | grep -q -- '--project' || fail "missing --project must say so (rc=$RC): $ERR"
+ok "link refuses unlinked repos and a missing --project"
+
+# 14 — a failed board add after the issue exists says what is left; the web card is untouched.
+reset_log; rm -f "$TMP/edited.md"; touch "$TMP/fail-item-add"; RC=0
+ERR=$(lnk --to acme/api --project acme/9 --new blocks --title t 2>&1 >/dev/null) || RC=$?
+rm -f "$TMP/fail-item-add"
+[ "$RC" = 69 ] && echo "$ERR" | grep -q 'created acme/api#77' && [ ! -f "$TMP/edited.md" ] || fail "partial link must report and stop (rc=$RC): $ERR"
+ok "partial link reports what was written"
+
 echo "PASS: $pass card-helper checks"

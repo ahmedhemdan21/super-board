@@ -130,7 +130,7 @@ LBL_ITEMS=$(jq -n '{items: [
   {status:"Ready", content:{type:"Issue", number:9, title:"bare", assignees:[]}},
   {status:"QA", labels:["qa"], content:{type:"Issue", number:11, title:"in qa", assignees:[]}}]}')
 LBL_DEPS=$(jq -n '[9,10,12,13] | map({(tostring): {runnable:true, parseable:true, blockers:[]}}) | add')
-# Routing only: these bodiless cards would be held by triage (scenario 20).
+# Routing only: these bodiless cards would be held by triage (scenario 21).
 OUT17=$("$PLAN" --config <(echo "$NOCAP" | jq '.triage.enabled = false') --items <(echo "$LBL_ITEMS") --deps <(echo "$LBL_DEPS"))
 lane() { echo "$OUT17" | jq -r --argjson n "$1" '.cards[] | select(.number == $n) | .lane'; }
 [ "$(lane 12)" = qa ]    || fail "a qa-labelled Ready card must skip Building (lane qa), got: $OUT17"
@@ -154,25 +154,41 @@ OUT19=$("$PLAN" --config <(echo "$NOCAP") --items "$ITEMS" --deps <(jq '.["21"].
 echo "$OUT19" | jq -e '[.refreshApproval[].number] == [21]' >/dev/null || fail "stale approval must get a fresh request"
 echo "$OUT19" | jq -e '[.resume[].number, .cards[].number, .sweep[].number] | index(21) == null' >/dev/null || fail "refresh is not permission to merge or build"
 
-# 20 — triage before Ready. A free Ready card whose body is too vague (no Fix, an AC
+# 20 — cross-board sweep: a Blocked card whose only blockers live on a linked
+#      repo's board is swept once they are all done (closed COMPLETED / merged),
+#      named in clearedBy as owner/repo#N. One still open stays; one closed not
+#      planned is flagged for a person, never swept. The graph comes from
+#      super-board-deps.sh over the cross-repo fixture, so both ends are real.
+XDEPS=$(../scripts/super-board-deps.sh --from fixtures/deps-cross.json --repo acme/web --linked acme/api)
+XITEMS=$(jq -n '{items: [
+  {status:"Blocked", content:{type:"Issue", number:101, title:"foreign done", assignees:[]}},
+  {status:"Blocked", content:{type:"Issue", number:102, title:"foreign open", assignees:[]}},
+  {status:"Blocked", content:{type:"Issue", number:104, title:"foreign not planned", assignees:[]}},
+  {status:"Blocked", content:{type:"Issue", number:113, title:"foreign done, other case", assignees:[]}}]}')
+OUT20=$("$PLAN" --config <(echo "$NOCAP") --items <(echo "$XITEMS") --deps <(echo "$XDEPS"))
+echo "$OUT20" | jq -e '[.sweep[].number] == [101,113]' >/dev/null   || fail "cards whose foreign blockers are done must be swept, got: $(echo "$OUT20" | jq -c .sweep)"
+echo "$OUT20" | jq -e '.sweep[0].clearedBy == ["acme/api#5"]' >/dev/null   || fail "clearedBy must name the foreign blocker, got: $(echo "$OUT20" | jq -c .sweep)"
+echo "$OUT20" | jq -e '[.flag[].number] == [104]' >/dev/null   || fail "a not-planned foreign blocker must be flagged, got: $(echo "$OUT20" | jq -c .flag)"
+
+# 21 — triage before Ready. A free Ready card whose body is too vague (no Fix, an AC
 #      that says "works") is NOT dispatched and is reported in `triage` with what is
 #      missing; a well-written one goes out. The graph's unreadable card (#15) stays in
 #      `flag` only. A crashing checker holds every candidate (fail safe).
 echo "$OUT" | jq -e '.triage == []' >/dev/null || fail "well-written fixture cards need no triage, got: $(echo "$OUT" | jq -c .triage)"
 VAGUE=$(jq '(.items[] | select(.content.number == 12) | .content.body) |= (sub("## Fix\nApply the coupon before tax.\n\n"; "") | sub("- \\[ \\] Total[^\n]*"; "- [ ] works"))' "$ITEMS")
-OUT20=$("$PLAN" --config <(echo "$NOCAP") --items <(echo "$VAGUE") --deps "$DEPS")
-echo "$OUT20" | jq -e '[.cards[].number] | index(12) == null' >/dev/null || fail "a vague Ready card must not be dispatched: $OUT20"
-echo "$OUT20" | jq -e '[.triage[].number] == [12]' >/dev/null || fail "the vague card must be reported for triage, got: $(echo "$OUT20" | jq -c .triage)"
-echo "$OUT20" | jq -e '.triage[0].missing | (index("Fix") != null and index("checkable acceptance criterion") != null)' >/dev/null \
-  || fail "triage must name what is missing, got: $(echo "$OUT20" | jq -c .triage)"
-echo "$OUT20" | jq -e '[.flag[].number] == [15] and ([.triage[].number] | index(15) == null)' >/dev/null || fail "#15 belongs to flag only"
-OUT20B=$("$PLAN" --config <(echo "$NOCAP" | jq '.triage.enabled = false') --items <(echo "$VAGUE") --deps "$DEPS")
-echo "$OUT20B" | jq -e '[.cards[].number] | index(12) != null' >/dev/null || fail "triage.enabled=false must skip the check"
+OUT21=$("$PLAN" --config <(echo "$NOCAP") --items <(echo "$VAGUE") --deps "$DEPS")
+echo "$OUT21" | jq -e '[.cards[].number] | index(12) == null' >/dev/null || fail "a vague Ready card must not be dispatched: $OUT21"
+echo "$OUT21" | jq -e '[.triage[].number] == [12]' >/dev/null || fail "the vague card must be reported for triage, got: $(echo "$OUT21" | jq -c .triage)"
+echo "$OUT21" | jq -e '.triage[0].missing | (index("Fix") != null and index("checkable acceptance criterion") != null)' >/dev/null \
+  || fail "triage must name what is missing, got: $(echo "$OUT21" | jq -c .triage)"
+echo "$OUT21" | jq -e '[.flag[].number] == [15] and ([.triage[].number] | index(15) == null)' >/dev/null || fail "#15 belongs to flag only"
+OUT21B=$("$PLAN" --config <(echo "$NOCAP" | jq '.triage.enabled = false') --items <(echo "$VAGUE") --deps "$DEPS")
+echo "$OUT21B" | jq -e '[.cards[].number] | index(12) != null' >/dev/null || fail "triage.enabled=false must skip the check"
 STUBBIN=$(mktemp -d); trap 'rm -rf "$STUBBIN"' EXIT
 cp ../scripts/super-board-wave-plan.sh ../scripts/super-board-verification-ready.py ../scripts/super-board-github-read.py "$STUBBIN/"
 printf 'import sys\nsys.exit(1)\n' > "$STUBBIN/super-board-card-ready.py"
-OUT20C=$("$STUBBIN/super-board-wave-plan.sh" --config <(echo "$NOCAP") --items "$ITEMS" --deps "$DEPS" 2>/dev/null)
-echo "$OUT20C" | jq -e '[.cards[] | select(.status == "Ready")] == [] and ([.triage[].number] | index(12) != null)' >/dev/null \
-  || fail "a crashing card-ready must hold every Ready card, got: $OUT20C"
+OUT21C=$("$STUBBIN/super-board-wave-plan.sh" --config <(echo "$NOCAP") --items "$ITEMS" --deps "$DEPS" 2>/dev/null)
+echo "$OUT21C" | jq -e '[.cards[] | select(.status == "Ready")] == [] and ([.triage[].number] | index(12) != null)' >/dev/null \
+  || fail "a crashing card-ready must hold every Ready card, got: $OUT21C"
 
-echo "PASS: test-wave-plan.sh (20 scenarios)"
+echo "PASS: test-wave-plan.sh (21 scenarios)"

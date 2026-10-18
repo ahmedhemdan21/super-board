@@ -105,6 +105,15 @@
   // `{path, remote}`. `remote` can be `null` for local-only (no pull requests).
   "repo": { "path": ".", "remote": "https://github.com/<owner>/<repo>" },
 
+  // Cross-board flow: other repos (`owner/name`) whose issues may block cards on
+  // this board, e.g. the backend repo for a frontend board. Default []. A
+  // `## Blocked by` bullet or `blocked-by:` line may then name `owner/name#123`
+  // (or the issue/PR URL); super-board-deps.sh reads its state in one batched
+  // query and frees the card only when that issue closed COMPLETED or that PR
+  // merged. A foreign ref to a repo NOT listed here makes the card unreadable
+  // (flagged, never built). `/super-board link` creates linked pairs.
+  "linked_repos": [],
+
   // The branch all per-issue branches are cut from and squash-merged back into.
   // Default `"main"`. Onboard warns and suggests `"staging"` or `"develop"` if
   // `main` appears to be production.
@@ -180,14 +189,20 @@
     // or keyword (case-insensitive, searched in the diff's ADDED lines only) of
     // a category exits the gate 7: no merge, card → Blocked 🙋 (the human merges
     // it, or comments "done" to approve and the next wave merges).
-    // Setting this key replaces the whole default set; {} turns it off.
+    // Setting this key replaces the whole default set; {} turns it off. The
+    // default set is exactly the four categories below (money, auth, schema,
+    // deploy): to add one, copy all four and append yours.
     // Globs: `**/` = any dirs (incl. none), `**` = anything, `*` = one segment.
+    // Category paths match case-insensitively (src/Auth/ hits **/auth/**).
+    // On exit 7 the Reviewer adds the `needs-human` label — display only; only
+    // a merge or a verified head-bound approval clears the gate.
     "always_human": {
       "money":  { "labels": ["money", "payments", "billing", "pricing"],
                   "paths": ["**/billing/**", "**/payments/**", "**/stripe/**", "**/checkout/**"],
                   "keywords": ["stripe.", "payment_intent", "price_id", "invoice.create"] },
       "auth":   { "labels": ["auth", "security"],
-                  "paths": ["**/auth/**", "**/authz/**", "**/permissions/**"],
+                  "paths": ["**/auth/**", "**/authz/**", "**/permissions/**",
+                            "**/Authentication/**", "**/Authorization/**", "**/Identity/**"],
                   "keywords": ["jwt.sign", "bcrypt", "password_hash", "service_role"] },
       // Destructive schema changes ONLY (DROP / TRUNCATE / RENAME, or the
       // `schema` label) need a human. Additive migrations (new table, new
@@ -195,7 +210,12 @@
       // rule below. A live database is always human, whatever the change.
       "schema": { "labels": ["schema", "destructive"],
                   "paths": [],
-                  "keywords": ["drop table", "drop column", "truncate table", "rename column", "drop schema"] }
+                  "keywords": ["drop table", "drop column", "truncate table", "rename column", "drop schema"] },
+      // What ships: deploy/release workflows, prod compose files, deploy/ trees.
+      "deploy": { "labels": [],
+                  "paths": [".github/workflows/deploy*.yml", ".github/workflows/release*.yml",
+                            "**/docker-compose*.prod*.yml", "**/deploy/**"],
+                  "keywords": [] }
     },
     // true only when the user explicitly chose auto-merge onto a
     // production-detected base in onboard. run.md's production-merge guard
@@ -344,9 +364,20 @@
   // project-owned command. Empty/missing lists halt with verification-readiness (exit 9).
   // NUL bytes in commands are rejected because shell extraction cannot preserve them.
   // Include the owning project's checks; the board does not choose a universal runner.
+  // An entry is a command string, or { "cmd": "<command>", "retry": false } to
+  // never rerun it (see verify_retry).
   "verify_commands": [
     "cd server && npm ci --silent && npm run typecheck && npm test"
   ],
+
+  // Flaky checks. How many times the merge gate reruns a FAILED test command
+  // before it counts as a real failure. Default 1; 0 = never rerun. A rerun that
+  // passes makes the step pass and prints `FLAKY: {cmd,test,fingerprint}`; the
+  // Reviewer files one `flaky` + `bug` card per fingerprint. Never rerun:
+  // timeouts, entries with "retry": false, and commands that build rather than
+  // test (dotnet build|restore, tsc, npm/pnpm/yarn/bun install|ci, build, lint,
+  // type-check) — a compound command holding one of those included.
+  "verify_retry": 1,
 
   // Optional limits for the merge gate's verify_commands run.
   "merge_gate": {

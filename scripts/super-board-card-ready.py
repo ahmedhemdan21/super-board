@@ -14,7 +14,8 @@ Rules (writing-standard.md § 3, the ticket format):
   every card   >= triage.checkable_ac_min (default 1) checkable `- [ ]` criteria
                (VAGUE_AC below), and a parseable `## Blocked by`, judged by
                super-board-deps.sh itself (its graph via --deps, else deps.sh --from on
-               these issues), never by a second parser.
+               these issues with --repo / --linked from the config, so a foreign
+               `owner/repo#N` blocker obeys `linked_repos`), never by a second parser.
 
 Usage:
   super-board-card-ready.py [--from <issue.json>] [--config <cfg.json>] [--deps <deps.json>]
@@ -129,7 +130,18 @@ def bash():
     return "bash"
 
 
-def deps_verdicts(issues, deps_file=None):
+def deps_scope(cfg):
+    """deps.sh's --repo / --linked from the config, so a foreign `owner/repo#N` blocker is
+    judged as the planner judges it (only `linked_repos` are trusted)."""
+    remote = str(((cfg or {}).get("repo") or {}).get("remote") or "")
+    repo = re.sub(r"^(https?://github\.com/|git@github\.com:)", "", remote)
+    repo = re.sub(r"\.git$", "", repo)
+    args = ["--repo", repo] if re.fullmatch(r"[\w.-]+/[\w.-]+", repo) else []
+    linked = [str(x) for x in (cfg or {}).get("linked_repos") or [] if x]
+    return args + (["--linked", ",".join(linked)] if linked else [])
+
+
+def deps_verdicts(issues, deps_file=None, cfg=None):
     """{number: (parseable, why)}. From the planner's graph when given; else one
     `super-board-deps.sh --from` run over these issues. A failure leaves numbers out."""
     if deps_file:
@@ -145,7 +157,7 @@ def deps_verdicts(issues, deps_file=None):
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(payload, f)
-        r = subprocess.run([bash(), str(script), "--from", path], capture_output=True, text=True,
+        r = subprocess.run([bash(), str(script), "--from", path, *deps_scope(cfg)], capture_output=True, text=True,
                            encoding="utf-8", timeout=60)
         if r.returncode != 0:
             return {}
@@ -230,15 +242,16 @@ def main(argv=None):
         raw = json.loads(text)
         single = isinstance(raw, dict)
         issues = [normalize(x) for x in ([raw] if single else raw)]
-        ac_min = 1
+        cfg = {}
         if a.config:
             with open(a.config, encoding="utf-8") as f:
-                ac_min = int(((json.load(f).get("triage") or {}).get("checkable_ac_min")) or 1)
+                cfg = json.load(f)
+        ac_min = int(((cfg.get("triage") or {}).get("checkable_ac_min")) or 1)
     except (OSError, ValueError, TypeError) as e:
         print(f"card-ready: {e}", file=sys.stderr)
         return 64
     build = [i for i in issues if "qa" not in i["labels"]]
-    verdicts = deps_verdicts(build, a.deps) if build else {}
+    verdicts = deps_verdicts(build, a.deps, cfg) if build else {}
     out = []
     for i in issues:
         missing, hints = judge(i, verdicts.get(i["number"]), max(1, ac_min))

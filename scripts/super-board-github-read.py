@@ -163,7 +163,31 @@ def no_errors(value):
         raise GitHubErrors('GraphQL returned errors with incomplete data')
 
 
+# Per-ref errors a batched cross-repo state read may carry next to its data: a
+# number that does not exist, or a linked repo this token cannot see. The ref is
+# unreadable (its card stays blocked); the run is not halted for it.
+PARTIAL_OK = ('NOT_FOUND', 'FORBIDDEN')
+
+
+def tolerated_partial(text):
+    """True when a foreign-state payload has data and only per-ref errors."""
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return False
+    errors = value.get('errors') if isinstance(value, dict) else None
+    return (isinstance(value, dict) and isinstance(value.get('data'), dict)
+            and isinstance(errors, list) and bool(errors)
+            and all(isinstance(e, dict) and e.get('type') in PARTIAL_OK for e in errors))
+
+
 def validate(text, kind, meta=None):
+    if kind == 'foreign-state':
+        value = json.loads(text)
+        require(isinstance(value, dict) and isinstance(value.get('data'), dict), 'foreign state data missing')
+        if value.get('errors') and not tolerated_partial(text):
+            raise GitHubErrors('GraphQL returned errors with incomplete data')
+        return value
     if kind == 'scalar':
         require(bool(text.strip()), 'required value missing')
         return text
@@ -345,9 +369,16 @@ def read(args, kind='json', meta=None, recovering=False):
             check_halt()
         try:
             result = subprocess.run(command('gh', args), capture_output=True, text=True, encoding='utf-8', timeout=30)
+            # gh exits 1 on any GraphQL error, even beside usable data. A cross-repo
+            # state read whose only errors are per-ref is an answer, not an outage.
+            partial = kind == 'foreign-state' and tolerated_partial(result.stdout)
+            if partial:
+                result = subprocess.CompletedProcess(result.args, 0, result.stdout, '')
             diagnostic = result.stderr
             if result.returncode:
                 diagnostic += result.stdout
+            elif partial:
+                pass
             elif kind != 'diff':
                 try:
                     payload = json.loads(result.stdout)
@@ -382,7 +413,7 @@ def read(args, kind='json', meta=None, recovering=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--kind', choices=('json','scalar','issue-number','head','state','diff','metadata','items','issues','issue-history','quota','projects','project','fields','status-field','permission','comments','approval','merge-state','body','dedupe','prs-open','prs-merged','issues-closed','issue','object','array'))
+    parser.add_argument('--kind', choices=('foreign-state', 'json','scalar','issue-number','head','state','diff','metadata','items','issues','issue-history','quota','projects','project','fields','status-field','permission','comments','approval','merge-state','body','dedupe','prs-open','prs-merged','issues-closed','issue','object','array'))
     parser.add_argument('--issue-history', help='complete paginated all-state issue history for owner/name')
     parser.add_argument('--meta')
     parser.add_argument('--check', action='store_true')

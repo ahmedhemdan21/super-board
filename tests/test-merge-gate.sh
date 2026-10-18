@@ -422,6 +422,17 @@ grep -q '^pr merge' "$GH_LOG" && fail "revoked human approval must not reach mer
 unset STUB_APPROVAL STUB_COMMENTS
 teardown
 
+# 16e — needs-human is display only: adding it by hand (or alongside any other
+#       label) never lets a human-gated PR through. .NET PascalCase auth folders
+#       and deploy files are human-gated by default.
+head_setup
+RC=0; STUB_OID="$SHA" STUB_META="$(meta needs-human src/Identity/UserStore.cs)" gate --expect-head "$SHA" >/dev/null 2>&1 || RC=$?
+[ "$RC" -eq 7 ] || fail "a needs-human label must not let an auth PR merge, got $RC"
+RC=0; OUT=$(STUB_OID="$SHA" STUB_META="$(meta needs-human .github/workflows/deploy-prod.yml)" gate --expect-head "$SHA" 2>/dev/null) || RC=$?
+[ "$RC" -eq 7 ] && echo "$OUT" | grep -q "^human-gate: deploy" || fail "a deploy workflow must be human-gated, got $RC: $OUT"
+grep -q '^pr merge' "$GH_LOG" && fail "no merge may follow a hand-added needs-human label"
+teardown
+
 # 17 — custom categories replace the defaults: with always_human = {} a money
 #      label merges.
 head_setup
@@ -565,6 +576,73 @@ grep -q '^pr merge' "$GH_LOG" && fail "a timed-out check must not merge"
 jq '.merge_gate = {command_timeout_s: "x"}' "$TMP/c.json" > "$TMP/bad.json"
 RC=0; "$GATE" --config "$TMP/bad.json" --pr 1 --dry-run >/dev/null 2>&1 || RC=$?
 [ "$RC" -eq 64 ] || fail "a non-numeric timeout must exit 64, got $RC"
+teardown
+
+# ── verify_retry (flaky checks). $TMP/flaky.sh fails its first FAILS runs, printing a
+#    runner's failure line, then passes. $TMP/runs counts every run.
+flaky_setup() {  # $1 = how many runs fail, $2 = the failure line it prints
+  head_setup
+  printf '#!/usr/bin/env bash\nn=$(cat "%s/runs" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "%s/runs"\n[ "$n" -gt %s ] && exit 0\nprintf "%%s\\n" "%s"; exit 1\n' \
+    "$TMP" "$TMP" "$1" "$2" > "$TMP/flaky.sh"
+}
+runs() { cat "$TMP/runs" 2>/dev/null || echo 0; }
+gate_with() { jq "$1" "$TMP/c.json" > "$TMP/v.json"; STUB_OID="$SHA" "$GATE" --config "$TMP/v.json" --pr 1 --expect-head "$SHA" --lock-timeout 6; }
+
+# Fails once, passes on the rerun: the step passes, the merge happens, and stdout
+# carries FLAKY: with the dotnet test name and the fingerprint.
+flaky_setup 1 '  Failed Acme.Tests.OrderTests.Create_Works [12 ms]'
+RC=0; OUT=$(gate_with ".verify_commands = [\"bash $TMP/flaky.sh\"]" 2>/dev/null) || RC=$?
+[ "$RC" -eq 0 ] || fail "fail-then-pass must count as passed and merge, got $RC"
+[ "$(runs)" -eq 2 ] || fail "a flaky test runs twice, got $(runs)"
+F=$(echo "$OUT" | sed -n 's/^FLAKY: //p')
+echo "$F" | jq -e '.test == "Acme.Tests.OrderTests.Create_Works" and .fingerprint == "flaky|x/y|Acme.Tests.OrderTests.Create_Works"' >/dev/null \
+  || fail "FLAKY line must name the dotnet test and fingerprint, got: $OUT"
+grep -q '^pr merge' "$GH_LOG" || fail "a flaky-but-green check must merge"
+teardown
+
+# pytest names the test; no recognisable runner falls back to the command (fingerprint
+# whitespace-free, because the bug filer's dedupe splits on whitespace).
+flaky_setup 1 'FAILED tests/test_orders.py::test_create - AssertionError'
+OUT=$(gate_with ".verify_commands = [\"bash $TMP/flaky.sh\"]" 2>/dev/null || true)
+echo "$OUT" | sed -n 's/^FLAKY: //p' | jq -e '.test == "tests/test_orders.py::test_create"' >/dev/null || fail "pytest name not extracted: $OUT"
+teardown
+flaky_setup 1 'something went wrong'
+OUT=$(gate_with ".verify_commands = [\"bash $TMP/flaky.sh\"]" 2>/dev/null || true)
+echo "$OUT" | sed -n 's/^FLAKY: //p' | jq -e --arg c "bash $TMP/flaky.sh" '.test == $c and (.fingerprint | test("\\s") | not)' >/dev/null \
+  || fail "no test name must fall back to the command, whitespace-free fingerprint: $OUT"
+teardown
+
+# Fails twice: an ordinary failure (2), no FLAKY line.
+flaky_setup 5 '  Failed Acme.Tests.X [1 ms]'
+RC=0; OUT=$(gate_with ".verify_commands = [\"bash $TMP/flaky.sh\"]" 2>/dev/null) || RC=$?
+[ "$RC" -eq 2 ] && [ "$(runs)" -eq 2 ] || fail "fail-fail must exit 2 after one rerun, got rc=$RC runs=$(runs)"
+echo "$OUT" | grep -q '^FLAKY:' && fail "a real failure is not flaky: $OUT"
+grep -q '^pr merge' "$GH_LOG" && fail "fail-fail must not merge"
+teardown
+
+# A build/install/lint/type-check command is never rerun.
+for text in "dotnet build" "pnpm install" "npm run lint" "npm run type-check" "tsc --noEmit"; do
+  flaky_setup 1 'error'
+  RC=0; gate_with ".verify_commands = [\"bash $TMP/flaky.sh # $text\"]" >/dev/null 2>&1 || RC=$?
+  [ "$RC" -eq 2 ] && [ "$(runs)" -eq 1 ] || fail "'$text' must not be rerun, got rc=$RC runs=$(runs)"
+  teardown
+done
+
+# verify_retry 0 and a per-command "retry": false turn reruns off.
+flaky_setup 1 'error'
+RC=0; gate_with ".verify_retry = 0 | .verify_commands = [\"bash $TMP/flaky.sh\"]" >/dev/null 2>&1 || RC=$?
+[ "$RC" -eq 2 ] && [ "$(runs)" -eq 1 ] || fail "verify_retry 0 must not rerun, got rc=$RC runs=$(runs)"
+teardown
+flaky_setup 1 'error'
+RC=0; gate_with ".verify_commands = [{cmd: \"bash $TMP/flaky.sh\", retry: false}]" >/dev/null 2>&1 || RC=$?
+[ "$RC" -eq 2 ] && [ "$(runs)" -eq 1 ] || fail "retry:false must not rerun, got rc=$RC runs=$(runs)"
+teardown
+# Object entries run like strings; a malformed object is a setup halt (9).
+flaky_setup 0 'never'
+RC=0; gate_with ".verify_commands = [{cmd: \"bash $TMP/flaky.sh\"}]" >/dev/null 2>&1 || RC=$?
+[ "$RC" -eq 0 ] || fail "an object entry must run and merge, got $RC"
+RC=0; gate_with '.verify_commands = [{run: "true"}]' >/dev/null 2>&1 || RC=$?
+[ "$RC" -eq 9 ] || fail "a malformed verify_commands object must exit 9, got $RC"
 teardown
 
 echo "PASS: test-merge-gate.sh (merge, policy and approval scenarios)"

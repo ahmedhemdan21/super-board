@@ -21,7 +21,9 @@
 #     [--category functional|visual|network|console|i18n|a11y|data|testability] \
 #     [--area <area>] [--route <route>] [--spec <path>] [--iter <n>] \
 #     [--fingerprint "<slug>|<tc>|<signature>"] \
-#     [--suggested-skill super-build|super-qa|ui-refine-loop|super-review] \
+#     [--suggested-skill super-build|super-qa|ui-refine-loop|super-review] #     [--label <name>]...  # extra label, e.g. `flaky` (a test that passed only on a
+#                          #   rerun: the merge gate's FLAKY: line, run.md)
+\
 #     [--check-body]      # run the body checks only, then exit (no gh calls)
 #       (ui-refine-loop only labels a UI ticket; a human can run /ui-refine-loop —
 #        the board never triggers it)
@@ -41,6 +43,7 @@ set -uo pipefail
 
 TITLE=""; BODY_FILE=""; KIND="bug"; PRIORITY="medium"; CATEGORY=""
 AREA=""; ROUTE=""; SPEC=""; ITER=""; FINGERPRINT=""; SUGGESTED_SKILL=""; CHECK_ONLY=0
+EXTRA_LABELS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -56,6 +59,7 @@ while [ $# -gt 0 ]; do
     --fingerprint)     FINGERPRINT="$2"; shift 2 ;;
     --suggested-skill) SUGGESTED_SKILL="$2"; shift 2 ;;
     --check-body)      CHECK_ONLY=1; shift ;;
+    --label)           EXTRA_LABELS+=("$2"); shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 64 ;;
   esac
 done
@@ -75,6 +79,9 @@ if [ -n "$CATEGORY" ]; then
   case "$CATEGORY" in functional|visual|network|console|i18n|a11y|data|testability) ;;
     *) die "--category must be one of functional|visual|network|console|i18n|a11y|data|testability (got: $CATEGORY)" 64 ;; esac
 fi
+for l in ${EXTRA_LABELS[@]+"${EXTRA_LABELS[@]}"}; do
+  [[ "$l" =~ ^[A-Za-z0-9][A-Za-z0-9:._-]*$ ]] || die "--label must be a plain label name (got: $l)" 64
+done
 if [ -n "$SUGGESTED_SKILL" ]; then
   case "$SUGGESTED_SKILL" in super-build|super-qa|ui-refine-loop|super-review) ;;
     *) die "--suggested-skill must be super-build|super-qa|ui-refine-loop|super-review (got: $SUGGESTED_SKILL; ui-refine-loop = UI ticket, a human can run /ui-refine-loop)" 64 ;; esac
@@ -236,6 +243,7 @@ LABELS=("$KIND" "source:qa" "priority:${PRIORITY}")
 if [ -n "$AREA" ]; then LABELS+=("area:${AREA}"); fi
 if [ -n "$CATEGORY" ]; then LABELS+=("qa:${CATEGORY}"); fi
 if [ -n "$SUGGESTED_SKILL" ]; then LABELS+=("skill:${SUGGESTED_SKILL}"); fi
+for l in ${EXTRA_LABELS[@]+"${EXTRA_LABELS[@]}"}; do LABELS+=("$l"); done
 
 # `gh issue create` hard-fails on an unknown label, which would lose the finding
 # entirely. Create them best-effort first.

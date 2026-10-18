@@ -120,6 +120,14 @@ class CardReady(unittest.TestCase):
         self.assertEqual([o["ready"] for o in out], [True, False])
         self.assertEqual(out[1]["missing"], ["Blocked by"])
 
+    def test_foreign_blockers_follow_linked_repos(self):
+        body = GOOD.replace("- None.", "- acme/api#5 — the endpoint")
+        cfg = {"repo": {"remote": "https://github.com/acme/web.git"}, "linked_repos": ["acme/api"]}
+        rc, out, err = run(issue(body), config=cfg)
+        self.assertEqual((rc, out["missing"]), (0, []), err)
+        rc, out, _ = run(issue(body), config={"repo": {"remote": "https://github.com/acme/web.git"}})
+        self.assertEqual((rc, out["missing"]), (3, ["Blocked by"]), "a repo not in linked_repos is unreadable")
+
     def test_qa_cards_have_a_lighter_rule_set(self):
         qa = "## Problem\nCheckout totals look wrong.\n\n## Acceptance Criteria\n- [ ] Total equals the sum of line items on `/checkout`\n"
         self.assertEqual(run(issue(qa, labels=("qa",)))[0], 0)

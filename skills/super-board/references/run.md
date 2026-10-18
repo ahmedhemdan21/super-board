@@ -506,7 +506,10 @@ on the base branch**.
           hit. Card Review → **Blocked** with the 🙋 template: `Why blocked` names the
           category and evidence; `To unblock` = "[ ] review PR #<P> and merge it
           yourself" OR "[ ] comment `done` to approve — the next wave merges it";
-          label `needs-you`, `blocked-by: -`. A human merge moves the card to Done the
+          labels `needs-you` and `needs-human` (issue + PR; create `needs-human` once,
+          color FBCA04, "A person merges or approves this PR (merge_policy) — display only"),
+          `blocked-by: -`. Remove `needs-human` once the PR merges or the gate passes on a
+          verified approval. Display only: the gate never reads labels. A human merge moves the card to Done the
           usual way; a `done` brings it back through `resume`, and the gate clears the
           policy hold only with a verified trusted approval of the current request.
      8 → 🙋 needs you. Stdout carries one `needs-you: <command>` line per human step
@@ -519,6 +522,11 @@ on the base branch**.
           verifies their permission and the head before resuming Review. For exits
           7 and 8, copy the gate's `approval-request:` line into the canonical issue
           block; link it from the PR without duplicating the request.
+   Any exit may be preceded by `FLAKY: {"cmd","test","fingerprint"}` lines on stdout: a test
+   command failed, then passed on a rerun (`verify_retry`), so that step counted as passed.
+   After the gate returns, file one card per line — `super-qa-file-bug.sh --kind bug --label
+   flaky --fingerprint <fingerprint>` (dedupe: one open card per fingerprint; full command in
+   super-review SKILL.md → Merge protocol). The gate never files it: it holds the merge lock.
    → do NOT leave a card in Review on exit 2, 3, 5, 7 or 8. A card left in Review is
      re-picked next tick and re-reviewed forever, which is the re-dispatch waste
      tracked in issue #10. Exits 4 and 6 are the exceptions: 4 simply queued, and
@@ -743,7 +751,9 @@ Before planning any wave, `super-board-wave-plan.sh` reports six lists the orche
 **before** launching:
 
 - **`sweep`** — `Blocked` cards whose blockers have all closed. Move each to `Ready` and comment
-  naming what cleared it (`clearedBy` carries the numbers). They then join this very wave.
+  naming what cleared it (`clearedBy` carries the numbers, plus `owner/repo#N` strings for
+  blockers on a linked repo's board — write those as-is, GitHub links them). They then join
+  this very wave.
 - **`stranded`** — `Building` cards with no claim. Nothing selects from Building,
   so a wave stopped mid-build leaves them there forever. Remove any leftover build worktree, keep
   the branch, move the card to `Ready`, and comment naming the branch. The legacy dispatcher does

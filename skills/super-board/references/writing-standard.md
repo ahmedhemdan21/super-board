@@ -258,12 +258,18 @@ under Risk.
 | Section | Content | Required |
 |---|---|---|
 | `## Problem` | 1–3 sentences: what is wrong or missing, from the user's side | yes |
-| `## Context` | `- **Where:**` + lettered steps (one per line), `- **Who:**`, screenshot embedded | yes · screenshot for UI |
+| `## Context` | `- **Where:**` + lettered steps (one per line), `- **Who:**`, screenshot embedded; `- **Linked:** owner/repo#N — <role>` for a card with a counterpart on another repo's board | yes · screenshot for UI · Linked for a linked pair |
 | `## Evidence` | the folded 12-row table below | bugs |
 | `## Fix` | the intended change in 1–3 lines. No implementation plan | yes |
 | `## Acceptance Criteria` | 2–5 `- [ ]` items, each checkable by a test | yes |
 | `## Risk` | 🟢/🟡/🔴 level + one line | yes |
-| `## Blocked by` | `- #N — why` bullets, or exactly `- None.` | yes |
+| `## Blocked by` | `- #N — why` bullets, or exactly `- None.`; a blocker on a linked repo is `- owner/repo#N — why` | yes |
+
+**Linked pairs** (cross-board flow: one feature, one card on each repo's board). Both cards
+carry one `- **Linked:** owner/repo#N — <role>` bullet in Context, the role being
+`blocks this card` or `waits on this card`; the waiting card also names the other in
+`## Blocked by`. The repo must be in the config's `linked_repos`. `super-board-card.sh link`
+writes both.
 
 When an unsettled design triggers [design preflight](design-preflight.md), retain the
 approved choice and short rationale in the existing Context, or link its applicable
