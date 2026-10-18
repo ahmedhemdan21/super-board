@@ -308,7 +308,7 @@ echo "$PARSED" | jq --arg only "$ONLY" --argjson foreign "$FOREIGN" '
       | ( [ $c.p.blockers[] | strings | select(($foreign[.] | foreign_state) == "abandoned") ] ) as $gone
       | ( if $c.p.parseable and ($gone | length) > 0 then
             $c.p + { parseable: false,
-                     why: ($gone | join(", ")) + " was closed without being done (not planned, or a PR closed unmerged) — a person decides whether this card still needs it; fix `## Blocked by`" }
+                     why: (($gone | join(", ")) + " was closed without being done (not planned, or a PR closed unmerged) — a person decides whether this card still needs it; fix `## Blocked by`") }
           else $c.p end ) as $p
       | ( [ $p.blockers[]
             | select(if type == "number" then (. as $b | $open | index($b)) != null
