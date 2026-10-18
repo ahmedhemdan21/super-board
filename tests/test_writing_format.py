@@ -30,7 +30,7 @@ SUBJECT = re.compile(
     r"[a-z0-9][a-z0-9._/-]*: \S"
 )
 COMMENT_HEADER = re.compile(
-    r"^\[(builder|qa|reviewer|collect|orchestrator)\] \[(blocker|issue|suggestion|nit|question|praise|report)\] \S"
+    r"^\[(builder|qa|reviewer|collect|orchestrator|scheduler)\] \[(blocker|issue|suggestion|nit|question|praise|report)\] \S"
 )
 TICKET_SECTIONS = ["Problem", "Context", "Fix", "Acceptance Criteria", "Risk", "Blocked by"]
 EVIDENCE_ROWS = [
@@ -252,6 +252,23 @@ def test_comment_header_regex():
     assert not COMMENT_HEADER.match("🔍 super-board · QA fail · v1")
     assert not COMMENT_HEADER.match("[QA] [report] ❌ failing")
     assert not COMMENT_HEADER.match("[qa] [fyi] ❌ failing")
+    assert COMMENT_HEADER.match("[scheduler] [report] ✅ ok · backend-nightly")
+
+
+def test_scheduler_comment_matches_the_standard():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("sbsched", ROOT / "scripts" / "super-board-scheduler.py")
+    sched = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sched)
+    run = {"job": "backend-nightly", "trigger": "cron", "status": "ok", "duration_s": 3725, "steps": []}
+    sm = sched.summarize(None, None, (3, 2), {"sentry": 3, "prs": 1}, {"graphql": 4120, "core": 4870}, [])
+    sm["counts_after"] = {}
+    body = sched.runs_comment(run, sm, "2026-10-19 02:00 local")
+    assert COMMENT_HEADER.match(body), body
+    example = next(b for b in fenced(STANDARD) if b.startswith("[scheduler]"))
+    assert body.splitlines()[0] == example.splitlines()[0], (body, example)
+    labels = lambda text: [l.split(":")[0] for l in text.strip().splitlines()]  # noqa: E731
+    assert labels(body) == labels(example), body
 
 
 def test_comment_examples_follow_the_header():

@@ -17,6 +17,14 @@ description: GitHub-Project-driven autonomous pipeline. Five verbs — onboard, 
 
 If invoked with no verb, ask which one.
 
+**`super-board scorecard [--since 14d]`** (read-only helper, not a lane verb): run
+`python3 .claude/bin/super-board-metrics.py --config <cfg> --since 14d --html <scratch>/scorecard.html`
+and show its text table: cycle time per lane, QA→Build bounce rate, first-pass merge rate,
+human-merge share, reverts, flaky / regression cards, cards per collect source, GitHub quota.
+A `null` comes with its reason; say it, never fill it in. In a session that has the Artifact
+tool, offer to publish the HTML file (it is self-contained); never publish without a yes.
+Scheduled runs and their history: `references/scheduling.md`.
+
 In Codex the skill is not a slash command: it is `$super-board <verb>`, found in `.agents/skills/`.
 
 ## Routing
@@ -30,6 +38,8 @@ In Codex the skill is not a slash command: it is `$super-board <verb>`, found in
 | `super-board run ...` (default — `worker_backend` unset or `"workflow"`) | `references/run-workflow.md` (lane lifecycles still come from `references/run.md`) |
 | `super-board run ...` with config `worker_backend: "claude-p"` (legacy, explicit opt-in) | `references/run.md` |
 | `super-board stop ...` / "stop the run" / "pause the loop" / "kill super-board" | `references/stop.md` |
+| `super-board scorecard ...` / "how is the board doing" / "board metrics" | the scorecard paragraph above (`scripts/super-board-metrics.py` header has every definition) |
+| "run it every night" / "after each deploy" / scheduler / cloud routine | `references/scheduling.md` |
 | "resume" / "pick up where I left off" / "restart after stop" | `references/stop.md` (resume = run; no separate verb) |
 | Anything about Blocked exits, 🙋 needs you, or dropping a card | `references/block-template.md` |
 | Optional learning after a successfully completed run | `references/calibration.md` (external installed skill; bounded receipt; explicit existing-skill edit paths) |
