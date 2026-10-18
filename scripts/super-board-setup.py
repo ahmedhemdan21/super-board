@@ -479,6 +479,12 @@ def check(root, pack, host="claude", home=None, catalog=None):
     if helpers:
         ok.append("required worker skills resolved for " + host)
     env_secrets = tracked_env_secrets(root, custom_auth_envs(root))
+    # Allow rules with stray whitespace (a CRLF read on Windows left `…:*)<CR>`) never match a
+    # command: every lane prompts, and a headless run is denied. `fix` repairs them.
+    allow = ((load_json(os.path.join(claude, "settings.json")) or {}).get("permissions") or {}).get("allow") or []
+    bad_rules = [r for r in allow if isinstance(r, str) and r != r.strip()]
+    if bad_rules:
+        missing.append(f"settings.json: {len(bad_rules)} permission rule(s) with stray whitespace")
     red = bool(missing or old_dirs or configs or verification or not git or needs or not helpers
                or any(e["level"] == "must" for e in env_secrets))
     return {
@@ -512,6 +518,13 @@ def fix(root, pack, helpers=True, dry=False, host="claude", home=None, catalog=N
     bdir = None
     if not dry and (before["missing"] or before["old_dirs"] or before["configs"] or before["upgrade"]):
         bdir = backup(root, to_backup, stamp)
+
+    if any(m.endswith("with stray whitespace") for m in before["missing"]):
+        if not dry:
+            run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "super-board-settings.py"),
+                 "repair", os.path.join(claude, "settings.json")], cwd=root)
+        fixed.append("settings.json permission rules repaired (stray whitespace)")
+        before["missing"] = [m for m in before["missing"] if not m.endswith("with stray whitespace")]
 
     if before["missing"]:
         if not pack:

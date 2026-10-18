@@ -4,6 +4,7 @@ and the scheduler live check. Prints stream-json events; never calls a model.
 STUB_CLAUDE_MODE: ok (default) · noworkflow (init lists no Workflow tool, then idles) ·
 sleep (starts a grandchild, then idles until killed) · fail (exit 3).
 STUB_CLAUDE_PIDS: a file to append this pid (and the grandchild's) to.
+STUB_CLAUDE_RECEIPT: on a /super-collect prompt, write a collect receipt file here, stamped now.
 """
 import json
 import os
@@ -38,6 +39,13 @@ if mode in ("sleep", "noworkflow"):
         child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
         note(child.pid)
     time.sleep(120)
+receipt = os.environ.get("STUB_CLAUDE_RECEIPT")
+if receipt and "/super-collect" in prompt:
+    # Like a real collect step: a receipt stamped while the run is in progress.
+    os.makedirs(os.path.dirname(receipt), exist_ok=True)
+    with open(receipt, "w") as f:
+        json.dump({"receipts": {"err|sentry|1": {"issue": "3", "at": int(time.time())},
+                                "prs|a|b": {"issue": "4", "at": 1}}}, f)
 if mode == "fail":
     emit({"type": "result", "subtype": "error_during_execution", "is_error": True, "result": "boom"})
     sys.exit(3)
