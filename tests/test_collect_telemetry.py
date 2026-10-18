@@ -90,14 +90,18 @@ class Transport(unittest.TestCase):
             log = os.path.join(d, "log")
             stub = os.path.join(d, "ssh")
             with open(stub, "w") as f:
-                f.write(f"#!/bin/sh\nprintf '%s\\n' \"$@\" > '{log}'\necho '{{\"status\":\"success\",\"data\":{{}}}}'\n")
+                f.write(f"#!/bin/sh\nprintf '%s\\n' \"$@\" > '{log}'\ncat > '{log}.stdin'\n"
+                        "echo '{\"status\":\"success\",\"data\":{}}'\n")
             os.chmod(stub, os.stat(stub).st_mode | stat.S_IEXEC)
             with mock.patch.dict(os.environ, {"PATH": d + os.pathsep + os.environ["PATH"]}):
-                cc.get_json("http://p:9090", "/api/v1/alerts", None, SSH)
+                cc.get_json("http://p:9090", "/api/v1/alerts", {"a": "1", "b": "2"}, SSH)
             with open(log) as f:
                 args = f.read().split("\n")
+            with open(log + ".stdin") as f:
+                stdin = f.read()
         self.assertIn("docker", args)
-        self.assertIn("'http://p:9090/api/v1/alerts'", args)
+        self.assertFalse(any("p:9090" in a for a in args))
+        self.assertEqual(stdin, 'url = "http://p:9090/api/v1/alerts?a=1&b=2"\n')
 
     def test_signature_collapses_noise(self):
         a = cc.signature('{"message":"Timeout 10.0.0.12 after 3000ms req 8f14e45f-ceea-467f-a9b3-1c2d3e4f5a6b"}')
