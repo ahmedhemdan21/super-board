@@ -110,6 +110,17 @@ class Common(unittest.TestCase):
             self.assertEqual(cc.window_days(cfg), 30)
             self.assertTrue(path.endswith("app.json"))
 
+    def test_active_config_falls_back_to_the_only_config(self):
+        # No run in progress → no `active` marker; one config is unambiguous, two are not.
+        with in_dir({".claude/super-board/configs/app.json": json.dumps({"collect": {"window_days": 9}}),
+                     "web/x": ""}) as d:
+            os.chdir(os.path.join(d, "web"))
+            cfg, path = cc.active_config()
+            self.assertEqual(cc.window_days(cfg), 9)
+            self.assertTrue(path.endswith("app.json"))
+        with in_dir({".claude/super-board/configs/a.json": "{}", ".claude/super-board/configs/b.json": "{}"}):
+            self.assertEqual(cc.active_config(), ({}, None))
+
 
 SENTRY_CFG = {"collect": {"sentry": {"org": "acme", "project": "web", "host": "https://us.sentry.io/",
                                      "min_events": 5}}}

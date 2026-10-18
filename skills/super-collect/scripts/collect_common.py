@@ -44,6 +44,14 @@ def active_config(path=None):
             cand = os.path.join(os.path.dirname(ptr), "configs", f"{slug}.json")
             path = cand if os.path.exists(cand) else None
     if not path:
+        # No run in progress (the `active` marker exists only during a run): a project with
+        # exactly one config uses it, as super-board-status.py does. Several → ambiguous, none.
+        cdir = _find_up(os.path.join(".claude", "super-board", "configs"))
+        if cdir and os.path.isdir(cdir):
+            only = sorted(f for f in os.listdir(cdir) if f.endswith(".json"))
+            if len(only) == 1:
+                path = os.path.join(cdir, only[0])
+    if not path:
         return {}, None
     with open(path, encoding="utf-8") as f:
         return json.load(f), path
