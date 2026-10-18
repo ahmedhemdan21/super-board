@@ -299,4 +299,18 @@ doc = re.search(r"```json\n(.*?)```", open(sys.argv[1]).read(), re.S).group(1)
 sys.exit(0 if json.loads(doc) == json.load(open(sys.argv[2])) else 1)
 PY
 
-echo "PASS: test-install.sh (17 scenarios)"
+# 18 — Python byte-code in the pack (left by running its tests) never reaches a target.
+P=$(mktemp -d); T=$(mktemp -d)
+cp ../install.sh ../VERSION "$P/" && cp -R ../skills ../scripts ../hooks ../workflows "$P/"
+mkdir -p "$P/skills/super-collect/scripts/__pycache__" "$P/hooks/__pycache__" "$P/scripts/__pycache__"
+touch "$P/skills/super-collect/scripts/__pycache__/collect_common.cpython-312.pyc" \
+      "$P/skills/super-board/stray.pyc" "$P/hooks/__pycache__/guard.cpython-312.pyc" \
+      "$P/scripts/__pycache__/x.cpython-312.pyc"
+bash "$P/install.sh" "$T" >/dev/null 2>&1 || fail "install from a pack with __pycache__ failed"
+[ -f "$T/.claude/skills/super-collect/scripts/collect_common.py" ] || fail "byte-code scenario: sources missing"
+LEFT=$(find "$T/.claude" \( -name __pycache__ -o -name '*.pyc' \) | head -3)
+[ -z "$LEFT" ] || fail "byte-code copied into the target: $LEFT"
+[ -f "$P/skills/super-board/stray.pyc" ] || fail "the pack's own files must be left alone"
+rm -rf "$P" "$T"
+
+echo "PASS: test-install.sh (18 scenarios)"

@@ -330,5 +330,56 @@ class Readiness(unittest.TestCase):
             self.assertIn(name, [e['name'] for e in result['entries']])
         self.assertTrue(any(e['name'] == 'mattpocock-skills:diagnosing-bugs' and e['requirement'] == 'required' for e in result['entries']))
 
+
+class SkillsInstall(unittest.TestCase):
+    """`super-board-setup.py skills --install`: one source table, print by default, run with
+    --yes. npx is stubbed: no test ever reaches the network."""
+
+    def setUp(self):
+        import importlib.util
+        from unittest import mock
+        spec = importlib.util.spec_from_file_location('sb_setup', KIT / 'scripts/super-board-setup.py')
+        self.setup = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.setup)
+        self.mock = mock
+        self.missing = [dict(name='verification-before-completion', status='missing'),
+                        dict(name='testing-strategy', status='missing'),
+                        dict(name='mattpocock-skills:tdd', status='missing'),
+                        dict(name='unknown-helper', status='missing'),
+                        dict(name='mattpocock-skills:code-review', status='resolved')]
+
+    def call(self, yes, npx):
+        calls = []
+        ready = iter([dict(ready=False, entries=self.missing), dict(ready=True, entries=[])])
+        m = self.mock
+        with m.patch.object(self.setup, 'helper_readiness', lambda *a, **k: next(ready)), \
+                m.patch.object(self.setup, 'have', lambda tool: npx), \
+                m.patch.object(self.setup, 'run', lambda argv, **k: calls.append(argv) or m.Mock(returncode=0)):
+            return self.setup.skills_install('/p', yes=yes), calls
+
+    def test_prints_exact_commands_without_running(self):
+        res, calls = self.call(yes=False, npx=True)
+        self.assertEqual(calls, [])
+        cmds = {p['skill']: p['command'] for p in res['plan']}
+        self.assertEqual(cmds['verification-before-completion'],
+                         'npx -y skills@latest add obra/superpowers --skill verification-before-completion -a claude-code -y')
+        self.assertEqual(cmds['testing-strategy'],
+                         'npx -y skills@latest add anthropics/knowledge-work-plugins --skill testing-strategy -a claude-code -y')
+        self.assertIn('add mattpocock/skills --skill tdd', cmds['mattpocock-skills:tdd'])
+        self.assertEqual(res['unknown'], ['unknown-helper'])
+        self.assertFalse(res['ready'])
+
+    def test_yes_runs_each_then_rechecks(self):
+        res, calls = self.call(yes=True, npx=True)
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(all(c[1:4] == ['-y', 'skills@latest', 'add'] for c in calls))
+        self.assertTrue(res['ready'])
+
+    def test_no_npx_prints_and_continues(self):
+        res, calls = self.call(yes=True, npx=False)
+        self.assertEqual(calls, [])
+        self.assertIn('npx not found', res['note'])
+        self.assertEqual(len(res['plan']), 3)
+
 if __name__ == '__main__':
     unittest.main()

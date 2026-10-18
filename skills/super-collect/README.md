@@ -34,7 +34,8 @@ Dry-run is the default: you see what would be filed, then confirm.
 
 `/super-board onboard` sets up the `collect` block per project: it detects Sentry and PostHog,
 asks which sources to enable, writes IDs and hosts to the config, and tests each connection
-read-only. Secrets stay in `.env`: `SENTRY_AUTH_TOKEN` (scopes `event:read project:read`),
+read-only. Secrets stay in a gitignored env file (`.env.local` whenever `.env` is tracked by git;
+`collect_common.py secret-file` prints which): `SENTRY_AUTH_TOKEN` (scopes `event:read project:read`),
 `POSTHOG_PERSONAL_API_KEY` (`query:read`, `error_tracking:read`). Loki and Prometheus need no
 secret: `collect.loki` (`url`, required `selector`) and `collect.prometheus` (`url`).
 `collect_loki.py check` also backs the post-deploy telemetry check (`deploy.telemetry`).

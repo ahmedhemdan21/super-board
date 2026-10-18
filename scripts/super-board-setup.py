@@ -7,6 +7,9 @@ so step 1 (Checks) can say "Fixed for you" without asking anything.
     super-board-setup.py check   [--root DIR] [--pack DIR]            what is missing / old (read-only)
     super-board-setup.py fix     [--root DIR] [--pack DIR] [--no-helpers] [--dry-run]
                                                                        apply every must-have, then re-check
+    super-board-setup.py skills --install [--root DIR] [--host H] [--yes]
+                                                                       missing helper skills → exact `npx skills add`
+                                                                       commands (SKILL_SOURCES); runs them only with --yes
     super-board-setup.py migrate-config <config.json> [--dry-run]     old config keys → v3 keys
     super-board-setup.py names   [--root DIR]                          two board-name suggestions
     super-board-setup.py branch  [--root DIR]                          branches, deploy source, recommendation
@@ -231,6 +234,56 @@ def helper_readiness(root, host="claude", home=None, catalog=None):
     return result
 
 
+# Where each helper skill super-board-skills-ready.py may report missing comes from.
+# ONE table: `skills --install` prints (and with --yes runs) `npx skills add` from it.
+SKILL_SOURCES = {
+    "verification-before-completion": "obra/superpowers",
+    "testing-strategy": "anthropics/knowledge-work-plugins",
+    "mattpocock-skills:*": "mattpocock/skills",
+}
+
+
+def skill_source(name):
+    """(repo, skill name for --skill) for a missing helper, or None when unknown."""
+    if name in SKILL_SOURCES:
+        return SKILL_SOURCES[name], name
+    if ":" in name:
+        prefix, short = name.split(":", 1)
+        repo = SKILL_SOURCES.get(prefix + ":*")
+        if repo:
+            return repo, short
+    return None
+
+
+def skills_install(root, host="claude", yes=False, home=None, catalog=None):
+    """Missing helper skills → the exact `npx skills add` command for each. Runs them only
+    with yes=True and npx present; otherwise prints them for onboard to ask about."""
+    readiness = helper_readiness(root, host, home, catalog)
+    agent = "claude-code" if host == "claude" else "codex"
+    plan, unknown = [], []
+    for e in readiness.get("entries", []):
+        if e.get("status") != "missing":
+            continue
+        src = skill_source(e["name"])
+        if not src:
+            unknown.append(e["name"])
+            continue
+        argv = ["npx", "-y", "skills@latest", "add", src[0], "--skill", src[1], "-a", agent, "-y"]
+        plan.append({"skill": e["name"], "source": src[0], "command": " ".join(argv), "argv": argv})
+    npx = have("npx")
+    ran = []
+    if yes and npx:
+        for p in plan:
+            r = run([shutil.which("npx") or "npx"] + p["argv"][1:], cwd=root, input="")
+            ran.append({"skill": p["skill"], "exit": r.returncode})
+        readiness = helper_readiness(root, host, home, catalog) if plan else readiness
+    for p in plan:
+        p.pop("argv")
+    return {"missing": [p["skill"] for p in plan] + unknown, "plan": plan, "unknown": unknown,
+            "npx": npx, "ran": ran, "ready": readiness.get("ready", False),
+            "note": None if npx or not plan else "npx not found: install Node, then run the commands above"}
+
+
 def is_git_repo(root):
     return have("git") and run(["git", "rev-parse", "--is-inside-work-tree"], cwd=root).returncode == 0
 
@@ -320,6 +373,52 @@ def migrate_config(cfg):
 
 # ── check / fix ────────────────────────────────────────────────────────────────
 
+# Collector token names — a copy of collect_common.SECRET_KEYS / SECRET_PATTERN (this script
+# ships to .claude/bin and cannot import it); tests/test_collect_telemetry.py checks they agree.
+SECRET_KEYS = ("SENTRY_AUTH_TOKEN", "POSTHOG_PERSONAL_API_KEY")
+SECRET_PATTERN = re.compile(r"(?:LOKI|PROMETHEUS)_\w*(?:TOKEN|KEY|PASSWORD|SECRET)\w*")
+
+
+def tracked_env_secrets(root, extra_keys=()):
+    """Collector key NAMES found in a git-tracked `.env` (any folder). Values are read only
+    to tell empty from filled and are never returned. A branch switch rewrites a tracked
+    file, so a key there is lost or committed: filled → must fix, empty → warning."""
+    if not is_git_repo(root):
+        return []
+    r = run(["git", "ls-files", "-z", "--", ".env", "*/.env"], cwd=root)
+    found = []
+    for rel in sorted(p for p in (r.stdout or "").split("\0") if p and os.path.basename(p) == ".env"):
+        names, filled = [], []
+        for line in read(os.path.join(root, rel)).splitlines():
+            line = line.strip()
+            if line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k = k.strip()
+            k = k[len("export "):].strip() if k.startswith("export ") else k
+            if k in SECRET_KEYS or k in extra_keys or SECRET_PATTERN.fullmatch(k):
+                names.append(k)
+                if v.strip().strip('"').strip("'"):
+                    filled.append(k)
+        if names:
+            local = os.path.join(os.path.dirname(rel), ".env.local").replace(os.sep, "/")
+            found.append({"file": rel, "keys": names, "filled": filled, "level": "must" if filled else "warn",
+                          "remedy": f"move {', '.join(names)} to {local} (gitignored: git check-ignore {local}), "
+                                    f"blank them in {rel}" + (", and rotate the filled tokens: they are in git history"
+                                                               if filled else "")})
+    return found
+
+
+def custom_auth_envs(root):
+    keys = set()
+    for p in glob.glob(os.path.join(root, ".claude", "super-board", "configs", "*.json")):
+        cfg = load_json(p)
+        for src in (((cfg or {}).get("collect") or {}).get("custom") or []) if isinstance(cfg, dict) else []:
+            if isinstance(src, dict) and src.get("auth_env"):
+                keys.add(str(src["auth_env"]))
+    return tuple(sorted(keys))
+
+
 def installed_version(root):
     return read(os.path.join(root, ".claude", "skills", "super-board", "VERSION")) or None
 
@@ -379,13 +478,15 @@ def check(root, pack, host="claude", home=None, catalog=None):
         ok.append("git repo found")
     if helpers:
         ok.append("required worker skills resolved for " + host)
-    red = bool(missing or old_dirs or configs or verification or not git or needs or not helpers)
+    env_secrets = tracked_env_secrets(root, custom_auth_envs(root))
+    red = bool(missing or old_dirs or configs or verification or not git or needs or not helpers
+               or any(e["level"] == "must" for e in env_secrets))
     return {
         "root": root, "pack": pack, "pack_version": pack_version, "installed_version": have_v,
         "upgrade": older, "from": from_v or ("older" if older else None),
         "added_skills": upgrade_rec.get("added_skills", []),
         "missing": missing, "old_dirs": old_dirs, "configs": configs, "verification": verification, "git": git,
-        "helper_skills": helpers, "helper_readiness": readiness, "needs": needs, "os": fam, "ok": ok, "green": not red,
+        "helper_skills": helpers, "helper_readiness": readiness, "env_secrets": env_secrets, "needs": needs, "os": fam, "ok": ok, "green": not red,
     }
 
 
@@ -502,6 +603,11 @@ def text_report(res):
             lines.append(f"  ✗ missing {entry['name']} for {res['helper_readiness']['host']}; install it in that host and restart")
     if res.get("helper_readiness", {}).get("error"):
         lines.append("  ✗ " + res["helper_readiness"]["error"])
+    for e in res.get("env_secrets", []):
+        mark = "✗" if e["level"] == "must" else "!"
+        what = "filled collector keys" if e["level"] == "must" else "collector key names"
+        lines.append(f"  {mark} tracked {e['file']} holds {what}: {', '.join(e['keys'])}")
+        lines.append(f"    → {e['remedy']}")
     for path, error in res.get("verification", {}).items():
         lines.append(f"  ✗ {path}: {error}")
     for n in res.get("needs", []):
@@ -721,8 +827,43 @@ def stack(root):
                 continue
         if st["stack"] != "turbo":
             unresolved.append(st)
+    # A fresh worktree has no node_modules / obj: checks fail before they test anything
+    # unless the dependency step runs first. Prepend one per stack dir that has a check.
+    installs = []
+    for st in stacks:
+        prefix = "" if st["dir"] == "." else f"cd {st['dir']} && "
+        in_dir = [c for c in commands if (c["cmd"].startswith(prefix) if prefix else not c["cmd"].startswith("cd "))]
+        step = install_step(os.path.join(root, st["dir"]), st)
+        if not step or not in_dir or any(step in c["cmd"] for c in commands + installs):
+            continue
+        installs.append({"cmd": prefix + step, "source": "install"})
+    commands = installs + commands
     return {"stacks": stacks, "verify_commands": [c["cmd"] for c in commands],
             "sources": commands, "unresolved": unresolved}
+
+
+def install_step(d, st):
+    """The dependency restore / install command for one detected stack, or None."""
+    has = lambda name: os.path.isfile(os.path.join(d, name))
+    kind = st["stack"]
+    if kind == "dotnet":
+        marker = st["marker"]
+        return f"dotnet restore {marker}" if marker.endswith((".sln", ".slnx", ".csproj")) else "dotnet restore"
+    if kind in ("pnpm", "node"):
+        if kind == "pnpm" or has("pnpm-lock.yaml"):
+            return "pnpm install --frozen-lockfile"
+        if has("yarn.lock"):
+            berry = has(".yarnrc.yml") or "__metadata:" in read(os.path.join(d, "yarn.lock"))[:2000]
+            return "yarn install --immutable" if berry else "yarn install --frozen-lockfile"
+        if has("bun.lockb") or has("bun.lock"):
+            return "bun install --frozen-lockfile"
+        return "npm ci" if has("package-lock.json") or has("npm-shrinkwrap.json") else "npm install"
+    if kind == "python":
+        if has("uv.lock"):
+            return "uv sync --frozen"
+        if has("poetry.lock"):
+            return "poetry install --no-interaction"
+    return None
 
 COMMITLINT_FILES = ["commitlint.config." + e for e in ("js", "cjs", "mjs", "ts", "cts", "mts")] + \
     [".commitlintrc"] + [".commitlintrc." + e for e in ("json", "yaml", "yml", "js", "cjs", "mjs", "ts")]
@@ -1197,6 +1338,13 @@ def main(argv):
                 print(text_report(res))
                 return 0 if res["green"] else 1
             return out(res, 0 if res["green"] else 1)
+        if cmd == "skills":
+            host = flag(rest, "--host", "claude")
+            if host not in ("claude", "codex") or "--install" not in rest:
+                return 64
+            res = skills_install(root, host, "--yes" in rest, flag(rest, "--home", os.environ.get("SUPER_BOARD_SKILLS_HOME")),
+                                 flag(rest, "--catalog", os.environ.get("SUPER_BOARD_SKILLS_CATALOG")))
+            return out(res, 0 if res["ready"] else 1)
         if cmd == "migrate-config":
             path = rest[0] if rest and not rest[0].startswith("-") else None
             if not path:

@@ -4,6 +4,7 @@
 # fingerprint err|sentry|4411. The right outcome is a "Seen again" comment on #301 and no new
 # issue.
 set -euo pipefail
+G="$(dirname "${BASH_SOURCE[0]}")/../_stubs/platform-guard.sh"; [ ! -f "$G" ] || . "$G"  # Windows: exit 75
 WS="${1:-$PWD}"
 source "$(dirname "$(command -v gh)")/../collect-seed.sh"
 WS="$WS" collect_seed '{"sources":["sentry"],"sentry":{"org":"acme","project":"web","host":"https://us.sentry.io","min_events":2}}'

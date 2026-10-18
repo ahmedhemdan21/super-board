@@ -2,8 +2,10 @@
 
 - active_config(): the project's super-board config (`.claude/super-board/active`
   -> `configs/<slug>.json`), or the file named by --config.
-- secret(name): an env var, else the nearest `.env` / `.env.local` walking up
-  from cwd. Only the named key is read; values are never printed.
+- secret(name): an env var, else the nearest `.env.local` / `.env` walking up
+  from cwd (`.env.local` wins). Only the named key is read; values are never printed.
+- secret_file(repo_root): where collector keys must be written (`.env.local` when
+  `.env` is tracked by git).
 - since(arg, default_days): `--since 30d` / `--since 2026-09-01` -> aware UTC datetime.
 - fingerprint(source, *parts): the stable dedupe key super-collect-file.sh stamps.
 """
@@ -50,12 +52,40 @@ def collect_block(cfg, source=None):
     return block.get(source) or {} if source else block
 
 
+# Collector token names. scripts/super-board-setup.py keeps a copy (it ships to .claude/bin
+# and cannot import this file); tests/test_collect_telemetry.py checks the two agree.
+SECRET_KEYS = ("SENTRY_AUTH_TOKEN", "POSTHOG_PERSONAL_API_KEY")
+SECRET_PATTERN = re.compile(r"(?:LOKI|PROMETHEUS)_\w*(?:TOKEN|KEY|PASSWORD|SECRET)\w*")
+
+
+def secret_file(repo_root):
+    """The env file collector keys belong in. A tracked `.env` is rewritten by any branch
+    switch (and pushed with the next commit), so then it is always `.env.local`; also
+    `.env.local` when `.env` is absent and `.env.local` exists. Else `.env`."""
+    import subprocess
+    env, local = os.path.join(repo_root, ".env"), os.path.join(repo_root, ".env.local")
+    try:
+        tracked = subprocess.run(["git", "ls-files", "--error-unmatch", ".env"], cwd=repo_root,
+                                 capture_output=True, text=True).returncode == 0
+    except OSError:
+        tracked = False
+    if tracked or (not os.path.exists(env) and os.path.exists(local)):
+        return local
+    return env
+
+
+def secret_hint():
+    """The env file name to tell the user to add a key to (`.env` or `.env.local`)."""
+    return os.path.basename(secret_file(os.getcwd()))
+
+
 def secret(name):
+    """An env var, else the nearest env file walking up; `.env.local` beats `.env`."""
     if os.environ.get(name):
         return os.environ[name]
     d = os.getcwd()
     while True:
-        for fname in (".env", ".env.local"):
+        for fname in (".env.local", ".env"):
             p = os.path.join(d, fname)
             if os.path.exists(p):
                 with open(p, encoding="utf-8") as f:
@@ -145,9 +175,19 @@ def ssh_argv(transport, url):
         raise FetchError("transport.image has unsafe characters")
     if not _SAFE_URL.fullmatch(url):
         raise FetchError("refusing URL with unsafe characters")
-    # ssh joins the remote args with spaces for the remote shell: quote the URL there.
-    return ["ssh", "-o", "BatchMode=yes", host, "docker", "run", "--rm", "--network", net,
-            image, "-fsS", "--max-time", "20", "'" + url + "'"]
+    # The URL never goes on the remote command line: curl reads it from stdin (`-K -`, see
+    # curl_config). Quoting it for the remote shell is not portable: Python on Windows starting
+    # Git's MSYS ssh.exe has its single quotes stripped, the remote shell then cuts the URL at
+    # the first `&`, and Loki silently answers the default last hour (seen 2026-10-18).
+    return ["ssh", "-o", "BatchMode=yes", host, "docker", "run", "-i", "--rm", "--network", net,
+            image, "-fsS", "--max-time", "20", "-K", "-"]
+
+
+def curl_config(url):
+    """The curl config ssh_argv's remote curl reads from stdin: one quoted `url` line."""
+    if not _SAFE_URL.fullmatch(url):
+        raise FetchError("refusing URL with unsafe characters")
+    return 'url = "' + url.replace("\\", "\\\\").replace('"', '\\"') + '"\n'
 
 
 def get_json(base, path, params=None, transport=None, timeout=25, label="source"):
@@ -168,7 +208,8 @@ def get_json(base, path, params=None, transport=None, timeout=25, label="source"
     if kind != "ssh":
         raise FetchError(f"transport.kind must be http or ssh (got {kind})")
     try:
-        p = subprocess.run(ssh_argv(transport, url), capture_output=True, text=True, timeout=timeout + 20)
+        p = subprocess.run(ssh_argv(transport, url), input=curl_config(url), capture_output=True,
+                           text=True, timeout=timeout + 20)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise FetchError(f"{label} unreachable over ssh: {e}") from None
     if p.returncode != 0:
@@ -197,3 +238,13 @@ def signature(line):
     except ValueError:
         pass
     return normalize(_TS.sub("T", _GUID.sub("G", text)))[:160]
+
+
+if __name__ == "__main__":
+    # `python3 collect_common.py secret-file [repo_root]` prints the file to write keys to.
+    import sys
+    if len(sys.argv) >= 2 and sys.argv[1] == "secret-file":
+        print(secret_file(os.path.abspath(sys.argv[2] if len(sys.argv) > 2 else os.getcwd())))
+        sys.exit(0)
+    print("usage: collect_common.py secret-file [repo_root]", file=sys.stderr)
+    sys.exit(64)

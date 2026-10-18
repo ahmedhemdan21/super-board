@@ -3,7 +3,7 @@
 
     POST {host}/api/projects/{project_id}/query/  {"query":{"kind":"HogQLQuery","query":…}}
 
-Key: POSTHOG_PERSONAL_API_KEY (env, else nearest .env / .env.local), read-only scopes
+Key: POSTHOG_PERSONAL_API_KEY (env, else nearest .env.local / .env; .env.local wins), read-only scopes
 `query:read` + `error_tracking:read`. Host / project_id / thresholds come from the
 config's `collect.posthog` block, falling back to POSTHOG_HOST / POSTHOG_PROJECT_ID.
 Never prints the key.
@@ -99,7 +99,7 @@ def settings(cfg):
     pid = str(s.get("project_id") or cc.secret("POSTHOG_PROJECT_ID") or "")
     host = (s.get("host") or cc.secret("POSTHOG_HOST") or "https://us.posthog.com").rstrip("/")
     if not (key and pid):
-        raise PostHogError("Missing POSTHOG_PERSONAL_API_KEY (.env) or collect.posthog.project_id (config).")
+        raise PostHogError(f"Missing POSTHOG_PERSONAL_API_KEY ({cc.secret_hint()}) or collect.posthog.project_id (config).")
     host = host.replace(".i.posthog.com", ".posthog.com")  # the ingest host serves no query API
     signals = s.get("signals") or list(SIGNALS)
     unknown = [n for n in signals if n not in SIGNALS]

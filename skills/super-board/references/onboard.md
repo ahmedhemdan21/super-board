@@ -180,6 +180,16 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    │    helpers still count, but missing required helpers halt dispatch;
    │    git or gh → halt: "Without <tool> the board can't <why>. Your answers are saved — run
    │    the command, then re-run onboard."
+   ├─ Helper skills still missing (verification-before-completion, testing-strategy, …):
+   │      python3 $SB/super-board-setup.py skills --install --host <host>
+   │    lists each missing helper with its exact `npx -y skills@latest add <owner/repo> --skill
+   │    <name> -a <agent> -y` (sources: SKILL_SOURCES in that script). Ask once ("Install these
+   │    N helper skills?"); yes → re-run with `--yes` (it runs them, then re-resolves); no or
+   │    `npx` missing → print the commands, keep readiness red, continue. Unknown names: say so.
+   ├─ `env_secrets` (collector key NAMES in a git-tracked .env; values are never shown):
+   │    `!` empty names → warn once and move on; `✗` filled values → must fix: show its remedy
+   │    (move the keys to that folder's .env.local, confirm `git check-ignore`, blank them in the
+   │    tracked .env, rotate the tokens) and wait for the user to do it. Never edit those files.
    ├─ Re-check (`check --text`) after every install; move on only when it says all green.
    ├─ Workflow runtime: syntax-check the installed workflow (same command run.md uses):
    │      { echo '(async function(){'; sed 's/^export const meta/const meta/' \
@@ -342,7 +352,7 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    │    Loki / Prometheus (offered when the user names them, or the compose files run them): ask
    │    the url, the Loki `selector` (required, never guessed: one Loki may hold prod) and, when
    │    the stack is only reachable in a remote Docker network, the ssh host + docker_network.
-   │    Missing key → the exact .env line to add (name only) + scopes: Sentry `event:read
+   │    Missing key → the exact line to add (name only) to the file `python3 .claude/skills/super-collect/scripts/collect_common.py secret-file` prints (a tracked .env → ALWAYS .env.local; confirm `git check-ignore .env.local` before writing) + scopes: Sentry `event:read
    │    project:read`; PostHog personal key `query:read error_tracking:read`. PostHog failure
    │    events: grep capture() calls for *_failed / *_error, propose them, user confirms.
    ├─ ➕ typed text → C=.claude/skills/super-collect/scripts/collect_custom.py
@@ -351,7 +361,7 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    │      mcp → status "agent": call that server's read/list tool yourself, limit 1, read-only;
    │            pipe its JSON into `$C normalize --name <n>` to count what it returned.
    │    ✅ → `$C add … --config <staged config>` (collect.custom[] + collect.sources).
-   │    ❌ → say why in one line (401 → the token name to add to .env); never saved; re-test by
+   │    ❌ → say why in one line (401 → the token name to add to the secret-file); never saved; re-test by
    │         typing it again.
    ├─ Ping each built-in, read-only, before step 8:
    │      python3 .claude/skills/super-collect/scripts/collect_sentry.py  --config <staged> ping
@@ -362,7 +372,7 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    └─ One result block, one line per source; a failure leaves that source out, never halts:
           ✅ linear — can read issues (12 open bugs); saved in this project's config
           ✅ sentry · github · prs · architecture
-          ❌ posthog — key missing: add POSTHOG_PERSONAL_API_KEY to .env (left out)
+          ❌ posthog — key missing: add POSTHOG_PERSONAL_API_KEY to .env.local (left out)
 
 8. ✅ REVIEW — compact table, then write once
    ├─ Two columns, no borders:

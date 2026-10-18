@@ -70,7 +70,7 @@ replay() {
   mkdir -p "$WS" "$home"
   [ -f "$REAL_GITCONFIG" ] && cp "$REAL_GITCONFIG" "$home/"
   (
-    export HOME="$home" PATH="$REPO_ROOT/evals/_stubs/bin:$PATH"
+    export SB_EVAL_REPLAY=1 HOME="$home" PATH="$REPO_ROOT/evals/_stubs/bin:$PATH"
     export GIT_AUTHOR_NAME=eval GIT_AUTHOR_EMAIL=eval@example.com GIT_COMMITTER_NAME=eval GIT_COMMITTER_EMAIL=eval@example.com
     cd "$WS" && git init -q && bash "$REPO_ROOT/evals/$1/seed.sh" "$WS" >/dev/null 2>&1 || exit 90
     export PYTHONPATH="$REPO_ROOT/evals/_stubs/py" SC_FIXTURES="$WS/.git/collect-fixture" SB_GITHUB_RETRY_DELAY=0
@@ -99,6 +99,15 @@ has "issue created" "$CALLS" "issue create"
 has "moved to Backlog" "$CALLS" "opt_backlog"
 lacks "never Ready" "$CALLS" "opt_ready"
 has "body recorded" "$(cat "$WS/.git/gh-created.md" 2>/dev/null)" "## Problem"
+
+echo "── Windows guard (uname stubbed to MINGW)"
+mkdir -p "$WORK/winbin" "$WORK/winws"
+printf '#!/usr/bin/env bash\necho MINGW64_NT-10.0\n' > "$WORK/winbin/uname"; chmod +x "$WORK/winbin/uname"
+for entry in "evals/run.sh" "evals/test-gap/seed.sh" "evals/collect-duplicate/seed.sh"; do
+  MSG=$(cd "$WORK/winws" && env -u SB_EVAL_REPLAY PATH="$WORK/winbin:$PATH" bash "$REPO_ROOT/$entry" "$WORK/winws" 2>&1)
+  is "$entry exits 75 on Windows" 75 "$?"
+  has "$entry says why" "$MSG" "run them in WSL or CI"
+done
 
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

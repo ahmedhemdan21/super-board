@@ -1,0 +1,100 @@
+name: evals
+
+# Skill evals in two halves, kept out of cross-platform.yml because neither belongs in
+# its 9-cell OS x Python matrix: the evals only run on Linux/macOS (evals/README.md).
+#  - offline (every PR touching evals/, skills/ or scripts/): structure of each case plus
+#    tests/test-eval-stubs.sh, which replays the real filer against the gh stub. No model,
+#    no network, no secret.
+#  - paid (manual only): `claude plugin eval` with live model calls. Runs only when the
+#    ANTHROPIC_API_KEY secret exists; otherwise it says so and stops green.
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - "evals/**"
+      - "skills/**"
+      - "scripts/**"
+      - "tests/test-eval-stubs.sh"
+      - ".github/workflows/evals.yml"
+  workflow_dispatch:
+    inputs:
+      case:
+        description: "--case filter, e.g. collect-* (empty = all)"
+        required: false
+        default: ""
+      runs:
+        description: "--runs per case"
+        required: false
+        default: "1"
+
+jobs:
+  offline:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: case structure
+        shell: bash
+        run: |
+          set -euo pipefail
+          bad=0
+          for d in evals/*/; do
+            c=$(basename "$d"); [ "$c" = _stubs ] && continue
+            for f in case.yaml prompt.md seed.sh; do
+              [ -f "$d$f" ] || { echo "::error::evals/$c is missing $f"; bad=1; }
+            done
+            [ -x "${d}seed.sh" ] || { echo "::error::evals/$c/seed.sh is not executable"; bad=1; }
+            bash -n "${d}seed.sh" || bad=1
+            grep -q platform-guard "${d}seed.sh" || { echo "::error::evals/$c/seed.sh skips the platform guard"; bad=1; }
+          done
+          for f in evals/run.sh evals/_stubs/*.sh evals/_stubs/bin/gh; do bash -n "$f" || bad=1; done
+          exit $bad
+      - name: stub replay
+        run: bash tests/test-eval-stubs.sh
+
+  paid:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: key present?
+        id: key
+        env:
+          KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$KEY" ]; then echo "ok=1" >> "$GITHUB_OUTPUT"
+          else echo "::notice::ANTHROPIC_API_KEY is not set; paid evals skipped"; fi
+      - uses: actions/checkout@v4
+        if: steps.key.outputs.ok == '1'
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        if: steps.key.outputs.ok == '1'
+        with:
+          node-version: "20"
+      - name: install claude
+        if: steps.key.outputs.ok == '1'
+        run: npm install -g @anthropic-ai/claude-code
+      - name: run evals
+        if: steps.key.outputs.ok == '1'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CASE: ${{ inputs.case }}
+          RUNS: ${{ inputs.runs }}
+        run: |
+          set -euo pipefail
+          args=(--runs "${RUNS:-1}")
+          [ -z "$CASE" ] || args+=(--case "$CASE")
+          bash evals/run.sh "${args[@]}"
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.key.outputs.ok == '1'
+        with:
+          name: eval-results
+          path: evals/results/
+          if-no-files-found: ignore

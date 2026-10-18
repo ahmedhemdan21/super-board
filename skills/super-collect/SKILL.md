@@ -33,8 +33,10 @@ No job, cadence or scheduler is created by this skill.
 1. Resolve the config: `.claude/super-board/active` → `.claude/super-board/configs/<slug>.json`
    (shape: `../super-board/references/config-schema.json`). No config, or no `collect` block for a
    requested source → stop and point at `/super-board onboard` (its collect step sets sources up).
-2. Secrets come only from `.env` (nearest walking up): `SENTRY_AUTH_TOKEN`,
-   `POSTHOG_PERSONAL_API_KEY`. Never print, echo or paste them.
+2. Secrets come only from `.env.local` / `.env` (nearest walking up; `.env.local` wins): `SENTRY_AUTH_TOKEN`,
+   `POSTHOG_PERSONAL_API_KEY`. Never print, echo or paste them. To add one, write to the file
+   `python3 .claude/skills/super-collect/scripts/collect_common.py secret-file` prints: `.env.local` whenever `.env` is tracked by
+   git (a branch switch overwrites a tracked file); confirm it is ignored with `git check-ignore`.
 3. Source `.claude/bin/super-board-gh-guard.sh`; `sb_gh_guard_check 200` before each gh burst.
 4. Snapshot the board through `.claude/bin/super-board-github-read.py --kind items -- project item-list <number> --owner <owner> --format json --limit 500`. A count mismatch or read failure halts; never treat a partial board as complete.
    It is the dedupe set for verification and the "not on the board" set for `github`.

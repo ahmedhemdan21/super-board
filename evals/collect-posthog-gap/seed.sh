@@ -6,6 +6,7 @@
 # no capture calls, no events). Expected: exactly one `feature` ticket, label analytics,
 # fingerprint gap|<receipt-upload workflow>, and no app code edited.
 set -euo pipefail
+G="$(dirname "${BASH_SOURCE[0]}")/../_stubs/platform-guard.sh"; [ ! -f "$G" ] || . "$G"  # Windows: exit 75
 WS="${1:-$PWD}"
 source "$(dirname "$(command -v gh)")/../collect-seed.sh"
 WS="$WS" collect_seed '{"sources":["posthog"],"posthog":{"host":"https://us.posthog.com","project_id":4242}}'

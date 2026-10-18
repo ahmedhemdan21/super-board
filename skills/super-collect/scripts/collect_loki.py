@@ -17,7 +17,8 @@ Stdlib only. Config `collect.loki`:
     collect_loki.py ping
 
 `list` prints {"source":"loki","since":…,"candidates":[…]}: one candidate per group and
-error signature (sampled lines, numbers / GUIDs / timestamps collapsed), fingerprint
+error signature (sampled lines, numbers / GUIDs / timestamps collapsed; an empty line falls
+back to structured metadata exception_message, then message / msg / body), fingerprint
 `loki|<group>|<signature hash>`. `check` is the post-deploy telemetry check: error groups
 in [deploy, deploy+window] that were not seen in the same-length window before the deploy;
 `regression` is true when there are more than --max-new of them. When the selector
@@ -83,6 +84,40 @@ def base_query(st, extra=""):
     return " ".join(x for x in (st["selector"], st["filter"], extra) if x)
 
 
+MESSAGE_KEYS = ("message", "msg", "body", "Body")
+STACK_LINES = 8
+
+
+def entry_fields(stream_labels, meta):
+    """Labels + structured metadata for one entry. Loki 3.x either merges structured
+    metadata into the stream labels, or (X-Loki-Response-Encoding-Flags:
+    categorize-labels) sends it as a third value element {"structuredMetadata", "parsed"}."""
+    out = dict(stream_labels or {})
+    if isinstance(meta, dict):
+        for k in ("structuredMetadata", "parsed"):
+            if isinstance(meta.get(k), dict):
+                out.update(meta[k])
+    return out
+
+
+def entry_message(line, stream_labels=None, meta=None):
+    """(message, stack) for one log entry: exception_message (+ the first lines of
+    exception_stacktrace), else the line itself, else message / msg / body. ("", "") only
+    when every source is empty."""
+    f = entry_fields(stream_labels, meta)
+    exc = str(f.get("exception_message") or "").strip()
+    if exc:
+        stack = "\n".join(str(f.get("exception_stacktrace") or "").strip().splitlines()[:STACK_LINES])
+        return exc, stack
+    if (line or "").strip():
+        return line.strip(), ""
+    for k in MESSAGE_KEYS:
+        v = str(f.get(k) or "").strip()
+        if v:
+            return v, ""
+    return "", ""
+
+
 def groups(st, start, end, extra="", samples=200):
     """{key: {labels, count, sigs: {sig: {count, sample, first, last}}}} for [start, end] (unix s)."""
     rng = max(1, int(end - start))
@@ -104,10 +139,19 @@ def groups(st, start, end, extra="", samples=200):
                     "end": f"{int(end)}000000000", "limit": str(samples), "direction": "backward"})
         sigs = {}
         for stream in (logs.get("data") or {}).get("result") or []:
-            for ts, line in stream.get("values") or []:
-                sig = cc.signature(line) or "unsampled"
+            labels_s = stream.get("stream") or {}
+            for value in stream.get("values") or []:
+                if not isinstance(value, (list, tuple)) or len(value) < 2:
+                    continue
+                ts, line = value[0], value[1] or ""
+                meta = value[2] if len(value) > 2 else None
+                msg, stack = entry_message(line, labels_s, meta)
+                # Key on the chosen message (exception_message first): rendered lines carry
+                # per-request values (names, ids, urls) that split one error into many groups.
+                sig = cc.signature(msg) or "unsampled"
                 t = int(ts) // 1_000_000_000
-                e = sigs.setdefault(sig, {"count": 0, "sample": line[:300], "first": t, "last": t})
+                sample = (msg[:300] + ("\n" + stack if stack else ""))[:1200]
+                e = sigs.setdefault(sig, {"count": 0, "sample": sample, "first": t, "last": t})
                 e["count"] += 1
                 e["first"], e["last"] = min(e["first"], t), max(e["last"], t)
         out[key] = {"labels": labels, "count": count, "sigs": sigs or {"unsampled": {"count": count, "sample": "", "first": None, "last": None}}}

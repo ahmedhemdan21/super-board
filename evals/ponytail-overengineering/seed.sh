@@ -2,6 +2,7 @@
 # Seeds a first review: PR #21 adds format_price(cents). It is correct and tested, but
 # wraps one f-string in a strategy ABC, a registry, a factory and a JSON config.
 set -euo pipefail
+G="$(dirname "${BASH_SOURCE[0]}")/../_stubs/platform-guard.sh"; [ ! -f "$G" ] || . "$G"  # Windows: exit 75
 WS="${1:-$PWD}"
 cd "$WS"
 # Same PATH bootstrap as review-remembers/seed.sh: the agent's Bash does not inherit the

@@ -120,14 +120,23 @@ echo "$OUT" | q '.verify_commands | index("cd frontend && pnpm type-check") != n
 echo "$OUT" | q '[.verify_commands[] | select(test("nuget|docker|\\$\\{"))] | length == 0' || fail "publish/deploy steps are not checks: $OUT"
 echo "$OUT" | q '.unresolved == []' || fail "every stack is covered: $OUT"
 # real PrimeCore CI: only pull_request workflows, no deploy/release, no setup, no shell fragments
-echo "$OUT" | q '[.verify_commands[] | select(test("install|dotnet restore|commitlint|lhci|playwright|[$|]|&& .*&&|[\\\\]|-p:Version|--filter dashboard|--filter=admin"))] | length == 0' \
+echo "$OUT" | q '[.sources[] | select(.source != "install") | .cmd | select(test("install|dotnet restore|commitlint|lhci|playwright|[$|]|&& .*&&|[\\\\]|-p:Version|--filter dashboard|--filter=admin"))] | length == 0' \
   || fail "junk CI lines proposed as checks: $OUT"
+# dependency steps come first, one per stack dir: restore the solution, frozen pnpm install
+echo "$OUT" | q '.verify_commands[0:2] == ["cd backend && dotnet restore PrimeCore.Platform.slnx","cd frontend && pnpm install --frozen-lockfile"]' \
+  || fail "dependency steps must be prepended: $OUT"
+for lock in "package-lock.json:npm ci" "yarn.lock:yarn install --frozen-lockfile" "berry:yarn install --immutable"; do
+  N="$WORK/lock-${lock%%:*}"; mkdir -p "$N"
+  echo '{"scripts":{"lint":"eslint ."}}' > "$N/package.json"
+  case "${lock%%:*}" in berry) printf '__metadata:\n  version: 8\n' > "$N/yarn.lock" ;; *) : > "$N/${lock%%:*}" ;; esac
+  python3 "$SETUP" stack --root "$N" | q --arg s "${lock#*:}" '.verify_commands[0] == $s' || fail "install step for ${lock%%:*}"
+done
 echo "$OUT" | q '.verify_commands | index("cd frontend/apps/dashboard && pnpm build") != null' || fail "leading cd X && is kept: $OUT"
 echo "$OUT" | q '[.sources[] | .source | select(test("deploy|release|validate-commits|frontend-type-check"))] | length == 0' \
   || fail "non-PR or deploy/release workflows harvested: $OUT"
 rm -rf "$T/frontend/.github"
 OUT=$(python3 "$SETUP" stack --root "$T")
-echo "$OUT" | q '[.verify_commands[] | select(startswith("cd frontend"))] == ["cd frontend && pnpm run lint","cd frontend && pnpm run type-check","cd frontend && pnpm run test","cd frontend && pnpm run format:check"]' \
+echo "$OUT" | q '[.verify_commands[] | select(startswith("cd frontend"))] == ["cd frontend && pnpm install --frozen-lockfile","cd frontend && pnpm run lint","cd frontend && pnpm run type-check","cd frontend && pnpm run test","cd frontend && pnpm run format:check"]' \
   || fail "no CI falls back to package.json scripts: $OUT"
 rm -rf "$T/backend/.github/workflows/ci.yml"
 python3 "$SETUP" stack --root "$T" | q '[.unresolved[] | .stack] == ["dotnet"]' || fail "a stack with no documented check is unresolved, never invented"
@@ -354,4 +363,21 @@ cmp -s "$GH_STATE" "$WORK/before.json" || fail "dry-run changed board state: $(c
 [ ! -e "$WORK/dry/.claude" ] || fail "dry-run must not write a backup file"
 echo "$OUT" | q '.status_backup == null and .restored == 0 and .added_columns != []' || fail "dry-run report wrong: $OUT"
 
-echo "PASS: test-setup.sh (12 scenarios)"
+# 13 — a tracked .env with collector key names: empty → warning, filled → must fix (red).
+#      Only names are reported, never values.
+T="$WORK/envtracked"; mkdir -p "$T/frontend"; git -C "$T" init -q -b main
+printf 'VITE_API=x\nSENTRY_AUTH_TOKEN=\nLOKI_BASIC_AUTH_PASSWORD=\n' > "$T/frontend/.env"
+git -C "$T" add . && git -C "$T" -c user.email=t@t -c user.name=t commit -qm init
+OUT=$(python3 "$SETUP" check --root "$T" || true)
+echo "$OUT" | q '.env_secrets == [{"file":"frontend/.env","keys":["SENTRY_AUTH_TOKEN","LOKI_BASIC_AUTH_PASSWORD"],"filled":[],"level":"warn"} + (.env_secrets[0] | {remedy})]' \
+  || fail "empty keys in a tracked .env are a warning: $OUT"
+printf 'SENTRY_AUTH_TOKEN=sntrys_offline_value\nPOSTHOG_PERSONAL_API_KEY=\n' > "$T/frontend/.env"
+OUT=$(python3 "$SETUP" check --root "$T" || true)
+echo "$OUT" | q '.env_secrets[0].level == "must" and .env_secrets[0].filled == ["SENTRY_AUTH_TOKEN"] and .green == false' \
+  || fail "a filled key in a tracked .env is a must-fix: $OUT"
+echo "$OUT" | grep -q 'sntrys_offline_value' && fail "a secret value leaked into check output"
+TXT=$(python3 "$SETUP" check --root "$T" --text || true)
+echo "$TXT" | grep -q 'frontend/.env.local' || fail "remedy names .env.local: $TXT"
+echo "$TXT" | grep -q 'sntrys_offline_value' && fail "a secret value leaked into the text report"
+
+echo "PASS: test-setup.sh (13 scenarios)"

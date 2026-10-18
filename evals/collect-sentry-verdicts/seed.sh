@@ -5,6 +5,7 @@
 #          and the code has the guard → drop-fixed.
 # 4502 (1 event) is under min_events and never becomes a candidate. Nothing on the board matches.
 set -euo pipefail
+G="$(dirname "${BASH_SOURCE[0]}")/../_stubs/platform-guard.sh"; [ ! -f "$G" ] || . "$G"  # Windows: exit 75
 WS="${1:-$PWD}"
 source "$(dirname "$(command -v gh)")/../collect-seed.sh"
 WS="$WS" collect_seed '{"sources":["sentry"],"sentry":{"org":"acme","project":"web","host":"https://us.sentry.io","min_events":2}}'
