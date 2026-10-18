@@ -178,6 +178,57 @@ class Loki(unittest.TestCase):
         self.assertEqual(json.loads(out.getvalue())["status"], "unavailable")
 
 
+class LokiStructuredMetadata(unittest.TestCase):
+    """Serilog -> OTLP -> Loki: the line is often empty and the error lives in structured
+    metadata, merged into `stream` or sent as a third value element (categorize-labels)."""
+    METRIC = {"status": "success", "data": {"result": [
+        {"metric": {"service_name": "api"}, "value": [0, "2"]}]}}
+    EXC = "Order 1234 not found for tenant 8f14e45f-ceea-467f-a9b3-1c2d3e4f5a6b"
+    STACK = "\n".join(f"   at Frame{i}()" for i in range(12))
+
+    def run_groups(self, streams):
+        replies = iter([self.METRIC, {"status": "success", "data": {"result": streams}}])
+        with mock.patch.object(lk, "get", lambda *a, **k: next(replies)):
+            return lk.flatten(lk.groups(lk.settings(LOKI_CFG), 0, 600))
+
+    def test_metadata_merged_into_stream_labels(self):
+        rows = self.run_groups([{"stream": {"service_name": "api", "exception_message": self.EXC,
+                                            "exception_stacktrace": self.STACK},
+                                 "values": [["1000000000000", ""], ["2000000000000", ""]]}])
+        self.assertEqual(len(rows), 1)
+        self.assertNotEqual(rows[0]["signature"], "unsampled")
+        self.assertTrue(rows[0]["sample"].startswith(self.EXC))
+        self.assertIn("Frame7", rows[0]["sample"])
+        self.assertNotIn("Frame8", rows[0]["sample"])  # first 8 stack lines only
+
+    def test_categorize_labels_third_element(self):
+        other = "Order 99 not found for tenant 1a2b3c4d-1111-2222-3333-444455556666"
+        rows = self.run_groups([{"stream": {"service_name": "api"}, "values": [
+            ["1000000000000", "", {"structuredMetadata": {"exception_message": self.EXC}}],
+            ["2000000000000", "  ", {"structuredMetadata": {"exception_message": other}, "parsed": {}}]]}])
+        self.assertEqual(len(rows), 1)  # numbers / GUIDs collapsed: one stable signature
+        self.assertEqual(rows[0]["sampleCount"], 2)
+        self.assertEqual(rows[0]["signature"], cc.signature(self.EXC))
+
+    def test_empty_line_falls_back_to_message_keys(self):
+        rows = self.run_groups([{"stream": {"service_name": "api"}, "values": [
+            ["1000000000000", "", {"structuredMetadata": {"body": "db pool exhausted"}}]]}])
+        self.assertEqual(rows[0]["sample"], "db pool exhausted")
+
+    def test_non_empty_line_keeps_its_fingerprint(self):
+        line = '{"message":"Timeout after 3000ms"}'
+        plain = self.run_groups([{"stream": {"service_name": "api"}, "values": [["1000000000000", line]]}])
+        meta = self.run_groups([{"stream": {"service_name": "api", "exception_message": self.EXC},
+                                 "values": [["1000000000000", line]]}])
+        self.assertEqual(plain[0]["fingerprint"], meta[0]["fingerprint"])
+
+    def test_all_empty_is_unsampled(self):
+        rows = self.run_groups([{"stream": {"service_name": "api"}, "values": [
+            ["1000000000000", "", {"structuredMetadata": {}, "parsed": {}}]]}])
+        self.assertEqual(rows[0]["signature"], "unsampled")
+        self.assertEqual(rows[0]["sample"], "")
+
+
 class Prometheus(unittest.TestCase):
     def test_list_firing_alerts_and_down_targets(self):
         with mock.patch("urllib.request.urlopen", fixture_http.Urlopen(FIX)):
