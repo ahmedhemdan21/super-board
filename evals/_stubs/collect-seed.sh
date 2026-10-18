@@ -8,6 +8,7 @@
 # Usage from a seed:  source "$(dirname "$(command -v gh)")/../collect-seed.sh"
 #                     collect_seed '<collect block JSON>'
 set -euo pipefail
+G="$(dirname "${BASH_SOURCE[0]}")/platform-guard.sh"; [ ! -f "$G" ] || . "$G"  # Windows: exit 75
 
 STUBS="$(cd "$(dirname "$(command -v gh)")" && pwd)"
 [ -f "$STUBS/_real" ] || { echo "seed: put evals/_stubs/bin first on PATH (see evals/README.md)" >&2; exit 1; }

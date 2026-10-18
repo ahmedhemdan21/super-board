@@ -7,6 +7,7 @@
 #   #26         — a one-off: a missing `await`, found and fixed in that PR, plus a typo nit.
 # Expected: exactly one pattern ticket (prs|<boundary>|<cause>) citing #21 and #24, nothing for #26.
 set -euo pipefail
+G="$(dirname "${BASH_SOURCE[0]}")/../_stubs/platform-guard.sh"; [ ! -f "$G" ] || . "$G"  # Windows: exit 75
 WS="${1:-$PWD}"
 source "$(dirname "$(command -v gh)")/../collect-seed.sh"
 WS="$WS" collect_seed '{"sources":["prs"]}'

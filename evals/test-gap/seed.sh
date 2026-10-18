@@ -2,6 +2,7 @@
 # Seeds a first QA pass: PR #31 adds slugify(). AC 1 and AC 3 are tested; AC 2 (max 50
 # characters) is implemented but has no test at any rung.
 set -euo pipefail
+G="$(dirname "${BASH_SOURCE[0]}")/../_stubs/platform-guard.sh"; [ ! -f "$G" ] || . "$G"  # Windows: exit 75
 WS="${1:-$PWD}"
 cd "$WS"
 # Same PATH bootstrap as review-remembers/seed.sh.

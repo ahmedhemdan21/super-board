@@ -3,6 +3,7 @@
 # rebuilt it. R1 (empty-cart crash) is really fixed; R2 (discount not clamped)
 # is not — its thread was resolved without a code change.
 set -euo pipefail
+G="$(dirname "${BASH_SOURCE[0]}")/../_stubs/platform-guard.sh"; [ ! -f "$G" ] || . "$G"  # Windows: exit 75
 WS="${1:-$PWD}"
 cd "$WS"
 # The eval child's Bash does not inherit the caller's PATH, so the offline gh stub

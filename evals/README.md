@@ -12,6 +12,25 @@ PATH=$PWD/evals/_stubs/bin:$PATH claude plugin eval . \
   --scaffold --allow-tools Bash Write Edit --ablation none --runs 3 --max-cost-usd 5
 ```
 
+or the wrapper, which sets `PATH` and passes extra flags through (`--runs 1`, `--case …`):
+
+```bash
+bash evals/run.sh --case 'collect-*' --runs 1
+```
+
+**Linux or macOS only.** The run execs extensionless `#!` stubs inside the eval sandbox; on
+Windows (Git Bash / MSYS / Cygwin) `evals/run.sh` and every `seed.sh` stop at once with
+`skill evals need Linux or macOS (sandbox + exec stubs); run them in WSL or CI` and **exit 75**
+(`evals/_stubs/platform-guard.sh`). In WSL: open the repo from the Linux side
+(`cd /mnt/g/…/super-board`, or better a clone under `~` for speed), install `jq`, `python3`, `node`
+and the `claude` CLI there (`npm i -g @anthropic-ai/claude-code`), sign in or export
+`ANTHROPIC_API_KEY`, then run the command above.
+
+**CI** (`.github/workflows/evals.yml`): every PR touching `evals/`, `skills/` or `scripts/` runs
+the offline half on ubuntu — case structure (case.yaml, prompt.md, executable seed with the
+platform guard) and `tests/test-eval-stubs.sh`. The paid run is `workflow_dispatch` only and runs
+only when the `ANTHROPIC_API_KEY` secret is set; results upload as the `eval-results` artifact.
+
 `--case <name>` runs one case. `test-gap` needs `Write Edit` (the Tester writes the missing test);
 the review cases only need `Bash`; the `collect-*` cases need `Bash Write Agent` (body files and
 one verifier sub-agent per candidate) — `--case 'collect-*'` runs just those.
