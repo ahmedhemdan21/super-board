@@ -74,7 +74,14 @@ on missing requirements and recheck each conditional helper before use.
 5. **Honor the per-issue 14-gate contract** (TDD, atomic commits, lint/typecheck/test green, etc.). Plan-only issues skip gates 3-7 (execution + tests). Review-only issues skip gates 1-7. Do not expand product scope beyond the issue body; when scope is missing or unsafe, use WIP-PARTIAL or HUMAN GATE instead of guessing.
 
 6. **After completing all issue work, you MUST:**
-   a. Verify all applicable gates green (lint, typecheck, tests for execute issues), then run
+   a. Verify all applicable gates green (lint, typecheck, tests for execute issues). A test
+      command that fails, then passes on ONE rerun of the same command (config `verify_retry`,
+      default 1; 0 = no rerun) counts as green for a test you did not touch — the same rule the
+      merge gate applies. Never rerun build, restore, install, lint or type-check, and never
+      rerun a test your diff changed. Name it in the handoff as `flaky: <command> — <first
+      failing test>` and file it as the Reviewer does for a gate `FLAKY:` line (super-review
+      SKILL.md → Merge protocol) with fingerprint `flaky|<owner/repo>|<test, whitespace → _>`,
+      so both lanes land on one open card. Then run
       `mattpocock-skills:code-review` against your own diff with the merge-base as the fixed
       point (`git merge-base HEAD origin/<base>`) — it never prompts when the fixed point is
       supplied. Fix its Standards findings; a Spec finding you cannot close in scope is a HUMAN GATE.

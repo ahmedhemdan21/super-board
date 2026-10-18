@@ -44,6 +44,29 @@
 #
 # Missing, empty, or whitespace-only commands halt with exit 9 before locking or
 # reading GitHub. Configure the owning project's checks; this gate invents none.
+# An entry may also be an object, { "cmd": "dotnet test", "retry": false }.
+#
+# FLAKY CHECKS (verify_retry, default 1; 0 = never rerun)
+#
+# One flaky Testcontainers test used to bounce a good card back to Build. A test
+# command that fails is now rerun up to verify_retry times; if a rerun passes the
+# step counts as passed and stdout carries one machine line
+#
+#   FLAKY: {"cmd":"…","test":"<first failing test, or the command>","fingerprint":"flaky|<repo>|<test>"}
+#
+# Never rerun: an entry with "retry": false, a timeout (exit 124 — a second run
+# would hold the lock another command_timeout_s), and anything that builds rather
+# than tests — text matching dotnet build|restore, tsc, an install (npm/pnpm/yarn/
+# bun install|ci), `build`, `lint`, `type-check`/`typecheck`. Those fail the same
+# way twice; rerunning them only hides a real break. A compound command holding
+# one of them is not rerun either: split it to let the test half retry.
+#
+# The gate never files the flaky card itself. It holds the merge mutex while it
+# verifies, and a GitHub write here (dedupe read, create, board move — each with
+# its own halt-on-unknown-outcome) would stretch the critical section and could
+# turn a green merge into exit 79. The Review lane files it after the gate
+# returns, from the FLAKY: line, with super-qa-file-bug.sh (one open card per
+# fingerprint). run.md → Merge protocol.
 #
 # Usage:
 #   super-board-merge-gate.sh --config <config.json> --pr <number>
@@ -167,10 +190,16 @@ if [ -n "$SUBJECT" ] && [ "$(echo "$CONFIG_JSON" | jq -r '.writing.commit_format
 fi
 # Read with a while-loop rather than `mapfile`: macOS ships bash 3.2 and every
 # other script in this repo runs there, so this one does too.
-VERIFY=()
+# Each line is "<0|1><TAB><command>": 0 = this entry opted out of reruns.
+VERIFY=(); VERIFY_RETRYABLE=()
 while IFS= read -r line; do
-  if [[ "$line" =~ [^[:space:]] ]]; then VERIFY+=("$line"); fi
-done < <(echo "$CONFIG_JSON" | jq -r '.verify_commands[] | select(test("\\S"))')
+  line=${line%$'\r'}
+  flag=${line%%$'\t'*}; line=${line#*$'\t'}
+  if [[ "$line" =~ [^[:space:]] ]]; then VERIFY+=("$line"); VERIFY_RETRYABLE+=("$flag"); fi
+done < <(echo "$CONFIG_JSON" | jq -r '.verify_commands[]
+  | (if type == "string" then {cmd: .} else . end)
+  | (if .retry == false then "0" else "1" end) as $flag
+  | (.cmd // "") | select(test("\\S")) | split("\n")[] | ($flag + "\t" + .)')
 
 # Defend the shell boundary too: extraction must leave a command to execute.
 if [ "${#VERIFY[@]}" -eq 0 ]; then
@@ -180,6 +209,27 @@ fi
 
 CMD_TIMEOUT=$(echo "$CONFIG_JSON" | jq -r '.merge_gate.command_timeout_s // 2700' | tr -d '\r')
 case "$CMD_TIMEOUT" in ''|*[!0-9]*) echo "merge_gate.command_timeout_s must be a whole number of seconds, got: $CMD_TIMEOUT" >&2; exit 64 ;; esac
+VERIFY_RETRY=$(echo "$CONFIG_JSON" | jq -r '.verify_retry // 1' | tr -d '\r')
+case "$VERIFY_RETRY" in ''|*[!0-9]*) echo "verify_retry must be a whole number (0 = never rerun), got: $VERIFY_RETRY" >&2; exit 64 ;; esac
+
+# retryable <cmd>: a test run may be rerun; a build, install, lint or type-check
+# fails the same way twice, so it never is (see FLAKY CHECKS above).
+retryable() {
+  printf '%s' "$1" | grep -qiE 'dotnet[[:space:]]+(build|restore)|(^|[^[:alnum:]_-])tsc([^[:alnum:]_-]|$)|(npm|pnpm|yarn|bun)[[:space:]]+(install|i|ci|add)([^[:alnum:]_-]|$)|(^|[^[:alnum:]_-])build([^[:alnum:]_-]|$)|lint|type-?check' && return 1
+  return 0
+}
+
+# first_failure <log> <cmd>: the first failing test name a runner printed, else
+# the command. dotnet `  Failed Name [12 ms]` · pytest `FAILED path::test - …` ·
+# vitest/jest `FAIL  file > test` and `× test` / `✗ test`.
+first_failure() {
+  local log=$1 cmd=$2 name=""
+  name=$(tr -d '\r' < "$log" | sed -nE 's/^[[:space:]]+Failed[[:space:]]+(.+)[[:space:]]+\[.*$/\1/p' | head -1)
+  [ -n "$name" ] || name=$(tr -d '\r' < "$log" | sed -nE 's/^FAILED[[:space:]]+([^[:space:]]+).*$/\1/p' | head -1)
+  [ -n "$name" ] || name=$(tr -d '\r' < "$log" | sed -nE 's/^[[:space:]]*FAIL[[:space:]]+(.+)$/\1/p' | head -1)
+  [ -n "$name" ] || name=$(tr -d '\r' < "$log" | sed -nE 's/^[[:space:]]*(×|✗)[[:space:]]+(.+)$/\2/p' | sed -E 's/[[:space:]]+[0-9]+ ?ms$//' | head -1)
+  printf '%s' "${name:-$cmd}" | sed -E 's/[[:space:]]+$//'
+}
 while IFS= read -r need; do
   need=${need%$'\r'}; [ -n "$need" ] || continue
   case "$need" in
@@ -332,9 +382,29 @@ if ! git -C "$SCRATCH" merge "origin/${BASE}" --no-edit --quiet 2>/dev/null; the
   exit 5
 fi
 
-for cmd in "${VERIFY[@]}"; do
+FLAKY=()
+for i in "${!VERIFY[@]}"; do
+  cmd=${VERIFY[$i]}
   say "verify: ${cmd}"
   VRC=0; run_verify "$cmd" "$SCRATCH/.verify.log" || VRC=$?
+  # A failed test run gets verify_retry more tries; passing on one is a flaky
+  # test, not a stale branch. Builds, timeouts and opted-out entries never rerun.
+  if [ "$VRC" -ne 0 ] && [ "$VRC" -ne 124 ] && [ "$VERIFY_RETRY" -gt 0 ] \
+     && [ "${VERIFY_RETRYABLE[$i]}" = 1 ] && retryable "$cmd"; then
+    cp "$SCRATCH/.verify.log" "$SCRATCH/.verify.first.log"
+    try=0
+    while [ "$VRC" -ne 0 ] && [ "$VRC" -ne 124 ] && [ "$try" -lt "$VERIFY_RETRY" ]; do
+      try=$((try + 1))
+      say "FAILED: ${cmd} — rerun ${try}/${VERIFY_RETRY} (verify_retry)"
+      VRC=0; run_verify "$cmd" "$SCRATCH/.verify.log" || VRC=$?
+    done
+    if [ "$VRC" -eq 0 ]; then
+      test_name=$(first_failure "$SCRATCH/.verify.first.log" "$cmd")
+      say "flaky: ${cmd} — failed, then passed on rerun ${try} (first failure: ${test_name})"
+      FLAKY+=("$(jq -cn --arg cmd "$cmd" --arg test "$test_name" --arg repo "$REPO" \
+        '{cmd: $cmd, test: $test, fingerprint: ("flaky|" + $repo + "|" + ($test | gsub("\\s+"; "_")))}')")
+    fi
+  fi
   if [ "$VRC" -ne 0 ]; then
     if [ "$VRC" -eq 124 ]; then say "TIMED OUT after ${CMD_TIMEOUT}s (merge_gate.command_timeout_s): ${cmd}"
     else say "FAILED: ${cmd}"; fi
@@ -348,6 +418,9 @@ for cmd in "${VERIFY[@]}"; do
   fi
 done
 say "verified green against ${BASE} (${#VERIFY[@]} command(s))"
+# Machine lines for the Review lane, which files one flaky card per fingerprint
+# after the gate returns — whatever the exit code below turns out to be.
+for f in ${FLAKY[@]+"${FLAKY[@]}"}; do echo "FLAKY: $f"; done
 
 python3 "$GITHUB_READ" --check
 
