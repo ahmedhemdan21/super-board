@@ -1007,7 +1007,9 @@ class Scheduler:
         name = board_repo_name(bc)
         if name:
             try:
-                prs = prs_between(self.gh, name, run["started"], run["ended"], job["repo"])
+                # Up to the query, not run["ended"]: a merge the lanes finish while the
+                # after-snapshot runs is still this run's work (and it raced slow CI).
+                prs = prs_between(self.gh, name, run["started"], now_iso(), job["repo"])
             except Exception as e:
                 errors.append(str(e))
             try:
