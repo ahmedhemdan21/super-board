@@ -361,7 +361,11 @@ two complete builds. In order, no shortcuts:
      an additive migration follows `migrations.allowed_envs`, and a live DB is always human.
      Card → **Blocked** with the 🙋 template: `Why blocked` quotes the gate's
      `human-gate:` lines; `To unblock` = review PR #<P> and merge it yourself, OR comment
-     `done` to approve (the next wave re-runs the gate, which merges). Label `needs-you`.
+     `done` to approve (the next wave re-runs the gate, which merges). Label `needs-you`,
+     plus `needs-human` on the issue and the PR (create it once if absent:
+     `gh label create needs-human --color FBCA04 --description "A person merges or approves this PR (merge_policy) — display only" --force`).
+     Remove `needs-human` when the PR merges or the gate passes on a verified approval.
+     The label is display only: the gate never reads it, and adding it by hand clears nothing.
    - **Exit 8 — 🙋 needs you.** Migrations for a database outside
      `migrations.allowed_envs`, an allowed migrate command that failed, or a declared
      human-only step. Card → **Blocked** with the 🙋 template
@@ -372,7 +376,18 @@ two complete builds. In order, no shortcuts:
      authorize it. For exits 7 and 8, copy `approval-request:` into the canonical
      issue block and link it from the PR (no duplicate request); see block-template.md.
    - The rule in one line: the robot migrates the databases it was allowed to test its
-     work; live databases, money, auth and destructive schema changes wait for a person.
+     work; live databases, money, auth, deploy files and destructive schema changes wait
+     for a person.
+   - **`FLAKY:` lines (any exit).** A test command failed, then passed on a rerun
+     (`verify_retry`): the step counted as passed. After the gate returns — never while it
+     runs — file one card per line with the line's `fingerprint` (an open card with that
+     fingerprint gets a "Seen again" comment instead of a twin):
+     `super-qa-file-bug.sh --kind bug --priority low --label flaky --area <scope> --fingerprint "<fingerprint>" --title "flaky test: <test>" --body-file <md>`
+     with `SUPER_QA_PROJECT_OWNER`/`SUPER_QA_PROJECT_TITLE` set to this board. The body is the
+     bug format: Problem (passes only on rerun), Context (Where = the command, lettered steps
+     a. run it b. it fails c. rerun passes), Evidence (12 rows; the first failing log tail in
+     Logs, `n/a — <why>` for the rest), Fix (find the nondeterminism), ACs, Risk. Carrying
+     `bug` makes it build like any bug. Name each in the merge comment: `flaky: <test>`.
 3. **Confirm the merge landed** — never trust the merge command's exit code:
    **Exit 79 — required GitHub evidence unavailable:** stop the current run. Leave
    the card, approval, claims, and worktree intact. Report the local halt reason;

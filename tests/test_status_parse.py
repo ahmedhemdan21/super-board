@@ -191,6 +191,14 @@ def test_attempt_str_from_rebuild_label() -> None:
     assert sbs.attempt_str({"labels": ["loop:rebuild-5"]}) == "3/3"
 
 
+def test_needs_human_label_is_a_block_reason() -> None:
+    """Merge gate exit 7 → the Reviewer labels the card needs-human; status groups it."""
+    assert sbs.block_reason(["bug", "needs-human"], "🔐 missing key") == ("🙋", "needs human merge")
+    assert sbs.block_reason(["Needs-Human"], "") == ("🙋", "needs human merge")
+    assert sbs.block_reason(["bug"], "Reason tag: 🔐 creds") == ("🔐", "missing creds")
+    assert sbs.block_reason([], "") == ("🚫", "other")
+
+
 def test_field_status_picks_status_select() -> None:
     """`field_status` reads the `Status` single-select; defaults to Backlog."""
     node = {
