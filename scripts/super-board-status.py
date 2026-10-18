@@ -27,7 +27,11 @@ Cross-platform: pure Python 3 stdlib + `gh` CLI. Works on macOS, Linux,
 Windows (PowerShell / CMD / Git Bash / WSL). No bash, no jq.
 
 Usage:
-  python .claude/bin/super-board-status.py [<config-slug>]
+  python .claude/bin/super-board-status.py [<config-slug>] [--json]
+
+  --json  print {"config","project","generated","items":[{number,title,labels,status}],
+          "counts":{<Status>: n}} after step 2 and stop (no comments, no manifest).
+          The scheduler snapshots the board with it before and after a run.
 
 Exit codes:
   0  ok
@@ -502,8 +506,25 @@ def render_kanban(
     return "\n".join(boxes)
 
 
+def snapshot_json(slug: str, cfg: dict[str, Any], items: list[dict[str, Any]], truncated: bool) -> dict[str, Any]:
+    """The --json snapshot. Pure. Statuses outside BOARD_ORDER are counted as-is."""
+    counts: dict[str, int] = {s: 0 for s in BOARD_ORDER}
+    for i in items:
+        counts[i["status"]] = counts.get(i["status"], 0) + 1
+    return {
+        "config": slug,
+        "project": {"owner": cfg["project"]["owner"], "number": int(cfg["project"]["number"])},
+        "generated": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "truncated": truncated,
+        "items": sorted(items, key=lambda x: x["number"]),
+        "counts": counts,
+    }
+
+
 def main() -> int:
-    config_slug = resolve_config_slug(sys.argv)
+    want_json = "--json" in sys.argv[1:]
+    argv = [a for a in sys.argv if a != "--json"]
+    config_slug = resolve_config_slug(argv)
     if not valid_slug(config_slug):
         print(
             f"invalid config slug: {config_slug!r} "
@@ -571,6 +592,10 @@ def main() -> int:
         s: sorted([i for i in items if i["status"] == s], key=lambda x: -x["number"])
         for s in BOARD_ORDER
     }
+
+    if want_json:
+        print(json.dumps(snapshot_json(config_slug, cfg, items, hit_cap), ensure_ascii=False))
+        return 0
 
     # ── fetch reason-tag comments for Blocked only ──
     # Skip silently on error so a stale token doesn't break the rest of the

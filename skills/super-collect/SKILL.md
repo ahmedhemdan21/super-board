@@ -16,6 +16,7 @@ config and files onto that project's board.
 |---|---|
 | `/super-collect` | every source enabled in `collect.sources` |
 | `/super-collect <source> [<source>…]` | just those: `sentry`, `posthog`, `loki`, `prometheus`, `github`, `prs`, `architecture`, or a custom source's `name` |
+| `--sources sentry,posthog,github` | the same as listing them (`/super-collect sentry posthog github`); for schedulers and cloud routines that pass one flag |
 | `--since 30d` / `--since 2026-09-01` | window; default `collect.window_days`, else 14 days |
 | `--yes` | file without the confirm step (never skips verify or dedupe) |
 
@@ -70,7 +71,8 @@ character sets, so config never reaches a shell unquoted. GET only. Every Loki q
 configured `selector`, so the queries only ever name that environment. Verifier "still happening":
 rerun `list --since 1d` and look for the same fingerprint.
 `collect_loki.py check` is the post-deploy telemetry check (`deploy.telemetry`, run.md →
-"Post-merge dev check").
+"Post-merge dev check"); `collect_prometheus.py check` is the rate-based regression watch next
+to it (`deploy.regression_watch`). Neither is a collect source: `/super-collect` never runs them.
 
 ### cross-source signature and traces
 

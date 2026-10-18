@@ -32,6 +32,16 @@
 #   deploy.telemetry   optional {source:"loki", window_s, max_new_error_groups,
 #                      selector_extra, release_label}: new Loki error groups after
 #                      the deploy → telemetry_regression (collect.loki = where)
+#   deploy.regression_watch  optional {enabled, window_s, promql_error_rate,
+#                      promql_request_rate, min_ratio, min_abs, loki_error_ratio,
+#                      revert_card}: error RATE after vs before the deploy
+#                      (collect_prometheus.py check) → regression; waits until
+#                      deploy + window_s has passed, bounded by timeout_s
+#
+# Any post-deploy regression (telemetry_regression or regression) files the bug
+# with label `regression` and fingerprint `regression|pr-<N>`: one open
+# regression bug per merged PR. revert_card: true also files a Backlog card
+# "Revert #<pr>" that names the bug. Nothing here reverts or pushes.
 #
 # Stdout, last line: `deploy: healthy|skipped|failed …` (+ `bug: #<n>` on a filed bug).
 # Exits: 0 healthy or skipped (not configured, PR not into deploy.branch)
@@ -109,9 +119,14 @@ state_dir() {
 SDIR=$(state_dir); mkdir -p "$SDIR"; [ -e "$SDIR/.gitignore" ] || printf '*\n' > "$SDIR/.gitignore"
 SFILE="$SDIR/$SHA.json"
 NOW=$(date +%s)
+DEPLOY_TS=""; SMOKE_OK=""
 if [ -f "$SFILE" ]; then STARTED=$(jqx -r '.started' "$SFILE"); RUN_ID=$(jqx -r '.run_id // empty' "$SFILE")
+  DEPLOY_TS=$(jqx -r '.deploy_ts // empty' "$SFILE"); SMOKE_OK=$(jqx -r '.smoke_ok // empty' "$SFILE")
 else STARTED=$NOW; RUN_ID=""; fi
-save_state() { jqx -n --argjson s "$STARTED" --arg r "$RUN_ID" '{started:$s, run_id:$r}' > "$SFILE"; }
+# deploy_ts: when the run finished, kept so a --budget-s re-call measures the
+# regression-watch window from the deploy, not from the re-call. smoke_ok: the
+# smoke already passed for this sha; a re-call while the watch waits skips it.
+save_state() { jqx -n --argjson s "$STARTED" --arg r "$RUN_ID" --arg d "$DEPLOY_TS" --arg k "$SMOKE_OK" '{started:$s, run_id:$r, deploy_ts:$d, smoke_ok:$k}' > "$SFILE"; }
 save_state
 DEADLINE=$(( STARTED + TIMEOUT ))
 CALL_END=0; [ "$BUDGET" -gt 0 ] && CALL_END=$(( NOW + BUDGET ))
@@ -153,7 +168,7 @@ if [ -z "$REASON" ]; then
     RUN_STATUS=$(echo "$RUN" | jqx -r '.status // empty'); RUN_CONCLUSION=$(echo "$RUN" | jqx -r '.conclusion // empty')
     RUN_URL=$(echo "$RUN" | jqx -r '.url // empty')
     if [ "$RUN_STATUS" = "completed" ]; then
-      DEPLOY_TS=$(date +%s)
+      [ -n "$DEPLOY_TS" ] || { DEPLOY_TS=$(date +%s); save_state; }
       [ "$RUN_CONCLUSION" = "success" ] || fail deploy-failed "$WORKFLOW run $RUN_ID concluded ${RUN_CONCLUSION:-unknown}"
       break
     fi
@@ -195,10 +210,12 @@ if [ -z "$REASON" ] && [ -n "$HEALTH_LINES" ]; then
 fi
 
 # 4. Smoke.
-if [ -z "$REASON" ] && [ -n "$SMOKE" ]; then
+if [ -z "$REASON" ] && [ -n "$SMOKE" ] && [ -z "$SMOKE_OK" ]; then
   SMOKE_LOG="$SDIR/$SHA-smoke.log"
   if ! ( cd "$SB_REPO_PATH" && env "${TARGET_ENV[@]}" SB_DEPLOY_SHA="$SHA" SB_DEPLOY_RUN_ID="$RUN_ID" bash -c "$SMOKE" ) >"$SMOKE_LOG" 2>&1; then
     fail smoke-failed "deploy.smoke exited non-zero; last lines: $(tail -n 5 "$SMOKE_LOG" | tr '\n' ' ' | cut -c1-300)"
+  else
+    SMOKE_OK=1; save_state
   fi
 fi
 
@@ -226,6 +243,7 @@ telemetry_check() {
   extra=$(echo "$tel" | jqx -r '.selector_extra // ""'); label=$(echo "$tel" | jqx -r '.release_label // empty')
   out=$(python3 "$LOKI_PY" --config "$CONFIG" check --since-epoch "${DEPLOY_TS:-$(date +%s)}" \
     --window-s "$win" --max-new "$maxn" --release "$SHA" ${label:+--release-label "$label"} --extra "$extra" 2>&1); rc=$?
+  TEL_OUT="$out"
   if [ "$rc" -eq 0 ] && [ "$(echo "$out" | jqx -r '.status // empty' 2>/dev/null)" = "no_data" ]; then
     TELEMETRY=unknown
     local sel; sel=$(echo "$out" | jqx -r '.selector // "the selector"')
@@ -246,14 +264,68 @@ telemetry_check() {
   TELEMETRY=ok
   echo "telemetry: ok ($(echo "$out" | jqx -r '"\(.after) error group(s) after, \(.new) new"'))"
 }
+#    regression watch (deploy.regression_watch, enabled: true): the error RATE
+#    in [deploy, deploy+window_s] against [deploy-window_s, deploy], from
+#    Prometheus (and Loki error-line counts when collect.loki is set), through
+#    `collect_prometheus.py check`. It first waits until deploy+window_s has
+#    passed (nap: a --budget-s call exits 75 and the next call resumes; the
+#    deploy time is in the state file), bounded by timeout_s — at the deadline
+#    it checks the window it has (the output says clipped). Regression only
+#    when the ratio AND the absolute floor are both exceeded. No data →
+#    "watch: inconclusive" (a warning, never ok). Unreachable → a warning.
+#    WATCH (ok|inconclusive|unavailable|skipped|regression) goes on the summary line.
+PROM_PY="${SB_COLLECT_PROM:-$HERE/../skills/super-collect/scripts/collect_prometheus.py}"
+WATCH=skipped; WATCH_OUT=""
+watch_enabled() { [ "$(echo "$DEPLOY" | jqx -r '.regression_watch.enabled // false')" = "true" ]; }
+regression_watch_wait() {
+  watch_enabled || return 0
+  local win target now
+  win=$(echo "$DEPLOY" | jqx -r '.regression_watch.window_s // 1800')
+  target=$(( ${DEPLOY_TS:-$(date +%s)} + win ))
+  DELAY="$POLL"
+  while now=$(date +%s); [ "$now" -lt "$target" ]; do
+    # Sleep at most up to the target; nap ends the call (75) or the wait (deadline).
+    [ $(( target - now )) -lt "$DELAY" ] && DELAY=$(( target - now ))
+    nap || { echo "watch: timeout_s reached before the ${win}s window closed; checking the window so far" >&2; break; }
+  done
+}
+regression_watch_check() {
+  watch_enabled || { echo "watch: skipped (deploy.regression_watch not enabled)"; return 0; }
+  local out rc st
+  out=$(python3 "$PROM_PY" --config "$CONFIG" check --since-epoch "${DEPLOY_TS:-$(date +%s)}" 2>&1); rc=$?
+  WATCH_OUT="$out"
+  st=$(echo "$out" | jqx -r '.status // empty' 2>/dev/null)
+  if [ "$rc" -ne 0 ] || [ -z "$st" ] || [ "$st" = "unavailable" ]; then
+    WATCH=unavailable
+    echo "watch: warning — regression watch unavailable, not failing the deploy: $(echo "$out" | jqx -r '.error // .summary // empty' 2>/dev/null || echo "$out" | tail -n 1)" >&2
+    return 0
+  fi
+  if [ "$(echo "$out" | jqx -r '.regression')" = "true" ]; then
+    WATCH=regression
+    local why; why=$(echo "$out" | jqx -r '"error rate up within \(.windowS)s of the deploy: \(.summary)"' | cut -c1-600)
+    if [ "$REASON" = telemetry_regression ]; then DETAIL="$why; $DETAIL"; REASON=regression
+    else fail regression "$why"; fi
+    return 0
+  fi
+  if [ "$st" = "inconclusive" ]; then
+    WATCH=inconclusive
+    echo "watch: WARNING — no data to compare: $(echo "$out" | jqx -r '.summary') ; health unknown, not failing the deploy" >&2
+    echo "watch: inconclusive (no data)"
+    return 0
+  fi
+  WATCH=ok
+  echo "watch: ok ($(echo "$out" | jqx -r '.summary'))"
+}
 post_deploy_checks() {
+  regression_watch_wait
   telemetry_check
+  regression_watch_check
 }
 [ -n "$REASON" ] || post_deploy_checks
 
 if [ -z "$REASON" ]; then
   rm -f "$SFILE"
-  echo "deploy: healthy sha=$SHORT run=$RUN_ID branch=$BRANCH telemetry=${TELEMETRY:-skipped}${RUN_URL:+ $RUN_URL}"
+  echo "deploy: healthy sha=$SHORT run=$RUN_ID branch=$BRANCH telemetry=${TELEMETRY:-skipped} watch=$WATCH${RUN_URL:+ $RUN_URL}"
   exit 0
 fi
 rm -f "$SFILE"
@@ -266,6 +338,39 @@ DETAIL=$(printf '%s' "$DETAIL" | tr -d '<>`|' | sed 's/→/->/g')
 BODY=$(mktemp); trap 'rm -f "$BODY"' EXIT
 REF_CARD="${ISSUE:+#$ISSUE}"; REF_CARD="${REF_CARD:-n/a — no card number given}"
 RUN_REF="${RUN_URL:-${RUN_ID:-n/a — no run started}}"
+
+# A post-deploy regression (rate watch or new Loki groups) carries the numbers
+# of both windows and the top new Loki error groups, and dedupes per merged PR.
+IS_REGRESSION=0; WATCH_MD=""; FP="deploy|$WORKFLOW|pr-$PR|$REASON"; EXTRA_LABELS=()
+case "$REASON" in regression|telemetry_regression) IS_REGRESSION=1; FP="regression|pr-$PR"; EXTRA_LABELS=(--label regression) ;; esac
+clean() { tr -d '<>`'; }  # markdown tables stay; markup the ticket checks read as placeholders goes
+if [ "$IS_REGRESSION" -eq 1 ]; then
+  if [ -n "$WATCH_OUT" ] && echo "$WATCH_OUT" | jq -e . >/dev/null 2>&1; then
+    WATCH_MD=$(echo "$WATCH_OUT" | jqx -r '
+      def n: if . == null then "n/a" else tostring end;
+      "| Window | Prometheus errors/s | Prometheus requests/s | Loki error lines |",
+      "|---|---|---|---|",
+      "| before (\(.before.start) to \(.before.end)) | \(.prometheus.before.errorRate|n) | \(.prometheus.before.requestRate|n) | \(.loki.errorsBefore|n) |",
+      "| after (\(.after.start) to \(.after.end)) | \(.prometheus.after.errorRate|n) | \(.prometheus.after.requestRate|n) | \(.loki.errorsAfter|n) |",
+      "",
+      "Thresholds: ratio ≥ \(.minRatio) (Loki ≥ \(.lokiErrorRatio)) and ≥ \(.minAbs) errors/s after. Window \(.windowS)s\(if .clipped then " (clipped by deploy.timeout_s)" else "" end).",
+      "Result: \(.summary)"' | clean)
+  fi
+  # Top new Loki error groups: the telemetry check's output, else one Loki check now.
+  if [ -z "${TEL_OUT:-}" ] && [ -n "$(echo "$CFG" | jqx -r '.collect.loki.url // empty')" ]; then
+    TEL_OUT=$(python3 "$LOKI_PY" --config "$CONFIG" check --since-epoch "${DEPLOY_TS:-$(date +%s)}" \
+      --window-s "$(echo "$DEPLOY" | jqx -r '.regression_watch.window_s // 1800')" --release "$SHA" 2>/dev/null) || TEL_OUT=""
+  fi
+  GROUPS_MD=$(echo "${TEL_OUT:-}" | jqx -r '(.newGroups // [])[:5][] | "- \(.group): \(.signature[:120]) (\(.sampleCount)x)"' 2>/dev/null | clean)
+  WATCH_MD="${WATCH_MD:-No rate numbers: the regression came from the Loki group check.}
+
+Top new Loki error groups after the deploy:
+${GROUPS_MD:-- none found (Loki not configured, unreachable, or no new groups)}"
+fi
+WATCH_SECTION=""
+[ "$IS_REGRESSION" -eq 0 ] || WATCH_SECTION="## Regression watch
+$WATCH_MD
+"
 cat > "$BODY" <<MD
 ## Problem
 After PR #$PR merged into \`$BRANCH\`, the dev deploy check failed: $REASON. $DETAIL
@@ -297,24 +402,76 @@ After PR #$PR merged into \`$BRANCH\`, the dev deploy check failed: $REASON. $DE
 
 </details>
 
+$WATCH_SECTION
 ## Fix
 Find why the merged change broke the dev deploy (workflow run $RUN_REF), fix it forward on a new branch, and keep PR #$PR merged.
 
 ## Acceptance Criteria
 - [ ] The \`$WORKFLOW\` run for the fix commit succeeds
 - [ ] Every deploy health URL answers 2xx with the fix commit's version
-- [ ] The deploy smoke command passes$( [ "$REASON" = telemetry_regression ] && printf '\n- [ ] No new error groups in Loki in the %s window after the fix deploys' "deploy.telemetry" )
+- [ ] The deploy smoke command passes$( [ "$REASON" = telemetry_regression ] && printf '\n- [ ] No new error groups in Loki in the %s window after the fix deploys' "deploy.telemetry" )$( [ "$REASON" = regression ] && printf '\n- [ ] The %s error rate after the fix deploys stays under the thresholds' "deploy.regression_watch" )
 
 ## Risk
 🟡 **Medium** · dev is broken or stale until this lands; production is untouched.
 MD
 BUG=$(bash "$FILE_BUG_SH" --title "dev deploy check failed after PR #$PR: $REASON" --body-file "$BODY" \
   --kind bug --priority high --category functional --area deploy \
-  --fingerprint "deploy|$WORKFLOW|pr-$PR|$REASON" --suggested-skill super-build)
+  --fingerprint "$FP" --suggested-skill super-build ${EXTRA_LABELS[@]+"${EXTRA_LABELS[@]}"})
 RC=$?
 if [ "$RC" -eq 79 ]; then exit 79; fi
 if [ -n "$BUG" ] && { [ "$RC" -eq 0 ] || [ "$RC" -eq 71 ]; }; then
   echo "deploy: failed reason=$REASON sha=$SHORT bug: #$BUG"
+  # Optional revert card: a Backlog ticket a human may pick. Never a revert.
+  if [ "$IS_REGRESSION" -eq 1 ] && [ "$(echo "$DEPLOY" | jqx -r '.regression_watch.revert_card // false')" = "true" ]; then
+    REVERT_BODY=$(mktemp); trap 'rm -f "$BODY" "$REVERT_BODY"' EXIT
+    cat > "$REVERT_BODY" <<MD
+## Problem
+PR #$PR is the suspected cause of regression bug #$BUG on dev. Reverting it is one way out; fixing forward (#$BUG) is the other.
+
+## Context
+- **Where:** \`$BRANCH\` at commit \`$SHORT\`, deployed by run $RUN_REF
+  - a. PR #$PR merged as \`$SHA\`
+  - b. The post-deploy regression watch filed bug #$BUG
+  - c. This card waits in Backlog until a human decides to revert
+- **Original card:** $REF_CARD · **PR:** ${PR_URL:-#$PR} · **Bug:** #$BUG
+
+## Evidence
+<details><summary>revert candidate · PR #$PR · bug #$BUG</summary>
+
+| Row | Value |
+|---|---|
+| Error + stack | n/a — see bug #$BUG |
+| Request / trace ID | n/a — see bug #$BUG |
+| Sentry | n/a — see bug #$BUG |
+| PostHog replay | n/a — no user session involved |
+| Logs | see bug #$BUG |
+| Screenshots | n/a — no UI step |
+| HAR / API sample | n/a — rate check only |
+| Env + release | dev · \`$SHA\` |
+| First / last seen | $(date -u +%Y-%m-%dT%H:%MZ) |
+| Users affected | n/a — dev environment |
+| Steps | merge PR #$PR, deploy, watch the error rate |
+| Expected / actual | error rate unchanged / $REASON |
+
+</details>
+
+## Fix
+If a human chooses to revert: open a revert PR of PR #$PR on a new branch. Nothing is reverted automatically.
+
+## Acceptance Criteria
+- [ ] A human decided between this revert and the fix in #$BUG
+- [ ] If reverted, the error rate after the revert deploys is back under the thresholds
+
+## Risk
+🟡 **Medium** · a revert drops the feature from PR #$PR; decide against bug #$BUG.
+MD
+    REVERT=$(SUPER_QA_TARGET_OPTION_NAME=Backlog bash "$FILE_BUG_SH" --title "Revert #$PR (regression #$BUG)" \
+      --body-file "$REVERT_BODY" --kind bug --priority medium --area deploy \
+      --fingerprint "revert|pr-$PR" --label regression --label revert); RRC=$?
+    if [ "$RRC" -eq 79 ]; then exit 79; fi
+    [ -n "$REVERT" ] && echo "deploy: revert card #$REVERT (Backlog) for PR #$PR" \
+      || echo "deploy: warning — revert card not filed (exit $RRC)" >&2
+  fi
   exit 10
 fi
 echo "deploy: failed reason=$REASON sha=$SHORT (bug filing failed, exit $RC)"

@@ -220,6 +220,115 @@ has "deploy healthy" "$OUT" "deploy: healthy"
 has "warning on stderr" "$(cat "$WORK/err")" "telemetry: warning"
 [ -e "$WORK/bug.log" ] && bad "no bug filed" "no bug.log" "filed" || ok "no bug filed"
 
+# ── regression watch: collect_prometheus.py stubbed; prints $PROM_OUT, exits $PROM_RC.
+cat > "$WORK/prom_stub.py" <<'STUB'
+import os, sys, time
+with open(os.environ["PROM_LOG"], "a") as f:
+    f.write("%d %s\n" % (int(time.time()), " ".join(sys.argv[1:])))
+print(os.environ.get("PROM_OUT", ""))
+sys.exit(int(os.environ.get("PROM_RC", "0")))
+STUB
+export SB_COLLECT_PROM="$WORK/prom_stub.py" PROM_LOG="$WORK/prom.log"
+watchcfg() {  # <window_s> [revert_card]
+  config "$GOOD"
+  jq --argjson w "$1" --argjson rc "${2:-false}" '.deploy.regression_watch = {enabled:true, window_s:$w, promql_error_rate:"sum(rate(x[5m]))", revert_card:$rc}
+      | .collect.loki = {url:"http://loki:3100", selector:"{deployment_environment=\"dev\"}"}' "$WORK/cfg.json" > "$WORK/cfg2.json"
+  mv "$WORK/cfg2.json" "$WORK/cfg.json"
+}
+REG_OUT='{"source":"prometheus","status":"ok","regression":true,"windowS":2,"clipped":false,"minRatio":2.0,"minAbs":0.05,"lokiErrorRatio":2.0,
+ "before":{"start":"2026-10-18T10:00:00+00:00","end":"2026-10-18T10:30:00+00:00"},"after":{"start":"2026-10-18T10:30:00+00:00","end":"2026-10-18T11:00:00+00:00"},
+ "prometheus":{"status":"ok","before":{"errorRate":0.02,"requestRate":null},"after":{"errorRate":0.41,"requestRate":null}},
+ "loki":{"status":"ok","errorsBefore":12,"errorsAfter":930},"summary":"prometheus error_rate 0.02 -> 0.41 (x20.50, errors/s after 0.41); loki errors 12 -> 930 (x77.50)"}'
+LOKI_GROUPS='{"status":"ok","regression":true,"new":1,"newGroups":[{"group":"api","signature":"timeout calling ledger","sampleCount":44}]}'
+
+echo "== regression watch: waits for the window, then files a regression bug"
+watchcfg 2; rm -f "$PROM_LOG" "$TEL_LOG"
+T0=$(date +%s)
+PROM_OUT="$REG_OUT" TEL_OUT="$LOKI_GROUPS" run
+is "exit 10" 10 "$RC"
+has "regression reason" "$OUT" "reason=regression"
+WAITED=$(( $(awk '{print $1}' "$PROM_LOG" | head -n 1) - T0 ))
+[ "$WAITED" -ge 2 ] && ok "check ran after deploy + window_s (${WAITED}s)" || bad "check waited for the window" ">= 2s" "${WAITED}s"
+has "check passes the deploy time" "$(cat "$PROM_LOG")" "check --since-epoch"
+BUGLOG=$(cat "$WORK/bug.log")
+hasnt "regression body passes the ticket checks" "$BUGLOG" "BODY REJECTED"
+has "labelled regression" "$BUGLOG" "--label regression"
+has "one open regression bug per PR" "$BUGLOG" "--fingerprint regression|pr-12"
+BODYMD=$(cat "$WORK/bug-body.md")
+has "both windows' numbers" "$BODYMD" "| 0.41 |"
+has "before window" "$BODYMD" "before (2026-10-18T10:00:00+00:00"
+has "top new Loki group" "$BODYMD" "api: timeout calling ledger (44x)"
+has "links the deploy run" "$BODYMD" "actions/runs/42"
+has "rate AC" "$BODYMD" "deploy.regression_watch error rate"
+is "no revert card by default" 1 "$(grep -c -- '--body-file' "$WORK/bug.log")"
+hasnt "never reverts" "$(cat "$GH_LOG")" "revert"
+
+echo "== regression watch: revert_card true → a second Backlog card naming the bug"
+watchcfg 1 true
+cat > "$WORK/file-bug-env.sh" <<STUB
+#!/usr/bin/env bash
+printf 'target=%s %s\n' "\${SUPER_QA_TARGET_OPTION_NAME:-}" "\$*" >> "$WORK/bug.log"
+while [ \$# -gt 0 ]; do [ "\$1" = "--body-file" ] && cp "\$2" "$WORK/bug-body-\$(date +%s%N).md" && bash "$REPO_ROOT/scripts/super-qa-file-bug.sh" --title t --body-file "\$2" --check-body || { [ "\$1" = "--body-file" ] && echo "BODY REJECTED" >> "$WORK/bug.log"; }; shift; done
+echo 88
+STUB
+chmod +x "$WORK/file-bug-env.sh"
+SB_FILE_BUG="$WORK/file-bug-env.sh" PROM_OUT="$REG_OUT" TEL_OUT="$LOKI_GROUPS" run
+is "exit 10" 10 "$RC"
+BUGLOG=$(cat "$WORK/bug.log")
+is "two cards filed" 2 "$(grep -c -- '--body-file' "$WORK/bug.log")"
+has "revert card goes to Backlog" "$BUGLOG" "target=Backlog --title Revert #12 (regression #88)"
+has "revert card dedupes per PR" "$BUGLOG" "--fingerprint revert|pr-12"
+hasnt "both bodies pass the ticket checks" "$BUGLOG" "BODY REJECTED"
+has "names the revert card" "$OUT" "revert card #88 (Backlog)"
+hasnt "never reverts or pushes" "$(cat "$GH_LOG")" "revert"
+
+echo "== regression watch: no data → inconclusive warning, never ok"
+watchcfg 1
+PROM_OUT='{"source":"prometheus","status":"inconclusive","regression":false,"summary":"prometheus inconclusive: no error-rate series in either window"}' run
+is "exit 0" 0 "$RC"
+has "says inconclusive" "$OUT" "watch: inconclusive"
+hasnt "never ok" "$OUT" "watch: ok"
+has "summary carries it" "$OUT" "watch=inconclusive"
+has "WARNING on stderr" "$(cat "$WORK/err")" "watch: WARNING"
+[ -e "$WORK/bug.log" ] && bad "no bug filed" "no bug.log" "filed" || ok "no bug filed"
+
+echo "== regression watch: ratio under the floor → ok"
+watchcfg 1
+PROM_OUT='{"source":"prometheus","status":"ok","regression":false,"summary":"prometheus error_rate 0.001 -> 0.01 (x10.00, errors/s after 0.01)"}' run
+is "exit 0" 0 "$RC"
+has "watch ok" "$OUT" "watch: ok (prometheus error_rate 0.001 -> 0.01"
+has "summary" "$OUT" "watch=ok"
+
+echo "== regression watch: Prometheus unreachable → warning, deploy healthy"
+watchcfg 1
+PROM_RC=2 PROM_OUT='{"source":"prometheus","status":"unavailable","error":"Prometheus unreachable"}' run
+is "exit 0" 0 "$RC"
+has "summary" "$OUT" "watch=unavailable"
+has "warning" "$(cat "$WORK/err")" "watch: warning"
+
+echo "== regression watch: disabled → skipped, collector not called"
+config "$GOOD"; jq '.deploy.regression_watch = {enabled:false, promql_error_rate:"x"}' "$WORK/cfg.json" > "$WORK/cfg2.json"; mv "$WORK/cfg2.json" "$WORK/cfg.json"
+rm -f "$PROM_LOG"
+run
+is "exit 0" 0 "$RC"
+has "says skipped" "$OUT" "watch: skipped"
+[ -e "$PROM_LOG" ] && bad "collector not called" "no prom.log" "called" || ok "collector not called"
+
+echo "== regression watch: --budget-s exits 75 while waiting; the re-call keeps the deploy time"
+watchcfg 30; rm -f "$PROM_LOG"
+PROM_OUT="$REG_OUT" run --budget-s 1
+is "exit 75" 75 "$RC"
+DTS=$(jq -r '.deploy_ts' "$WORK/state/$SHA.json" 2>/dev/null)
+[ -n "$DTS" ] && [ "$DTS" != "null" ] && ok "deploy time saved ($DTS)" || bad "deploy time saved" "a number" "$DTS"
+[ -e "$PROM_LOG" ] && bad "no check before the window closes" "no prom.log" "called" || ok "no check before the window closes"
+PAST=$(( $(date +%s) - 31 ))
+jq --arg d "$PAST" '.deploy_ts = $d' "$WORK/state/$SHA.json" > "$WORK/s2" && mv "$WORK/s2" "$WORK/state/$SHA.json"
+: > "$GH_LOG"; rm -f "$RUN_COUNT"
+OUT=$(PROM_OUT='{"status":"ok","regression":false,"summary":"fine"}' "$SCRIPT" --config "$WORK/cfg.json" --pr 12 --issue 5 --budget-s 5 2>"$WORK/err"); RC=$?
+is "re-call finishes" 0 "$RC"
+has "watch ran on the re-call" "$OUT" "watch: ok (fine)"
+has "with the saved deploy time" "$(cat "$PROM_LOG")" "--since-epoch $PAST"
+
 echo "== --budget-s: exit 75, the next call keeps the run and the clock"
 config "$GOOD" "" 60
 RUN_SEQ="in_progress:" run --budget-s 1

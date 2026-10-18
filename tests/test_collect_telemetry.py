@@ -319,5 +319,136 @@ class Prometheus(unittest.TestCase):
         self.assertTrue(json.loads(out.getvalue())["ok"])
 
 
+DEPLOY = 1_760_700_000
+ERR_Q = 'sum(rate(http_server_request_duration_seconds_count{http_response_status_code=~"5.."}[5m]))'
+REQ_Q = "sum(rate(http_server_request_duration_seconds_count[5m]))"
+
+
+def watch_cfg(**watch):
+    w = {"enabled": True, "window_s": 1800, "promql_error_rate": ERR_Q}
+    w.update(watch)
+    return {"collect": {"prometheus": {"url": "http://p:9090"}}, "deploy": {"regression_watch": w}}
+
+
+def prom_router(series, loki=None):
+    """urlopen stand-in. series[(query, 'before'|'after')] = list of sample values (None → no
+    series). loki[('lines'|'errors', 'before'|'after')] = a count (None → empty result)."""
+    calls = []
+
+    def fx(req, timeout=None):
+        u = urllib.parse.urlsplit(req.full_url)
+        q = urllib.parse.parse_qs(u.query)
+        calls.append((u.path, q))
+        query = q.get("query", [""])[0]
+        if u.path == "/api/v1/query_range":
+            side = "before" if int(q["end"][0]) <= DEPLOY else "after"
+            vals = series.get((query, side))
+            result = [] if vals is None else [{"metric": {}, "values": [[DEPLOY, str(v)] for v in vals]}]
+            return fixture_http._Resp(json.dumps({"status": "success", "data": {"result": result}}).encode())
+        if u.path == "/loki/api/v1/query":
+            side = "before" if int(q["time"][0]) <= DEPLOY else "after"
+            kind = "errors" if "severity_text" in query else "lines"
+            n = (loki or {}).get((kind, side))
+            result = [] if n is None else [{"metric": {}, "value": [DEPLOY, str(n)]}]
+            return fixture_http._Resp(json.dumps({"status": "success", "data": {"result": result}}).encode())
+        raise AssertionError(f"unexpected URL {req.full_url}")
+    fx.calls = calls
+    return fx
+
+
+class RegressionWatch(unittest.TestCase):
+    def run_check(self, cfg, series, loki=None):
+        fx = prom_router(series, loki)
+        with mock.patch("urllib.request.urlopen", fx):
+            out = pm.check(cfg, DEPLOY, now=DEPLOY + 1800)
+        return out, fx.calls
+
+    def test_regression_when_ratio_and_floor_exceeded(self):
+        out, calls = self.run_check(watch_cfg(), {(ERR_Q, "before"): [0.02, 0.04], (ERR_Q, "after"): [0.3, 0.5]})
+        self.assertEqual((out["status"], out["regression"]), ("ok", True))
+        self.assertAlmostEqual(out["prometheus"]["ratio"], 0.4 / 0.03, places=3)
+        self.assertEqual(out["windowS"], 1800)
+        self.assertFalse(out["clipped"])
+        ranges = [q for p, q in calls if p == "/api/v1/query_range"]
+        self.assertEqual({(q["start"][0], q["end"][0]) for q in ranges},
+                         {(str(DEPLOY - 1800), str(DEPLOY)), (str(DEPLOY), str(DEPLOY + 1800))})
+        self.assertIn("x13.33", out["summary"])
+
+    def test_below_floor_is_no_regression(self):
+        # 10x the errors, but 0.01 errors/s after: low-traffic noise.
+        out, _ = self.run_check(watch_cfg(), {(ERR_Q, "before"): [0.001], (ERR_Q, "after"): [0.01]})
+        p = out["prometheus"]
+        self.assertEqual((out["status"], out["regression"], p["overRatio"], p["overAbs"]), ("ok", False, True, False))
+
+    def test_ratio_only_and_abs_only_are_no_regression(self):
+        out, _ = self.run_check(watch_cfg(min_abs=1.0), {(ERR_Q, "before"): [0.1], (ERR_Q, "after"): [0.5]})
+        self.assertFalse(out["regression"], "ratio over, floor under")
+        out, _ = self.run_check(watch_cfg(), {(ERR_Q, "before"): [0.4], (ERR_Q, "after"): [0.6]})
+        self.assertFalse(out["regression"], "floor over, ratio 1.5 under 2.0")
+        self.assertEqual(out["status"], "ok")
+
+    def test_zero_before_counts_as_infinite_ratio(self):
+        out, _ = self.run_check(watch_cfg(), {(ERR_Q, "after"): [0.2]})
+        self.assertTrue(out["regression"])
+        self.assertTrue(out["prometheus"]["beforeZero"])
+        self.assertIsNone(out["prometheus"]["ratio"])
+        self.assertIn("xinf", out["summary"])
+
+    def test_no_data_in_both_windows_is_inconclusive(self):
+        out, _ = self.run_check(watch_cfg(), {})
+        self.assertEqual((out["status"], out["regression"]), ("inconclusive", False))
+        self.assertIn("no error-rate series", out["prometheus"]["reason"])
+
+    def test_request_rate_makes_a_ratio(self):
+        series = {(ERR_Q, "before"): [0.1], (ERR_Q, "after"): [0.4], (REQ_Q, "before"): [10], (REQ_Q, "after"): [40]}
+        out, _ = self.run_check(watch_cfg(promql_request_rate=REQ_Q), series)
+        self.assertEqual(out["prometheus"]["metric"], "error_ratio")
+        self.assertFalse(out["regression"], "4x traffic, same error share")
+        out, _ = self.run_check(watch_cfg(promql_request_rate=REQ_Q), {(ERR_Q, "after"): [0.3]})
+        self.assertEqual(out["status"], "inconclusive", "no traffic series → inconclusive")
+        series = {(REQ_Q, "before"): [10], (REQ_Q, "after"): [10]}
+        out, _ = self.run_check(watch_cfg(promql_request_rate=REQ_Q), series)
+        self.assertEqual((out["status"], out["regression"]), ("ok", False), "traffic, no 5xx → ok")
+
+    def test_loki_error_ratio_over_the_same_windows(self):
+        cfg = watch_cfg()
+        cfg["collect"]["loki"] = {"url": "http://l:3100", "selector": SEL}
+        loki = {("lines", "after"): 5000, ("errors", "before"): 20, ("errors", "after"): 400}
+        out, calls = self.run_check(cfg, {}, loki)
+        self.assertEqual((out["status"], out["regression"]), ("ok", True), "prom inconclusive, loki regressed")
+        self.assertEqual((out["loki"]["errorsBefore"], out["loki"]["errorsAfter"]), (20, 400))
+        lq = [q["query"][0] for p, q in calls if p == "/loki/api/v1/query"]
+        self.assertTrue(all(SEL in q for q in lq), lq)
+        self.assertTrue(any("[1800s]" in q and "severity_text" in q for q in lq), lq)
+        loki = {("lines", "after"): 5000, ("errors", "before"): 1, ("errors", "after"): 20}
+        out, _ = self.run_check(cfg, {}, loki)
+        self.assertFalse(out["regression"], "20 errors in 30 min is under the 0.05/s floor")
+        out, _ = self.run_check(cfg, {}, {})
+        self.assertEqual(out["status"], "inconclusive", "no logs and no series → inconclusive")
+        self.assertEqual(out["loki"]["status"], "inconclusive")
+
+    def test_window_clips_to_now(self):
+        fx = prom_router({(ERR_Q, "before"): [0.1], (ERR_Q, "after"): [0.1]})
+        with mock.patch("urllib.request.urlopen", fx):
+            out = pm.check(watch_cfg(), DEPLOY, now=DEPLOY + 600)
+        self.assertEqual((out["windowS"], out["clipped"]), (600, True))
+
+    def test_missing_query_and_unreachable(self):
+        cfg = watch_cfg()
+        del cfg["deploy"]["regression_watch"]["promql_error_rate"]
+        with mock.patch.object(pm.cc, "active_config", return_value=(cfg, None)), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            rc = pm.main(["check", "--since-epoch", str(DEPLOY)])
+        self.assertEqual(rc, 2)
+        self.assertIn("promql_error_rate is required", out.getvalue())
+        cfg = watch_cfg()
+        cfg["collect"]["prometheus"]["url"] = "http://127.0.0.1:9"
+        with mock.patch.object(pm.cc, "active_config", return_value=(cfg, None)), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            rc = pm.main(["check", "--since-epoch", str(DEPLOY)])
+        self.assertEqual(rc, 2)
+        self.assertEqual(json.loads(out.getvalue())["status"], "unavailable")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
