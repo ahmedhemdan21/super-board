@@ -134,12 +134,18 @@ for skill in $PRIMARY_SKILLS $SECONDARY_SKILLS; do
   mkdir -p "$dest"
   rm -rf "${dest:?}/"* 2>/dev/null || true
   cp -R "$REPO_ROOT/skills/$skill/." "$dest/"
+  # Python byte-code from running the pack's own tests is machine-local junk: drop it
+  # from the copy (only under $dest, which was just written from the pack).
+  find "$dest" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
+  find "$dest" -name '*.py[co]' -type f -exec rm -f {} + 2>/dev/null || true
   [ -z "$note" ] || echo "   ✓ $skill$note"
 done
 
 # File destinations can be links into the pack too. -ef follows symlinks and
 # also recognizes hard links, so cp never tries to overwrite its own input.
+# Byte-code is never shipped, whichever copy path asks.
 copy_file() {
+  case "$1" in *.pyc|*.pyo|*/__pycache__/*) return 0 ;; esac
   if [ ! "$1" -ef "$2" ]; then
     cp "$1" "$2"
   fi

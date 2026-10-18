@@ -7,6 +7,9 @@ so step 1 (Checks) can say "Fixed for you" without asking anything.
     super-board-setup.py check   [--root DIR] [--pack DIR]            what is missing / old (read-only)
     super-board-setup.py fix     [--root DIR] [--pack DIR] [--no-helpers] [--dry-run]
                                                                        apply every must-have, then re-check
+    super-board-setup.py skills --install [--root DIR] [--host H] [--yes]
+                                                                       missing helper skills → exact `npx skills add`
+                                                                       commands (SKILL_SOURCES); runs them only with --yes
     super-board-setup.py migrate-config <config.json> [--dry-run]     old config keys → v3 keys
     super-board-setup.py names   [--root DIR]                          two board-name suggestions
     super-board-setup.py branch  [--root DIR]                          branches, deploy source, recommendation
@@ -229,6 +232,56 @@ def helper_readiness(root, host="claude", home=None, catalog=None):
     except ValueError:
         result = {"ready": False, "entries": [], "error": process.stderr.strip()}
     return result
+
+
+# Where each helper skill super-board-skills-ready.py may report missing comes from.
+# ONE table: `skills --install` prints (and with --yes runs) `npx skills add` from it.
+SKILL_SOURCES = {
+    "verification-before-completion": "obra/superpowers",
+    "testing-strategy": "anthropics/knowledge-work-plugins",
+    "mattpocock-skills:*": "mattpocock/skills",
+}
+
+
+def skill_source(name):
+    """(repo, skill name for --skill) for a missing helper, or None when unknown."""
+    if name in SKILL_SOURCES:
+        return SKILL_SOURCES[name], name
+    if ":" in name:
+        prefix, short = name.split(":", 1)
+        repo = SKILL_SOURCES.get(prefix + ":*")
+        if repo:
+            return repo, short
+    return None
+
+
+def skills_install(root, host="claude", yes=False, home=None, catalog=None):
+    """Missing helper skills → the exact `npx skills add` command for each. Runs them only
+    with yes=True and npx present; otherwise prints them for onboard to ask about."""
+    readiness = helper_readiness(root, host, home, catalog)
+    agent = "claude-code" if host == "claude" else "codex"
+    plan, unknown = [], []
+    for e in readiness.get("entries", []):
+        if e.get("status") != "missing":
+            continue
+        src = skill_source(e["name"])
+        if not src:
+            unknown.append(e["name"])
+            continue
+        argv = ["npx", "-y", "skills@latest", "add", src[0], "--skill", src[1], "-a", agent, "-y"]
+        plan.append({"skill": e["name"], "source": src[0], "command": " ".join(argv), "argv": argv})
+    npx = have("npx")
+    ran = []
+    if yes and npx:
+        for p in plan:
+            r = run([shutil.which("npx") or "npx"] + p["argv"][1:], cwd=root, input="")
+            ran.append({"skill": p["skill"], "exit": r.returncode})
+        readiness = helper_readiness(root, host, home, catalog) if plan else readiness
+    for p in plan:
+        p.pop("argv")
+    return {"missing": [p["skill"] for p in plan] + unknown, "plan": plan, "unknown": unknown,
+            "npx": npx, "ran": ran, "ready": readiness.get("ready", False),
+            "note": None if npx or not plan else "npx not found: install Node, then run the commands above"}
 
 
 def is_git_repo(root):
@@ -1285,6 +1338,13 @@ def main(argv):
                 print(text_report(res))
                 return 0 if res["green"] else 1
             return out(res, 0 if res["green"] else 1)
+        if cmd == "skills":
+            host = flag(rest, "--host", "claude")
+            if host not in ("claude", "codex") or "--install" not in rest:
+                return 64
+            res = skills_install(root, host, "--yes" in rest, flag(rest, "--home", os.environ.get("SUPER_BOARD_SKILLS_HOME")),
+                                 flag(rest, "--catalog", os.environ.get("SUPER_BOARD_SKILLS_CATALOG")))
+            return out(res, 0 if res["ready"] else 1)
         if cmd == "migrate-config":
             path = rest[0] if rest and not rest[0].startswith("-") else None
             if not path:

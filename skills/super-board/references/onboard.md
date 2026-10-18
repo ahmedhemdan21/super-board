@@ -180,6 +180,12 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    │    helpers still count, but missing required helpers halt dispatch;
    │    git or gh → halt: "Without <tool> the board can't <why>. Your answers are saved — run
    │    the command, then re-run onboard."
+   ├─ Helper skills still missing (verification-before-completion, testing-strategy, …):
+   │      python3 $SB/super-board-setup.py skills --install --host <host>
+   │    lists each missing helper with its exact `npx -y skills@latest add <owner/repo> --skill
+   │    <name> -a <agent> -y` (sources: SKILL_SOURCES in that script). Ask once ("Install these
+   │    N helper skills?"); yes → re-run with `--yes` (it runs them, then re-resolves); no or
+   │    `npx` missing → print the commands, keep readiness red, continue. Unknown names: say so.
    ├─ `env_secrets` (collector key NAMES in a git-tracked .env; values are never shown):
    │    `!` empty names → warn once and move on; `✗` filled values → must fix: show its remedy
    │    (move the keys to that folder's .env.local, confirm `git check-ignore`, blank them in the
