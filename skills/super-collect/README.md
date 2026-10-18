@@ -45,7 +45,8 @@ read-only. Secrets stay in a gitignored env file (`.env.local` whenever `.env` i
 `POSTHOG_PERSONAL_API_KEY` (`query:read`, `error_tracking:read`). Loki and Prometheus need no
 secret: `collect.loki` (`url`, required `selector`) and `collect.prometheus` (`url`); the
 optional Tempo enricher reads `collect.tempo` (`url`, `grafana_url`, `grafana_datasource_uid`).
-`collect_loki.py check` also backs the post-deploy telemetry check (`deploy.telemetry`).
+`collect_loki.py check` also backs the post-deploy telemetry check (`deploy.telemetry`), and
+`collect_prometheus.py check` the error-rate regression watch (`deploy.regression_watch`).
 
 ## Install
 

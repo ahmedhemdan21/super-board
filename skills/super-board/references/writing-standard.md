@@ -396,12 +396,12 @@ Next: <owner>
 
 | Field | Values |
 |---|---|
-| role (who writes it) | `builder` · `qa` · `reviewer` · `collect` · `orchestrator` · `triage` |
+| role (who writes it) | `builder` · `qa` · `reviewer` · `collect` · `orchestrator` · `triage` · `scheduler` |
 | label | `blocker` · `issue` · `suggestion` · `nit` · `question` · `praise` · `report` · `needs-info` · `evidence` |
 | status emoji | ✅ pass/done · ❌ fail · ⏳ in progress · 🛑 blocked · 🙋 needs you · ↩️ moved back · ⚠️ warning |
-| Next | `builder` · `qa` · `reviewer` · `Eric` · `none` |
+| Next | `builder` · `qa` · `reviewer` · `Eric` · `none` · for `scheduler`: `next run <when>` (a failure may lead with `@<login> ·`) |
 
-Header regex: `^\[(builder|qa|reviewer|collect|orchestrator|triage)\] \[(blocker|issue|suggestion|nit|question|praise|report|needs-info|evidence)\] \S`
+Header regex: `^\[(builder|qa|reviewer|collect|orchestrator|triage|scheduler)\] \[(blocker|issue|suggestion|nit|question|praise|report|needs-info|evidence)\] \S`
 
 - ≤ 8 lines of prose. Evidence before adjectives: the command, the sha, the file:line.
 - Machine lines (`Local tests:`, `gh-quota-on-exit:`, `blocked-by:`, `root-cause-hash:`) go
@@ -418,6 +418,17 @@ Did: ran AC1–AC2, desktop + mobile
 ❌ Not done: AC1 mobile: message under the keyboard
 Next: builder
 Local tests: npx playwright test e2e/upload-size.spec.ts
+```
+
+The scheduler (`super-board-scheduler.py`) writes one per run on the repo's
+`super-board runs` issue; a cloud routine writes the same shape there:
+
+```
+[scheduler] [report] ✅ ok · backend-nightly
+Did: job backend-nightly · trigger cron · 1h 02m
+✅ Done: moved 6 cards · 3 PRs opened, 2 merged · 4 filed (sentry 3, prs 1)
+Next: next run 2026-10-19 02:00 local
+gh-quota-on-exit: graphql=4120/5000 rest=4870/5000
 ```
 
 **Triage questions** — `/super-board triage` posts ONE comment per card for what it cannot

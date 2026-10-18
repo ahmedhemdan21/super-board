@@ -21,9 +21,10 @@
 #     [--category functional|visual|network|console|i18n|a11y|data|testability] \
 #     [--area <area>] [--route <route>] [--spec <path>] [--iter <n>] \
 #     [--fingerprint "<slug>|<tc>|<signature>"] \
-#     [--suggested-skill super-build|super-qa|ui-refine-loop|super-review] #     [--label <name>]...  # extra label, e.g. `flaky` (a test that passed only on a
-#                          #   rerun: the merge gate's FLAKY: line, run.md)
-\
+#     [--suggested-skill super-build|super-qa|ui-refine-loop|super-review] \
+#     [--label <name>]...  # extra label: `flaky` (a test that passed only on a rerun:
+#                          #   the merge gate's FLAKY: line, run.md) or `regression`
+#                          #   (the post-deploy watch, super-board-deploy-wait.sh)
 #     [--check-body]      # run the body checks only, then exit (no gh calls)
 #       (ui-refine-loop only labels a UI ticket; a human can run /ui-refine-loop —
 #        the board never triggers it)

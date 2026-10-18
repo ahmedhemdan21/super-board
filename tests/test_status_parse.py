@@ -362,6 +362,19 @@ def test_render_kanban_backlog_overflow_truncates() -> None:
     assert "more   (not started, collapsed)" in line and sbs.visual_width(line) == 80
 
 
+def test_snapshot_json_shape() -> None:
+    cfg = {"project": {"owner": "acme", "number": 3}}
+    items = [{"number": 9, "title": "b", "labels": ["qa"], "status": "QA"},
+             {"number": 4, "title": "a", "labels": [], "status": "Done"},
+             {"number": 5, "title": "c", "labels": [], "status": "Todo"}]
+    snap = sbs.snapshot_json("app", cfg, items, False)
+    assert snap["project"] == {"owner": "acme", "number": 3}
+    assert [i["number"] for i in snap["items"]] == [4, 5, 9]
+    assert snap["counts"]["QA"] == 1 and snap["counts"]["Done"] == 1 and snap["counts"]["Ready"] == 0
+    assert snap["counts"]["Todo"] == 1, "a status outside the board order is still counted"
+    assert snap["truncated"] is False and snap["generated"].endswith("Z")
+
+
 def _run() -> int:
     tests = [
         (name, fn) for name, fn in globals().items()

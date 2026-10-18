@@ -296,7 +296,31 @@
     // for both windows. release_label (optional): a label holding the deployed version;
     // when set, the after-window keeps only lines whose label starts with the short sha.
     "telemetry": { "source": "loki", "window_s": 600, "max_new_error_groups": 0,
-                   "selector_extra": "", "release_label": null }
+                   "selector_extra": "", "release_label": null },
+    // Optional rate-based regression watch, next to the telemetry group check. Absent or
+    // enabled false (default) → skipped. After health and smoke the deploy check waits until
+    // window_s (default 1800) has passed since the deploy finished (bounded by timeout_s, so
+    // set timeout_s ≥ deploy time + window_s), then `collect_prometheus.py check` averages
+    // promql_error_rate (REQUIRED when enabled; errors per second) over [deploy-window_s,
+    // deploy] and [deploy, deploy+window_s] through collect.prometheus. promql_request_rate
+    // (optional) turns it into an error ratio. Regression = after/before ≥ min_ratio
+    // (default 2.0) AND after-window errors ≥ min_abs per second (default 0.05 ≈ 90 errors
+    // in 30 minutes: the low-traffic noise guard). With collect.loki set, Loki error lines
+    // (selector + error_filter) over the same windows count too: ratio ≥ loki_error_ratio
+    // (default 2.0) AND ≥ min_abs errors/s. No data in both windows → "inconclusive", a
+    // warning, never ok. A regression files ONE open bug per merged PR (labels bug +
+    // regression) with both windows' numbers and the top new Loki groups. revert_card true
+    // (default false) also files "Revert #<pr>" into Backlog. Nothing is ever reverted.
+    "regression_watch": {
+      "enabled": false,
+      "window_s": 1800,
+      "promql_error_rate": "sum(rate(http_server_request_duration_seconds_count{http_response_status_code=~\"5..\"}[5m]))",
+      "promql_request_rate": null,
+      "min_ratio": 2.0,
+      "min_abs": 0.05,
+      "loki_error_ratio": 2.0,
+      "revert_card": false
+    }
   },
 
   // ── Runaway controls (v2.0.0).
