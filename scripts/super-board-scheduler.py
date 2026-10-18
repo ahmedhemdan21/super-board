@@ -1316,6 +1316,10 @@ def cmd_serve(a):
         print("refusing: the scheduler never runs as root / Administrator", file=sys.stderr)
         return 77
     s = make(a)
+    if sys.stdout is None or sys.stderr is None:  # pythonw (the Windows logon task) has no console
+        out = open(s.state_dir / "serve.log", "a", encoding="utf-8", buffering=1)
+        sys.stdout = sys.stdout or out
+        sys.stderr = sys.stderr or out
     bind = a.bind or s.cfg.get("bind") or "127.0.0.1"
     try:
         check_bind(bind, a.allow_remote)
