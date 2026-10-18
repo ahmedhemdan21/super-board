@@ -8,6 +8,8 @@
   `.env` is tracked by git).
 - since(arg, default_days): `--since 30d` / `--since 2026-09-01` -> aware UTC datetime.
 - fingerprint(source, *parts): the stable dedupe key super-collect-file.sh stamps.
+- cross_signature(type, message, top_frame): the key shared across sources for one
+  exception (`<!-- sb-signature: … -->`); stack_top_frame / frames_top_frame find the frame.
 """
 from __future__ import annotations
 
@@ -238,6 +240,146 @@ def signature(line):
     except ValueError:
         pass
     return normalize(_TS.sub("T", _GUID.sub("G", text)))[:160]
+
+
+# ── Cross-source signature: one crash seen by Sentry, Loki and PostHog keys the same.
+#
+# Each source keeps its own fingerprint (`err|sentry|<id>`, `loki|<group>|<sig>`, …) for its
+# own dedupe; cross_signature is the shared key super-collect-file.sh stamps as
+# `<!-- sb-signature: <hash> -->` so a second source appends evidence instead of a new card.
+# Inputs, normalized so every source agrees:
+#   type       last dotted segment, lower-case (Sentry .NET says `InvalidOperationException`,
+#              OTel says `System.InvalidOperationException`)
+#   message    through signature() (ids, numbers, timestamps collapsed)
+#   top frame  the innermost frame NOT in a framework/vendor namespace (VENDOR_FRAMES).
+#              .NET: `Namespace.Class.Method` (compiler async/lambda names folded back);
+#              JS: `function@file-basename` (line/column dropped: they move every deploy).
+# Empty when there is neither a type nor a frame: bare messages never cross-match.
+
+# The one list of framework/vendor frames. A frame is skipped when its symbol, module or
+# file STARTS WITH a prefix, or its file CONTAINS a path marker.
+VENDOR_PREFIXES = (
+    # .NET runtime and common framework/library namespaces
+    "System.", "Microsoft.", "Npgsql.", "Grpc.", "Polly.", "Newtonsoft.", "Serilog.",
+    "OpenTelemetry.", "Swashbuckle.", "MediatR.", "FluentValidation.", "Hangfire.", "Wolverine.",
+    "JasperFx.", "Marten.", "Yarp.", "lambda_method",
+    # JS runtimes
+    "node:", "internal/", "node_modules/", "webpack/", "<anonymous>", "[native code]", "native ",
+)
+VENDOR_PATHS = ("/node_modules/", "/react-dom", "/react/", "/scheduler/", "/next/dist/", "next/dist/",
+                "react-dom.", "/webpack/")
+
+
+def is_vendor_frame(*parts):
+    """True when any part (symbol, module, file) is framework/vendor code."""
+    for p in parts:
+        p = str(p or "").replace("\\", "/")
+        if p and (p.startswith(VENDOR_PREFIXES) or any(v in p for v in VENDOR_PATHS)):
+            return True
+    return False
+
+
+_ASYNC = re.compile(r"\.<([A-Za-z_]\w*)>[a-z]__[\w|]*")  # .<PlaceOrder>d__5 / .<Get>b__0 / g__Core|4_0
+_DISPLAY = re.compile(r"\.<>c(__DisplayClass[\w]*)?")    # lambda closure classes
+
+
+def dotnet_frame(symbol, module=None):
+    """`Ns.Class.Method` for a .NET frame. `symbol` is a stack-trace symbol
+    (`Ns.Class.<Method>d__5.MoveNext`) or a Sentry function (`Method`, `Class.Method`,
+    `async Task<T> Class.Method(int id)`); `module` is Sentry's `Ns.Class`."""
+    s = str(symbol or "").strip()
+    s = re.sub(r"\(.*$", "", s)                        # arguments
+    s = s.split()[-1] if s.split() else ""             # return type / async prefix
+    s = re.sub(r"\[[^\]]*\]", "", s)                   # generic args Foo[T]
+    s = _ASYNC.sub(r".\1", s)
+    s = _DISPLAY.sub("", s)
+    s = re.sub(r"\.MoveNext$", "", s)
+    s = re.sub(r"`\d+", "", s)
+    mod = re.sub(r"`\d+", "", str(module or "").strip())
+    if mod and not s.startswith(mod + "."):
+        method = s.rsplit(".", 1)[-1]
+        s = f"{mod}.{method}" if method else mod
+    return s.strip(".")
+
+
+def js_frame(function, filename):
+    """`function@basename` for a JS frame; `basename` alone when the function is anonymous."""
+    fn = str(function or "").strip()
+    if fn in ("?", "<anonymous>", "Object.<anonymous>"):
+        fn = ""
+    fn = re.sub(r"^(async |new )", "", fn)
+    f = re.sub(r"[?#].*$", "", str(filename or "").strip())
+    f = re.sub(r":\d+(:\d+)?$", "", f)
+    base = f.replace("\\", "/").rsplit("/", 1)[-1]
+    return f"{fn}@{base}" if fn and base else (fn or base)
+
+
+_NET_AT = re.compile(r"^\s*at\s+([^\s(]+)\s*\(")
+_JS_AT = re.compile(r"^\s*at\s+(?:(.+?)\s+\()?(\S+?):\d+(?::\d+)?\)?\s*$")
+
+
+def stack_top_frame(stacktrace):
+    """The innermost in-app frame of a rendered .NET or JS stack trace, canonical form.
+    .NET inner-exception sections (` ---> … --- End of inner exception stack trace ---`)
+    are skipped so the frame belongs to the outer exception, as Sentry and OTel report it."""
+    inner = False
+    for line in str(stacktrace or "").splitlines():
+        if " ---> " in line or line.lstrip().startswith("--->"):
+            inner = True
+            continue
+        if "--- End of inner exception stack trace ---" in line:
+            inner = False
+            continue
+        if inner:
+            continue
+        m = _NET_AT.match(line)
+        if m and "." in m.group(1) and "/" not in m.group(1):
+            sym = m.group(1)
+            if not is_vendor_frame(sym):
+                return dotnet_frame(sym)
+            continue
+        m = _JS_AT.match(line)
+        if m:
+            fn, f = m.group(1) or "", m.group(2)
+            if not is_vendor_frame(f, fn):
+                return js_frame(fn, f)
+    return ""
+
+
+def frames_top_frame(frames, dotnet=False):
+    """Innermost in-app frame of a Sentry / PostHog frame list. Both send frames outermost
+    first (innermost last), so the list is read backwards."""
+    for f in reversed(frames or []):
+        if not isinstance(f, dict):
+            continue
+        fn = f.get("function") or f.get("resolved_name") or f.get("mangled_name") or ""
+        if dotnet or str(f.get("lang") or "").lower() in ("csharp", "dotnet"):
+            key = dotnet_frame(fn, f.get("module"))
+            if key and not is_vendor_frame(key):
+                return key
+            continue
+        fname = f.get("filename") or f.get("abs_path") or f.get("absPath") or f.get("source") or ""
+        if is_vendor_frame(fname, fn, f.get("module")):
+            continue
+        key = js_frame(fn, fname)
+        if key:
+            return key
+    return ""
+
+
+def short_type(exc_type):
+    t = str(exc_type or "").strip()
+    t = re.sub(r"`\d+.*$", "", t)
+    return t.rsplit(".", 1)[-1].lower()
+
+
+def cross_signature(exc_type, message, top_frame):
+    """12-hex key shared by every source for one exception; "" without type AND frame."""
+    t, frame = short_type(exc_type), str(top_frame or "").strip()
+    if not t and not frame:
+        return ""
+    raw = "|".join((t, signature(message or ""), frame))
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 
 if __name__ == "__main__":

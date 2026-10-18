@@ -16,6 +16,12 @@ board fixes them.
   fetchers print `{"status":"unavailable","error":…}` and exit 2.
 - Reaches a Loki / Prometheus that lives inside a remote Docker network over
   `transport: {"kind":"ssh","host":…,"docker_network":…}` (GET only, URL-encoded, quoted).
+- Files one card per real problem across sources: Sentry, Loki and PostHog exceptions carry a
+  `crossSignature` (type, normalized message, top in-app frame); a second source with the same
+  signature adds an evidence comment to the open card instead of filing another.
+- Adds a Trace line to Evidence when a candidate has a trace id, summarised from **Tempo**
+  (optional enricher, `collect.tempo`, not a source) with a Grafana Explore link.
+- Labels a filed body that is too thin to build `needs-triage` (`super-board-card-ready.py`).
 - Files through `super-qa-file-bug.sh` and `super-review-file-refactor.sh`, always into the
   holding column. Nothing reaches `Ready` until `super-board lint` says so.
 
@@ -37,7 +43,8 @@ asks which sources to enable, writes IDs and hosts to the config, and tests each
 read-only. Secrets stay in a gitignored env file (`.env.local` whenever `.env` is tracked by git;
 `collect_common.py secret-file` prints which): `SENTRY_AUTH_TOKEN` (scopes `event:read project:read`),
 `POSTHOG_PERSONAL_API_KEY` (`query:read`, `error_tracking:read`). Loki and Prometheus need no
-secret: `collect.loki` (`url`, required `selector`) and `collect.prometheus` (`url`).
+secret: `collect.loki` (`url`, required `selector`) and `collect.prometheus` (`url`); the
+optional Tempo enricher reads `collect.tempo` (`url`, `grafana_url`, `grafana_datasource_uid`).
 `collect_loki.py check` also backs the post-deploy telemetry check (`deploy.telemetry`), and
 `collect_prometheus.py check` the error-rate regression watch (`deploy.regression_watch`).
 

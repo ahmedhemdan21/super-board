@@ -69,10 +69,28 @@ URL directly. A stack that is only reachable inside a Docker network on a remote
 Query parameters are URL-encoded locally and the URL, host and network are checked against strict
 character sets, so config never reaches a shell unquoted. GET only. Every Loki query carries the
 configured `selector`, so the queries only ever name that environment. Verifier "still happening":
-rerun `list --since 1d` and look for the same fingerprint. Tempo is not a source yet.
+rerun `list --since 1d` and look for the same fingerprint.
 `collect_loki.py check` is the post-deploy telemetry check (`deploy.telemetry`, run.md →
 "Post-merge dev check"); `collect_prometheus.py check` is the rate-based regression watch next
 to it (`deploy.regression_watch`). Neither is a collect source: `/super-collect` never runs them.
+
+### cross-source signature and traces
+
+One crash is often seen by Sentry, Loki and PostHog at once. Sentry (`--links` most urgent,
+from each issue's latest event), Loki (structured metadata `exception_type` / `exception_message` /
+`exception_stacktrace`) and PostHog (`$exception_list`) candidates carry `crossSignature`:
+`collect_common.cross_signature` over the exception type (short name), the normalized message and
+the innermost in-app frame (`collect_common.VENDOR_PREFIXES` / `VENDOR_PATHS` list what is not
+in-app). `""` when there is no exception type and no stack: bare messages never cross-match.
+Pass it as `--signature`; the filer stamps `<!-- sb-signature: … -->` and, when an open card
+already carries it, adds one `[collect] [evidence]` comment there instead of filing a second card.
+
+Loki candidates carry `traceId` / `spanId` (structured metadata `trace_id` / `span_id`), Sentry
+candidates `traceId` (`contexts.trace.trace_id`). Pass it as `--trace-id`: Evidence gets a Trace
+line from `python3 $S/collect_tempo.py evidence <id>` (services, root span, error spans, and a
+Grafana Explore link when `collect.tempo.grafana_url` + `grafana_datasource_uid` are set). Tempo
+is an **enricher, not a source**: `collect_tempo.py trace <id>` / `ping`, same transport as Loki
+(defaults to `collect.loki.transport`), files nothing. No `collect.tempo` → the line is just the id.
 
 ### custom sources
 
@@ -167,7 +185,7 @@ Every card goes through one script, which routes to the pack's filers:
 ```bash
 $S/super-collect-file.sh --config <cfg> --type bug|feature|refactor|fix \
   --source sentry|posthog|loki|prometheus|github|prs|architecture|custom --title "<one line>" --body-file <md> \
-  --fingerprint "<key>" [--priority p] [--area a] [--label needs-triage] [--label ux] [--yes]
+  --fingerprint "<key>" [--priority p] [--area a] [--label needs-triage] [--label ux]   [--signature <crossSignature>] [--trace-id <traceId>]   [--count n --first-seen t --last-seen t --link url --sample "<line>"] [--yes]
 $S/super-collect-file.sh --config <cfg> --adopt <n> --type <t> [--yes]
 ```
 
@@ -184,13 +202,20 @@ $S/super-collect-file.sh --config <cfg> --adopt <n> --type <t> [--yes]
   `loki|<group>|<signature>`, prometheus `prom|alert|…` / `prom|target|…` (fetchers emit them).
 - **Dedupe** uses complete guarded paginated issue history, exact-fingerprint, repo-wide, any label: an open hit gets a "Seen again" comment; a
   closed-only hit is a **recurrence**, filed again naming the closed issue.
+- **Cross-source** (`--signature`, from the same history read): an OPEN issue with the same
+  `sb-signature` gets ONE `[collect] [evidence]` comment (count, first/last seen, link, sample;
+  at most one per source per issue per 24h, marker `<!-- sb-evidence: <source>:<fp> -->`) and no
+  new card; a CLOSED one → filed new, "Seen before in #n". The fingerprint stamp stays too.
+- **Triage**: the composed body goes through `.claude/bin/super-board-card-ready.py`; one that is
+  not ready is filed with `needs-triage` (`triage.enabled: false` skips it; see
+  `../super-board/references/triage.md`).
 - **Column** is the board's holding column (`Backlog`, else `Todo`/`To do`/`Triage`/`Inbox`); none
   → refused (exit 65).
 - The same-host repository lock serializes collector calls; digest receipts skip identical repeat comments. See [state and recovery](references/scheduled-intake.md).
 - Labels: `source:collect`, `collect:<source>`, every `--label`, plus the filer's own.
 
 Dry-run: run each verified item without `--yes`, show one table (`would-file` / `duplicate` /
-`recurrence` / `would-adopt`, plus the verifier's drops), wait for confirm, rerun with `--yes`.
+`evidence` / `recurrence` / `would-adopt`, plus the verifier's drops), wait for confirm, rerun with `--yes`.
 
 ## Report
 
@@ -204,7 +229,8 @@ Recurrence #418 fix       Merge gate rebases on lockfile drift     (was #88)
 Dropped    Sentry 4490 drop-fixed — resolved in web@1.4.0, not seen since (PR #377)
 Gaps       #420 analytics Receipt upload: no failure event         (gap|receipt-upload)
 Report     docs/super-board/runs/collect-funnel-2026-10-02.md
-Next       /super-board lint  — nothing here is in Ready
+Evidence   #301 ← loki loki|admin-bff|9f3a1c2b4d5e (same sb-signature, comment added)
+Next       /super-board triage  — needs-triage cards; nothing here is in Ready
 ```
 
 ## Common pitfalls

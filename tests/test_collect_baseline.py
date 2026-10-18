@@ -103,13 +103,13 @@ class Window(unittest.TestCase):
             rc, out = run("list")
         self.assertEqual(rc, 0)
         self.assertEqual(out["since"], (NOW - dt.timedelta(days=14)).isoformat())
-        self.assertIn("statsPeriod=14d", opener.calls[-1].full_url)
+        self.assertIn("statsPeriod=14d", " ".join(c.full_url for c in opener.calls))  # latest-event calls follow the list
 
     def test_sentry_cli_since_override(self):
         with cli(sn, {"sentry": SENTRY, "window_days": 7}) as (run, opener):
             rc, out = run("list", "--since", "30d")
         self.assertEqual(out["since"], (NOW - dt.timedelta(days=30)).isoformat())
-        self.assertIn("statsPeriod=30d", opener.calls[-1].full_url)
+        self.assertIn("statsPeriod=30d", " ".join(c.full_url for c in opener.calls))  # latest-event calls follow the list
         with cli(sn, {"sentry": SENTRY, "window_days": 7}) as (run, opener):
             rc, out = run("list")
         self.assertEqual(out["since"], (NOW - dt.timedelta(days=7)).isoformat())
@@ -154,7 +154,8 @@ class SentryFixture(unittest.TestCase):
         self.assertFalse(c["4490"]["stillHappening"])
         self.assertEqual(set(a), {"fingerprint", "score", "id", "shortId", "title", "culprit", "level", "unhandled",
                                   "substatus", "events", "users", "events24h", "firstSeen", "lastSeen",
-                                  "stillHappening", "permalink"})
+                                  "stillHappening", "permalink", "crossSignature", "traceId"})
+        self.assertRegex(a["crossSignature"], r"^[0-9a-f]{12}$")  # from the latest event's TypeError
         self.assertNotIn("eval-sentry-token", json.dumps(out))
 
     def test_event_strips_pii(self):

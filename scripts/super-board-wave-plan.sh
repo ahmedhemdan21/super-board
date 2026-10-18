@@ -73,7 +73,8 @@
 #     "resume": [ {"number":51,"title":"…"} ],
 #     "refreshApproval": [ {"number":52,"title":"…","why":"PR head changed after review"} ],
 #     "flag":  [ {"number":82,"title":"…","why":"…"} ],
-#     "stranded": [ {"number":44,"title":"…"} ] }
+#     "stranded": [ {"number":44,"title":"…"} ],
+#     "triage": [ {"number":45,"title":"…","missing":["Fix","checkable acceptance criterion"],"hints":["…"]} ] }
 set -euo pipefail
 
 CONFIG=""; ITEMS_FILE=""; DEPS_FILE=""
@@ -132,12 +133,46 @@ else
     rc=$?; echo "could not derive the dependency graph for ${REPO}" >&2; exit "$rc"; }
 fi
 
+# TRIAGE. A vague Ready card makes its lane stall or build the wrong thing, so every
+# unassigned Ready issue goes through super-board-card-ready.py (the ticket format, a
+# checkable criterion, deps.sh's own `## Blocked by` verdict from the graph above). A
+# not-ready card is left out of `cards` and reported in `triage` with its `missing` list;
+# the orchestrator labels it `needs-triage` (this script stays read-only). Bodies come
+# from the board read itself (super-board-card.sh items carries `body`), no extra fetch.
+# Fail safe: a checker crash or unreadable answer marks every candidate not ready.
+# `triage.enabled: false` in the config skips the check.
+TRIAGE='[]'
+if [ "$(echo "$CONFIG_JSON" | jq -r 'if .triage.enabled == false then "off" else "on" end')" = on ]; then
+  CANDIDATES=$(echo "$ITEMS" | jq -c '[ .items[]
+      | select(.content.type == "Issue" and .status == "Ready")
+      | select((.content.assignees // []) | length == 0)
+      | { number: .content.number, title: .content.title, body: (.content.body // null),
+          labels: ((.labels // []) + (.content.labels // [])) } ]')
+  if [ "$CANDIDATES" != "[]" ]; then
+    TMPD=$(mktemp -d)
+    trap 'rm -rf "$TMPD"' EXIT
+    printf '%s' "$DEPS" > "$TMPD/deps.json"
+    printf '%s' "$CONFIG_JSON" > "$TMPD/config.json"
+    RC=0
+    TRIAGE=$(printf '%s' "$CANDIDATES" | python3 "$HERE/super-board-card-ready.py" \
+               --deps "$TMPD/deps.json" --config "$TMPD/config.json" 2>"$TMPD/err") || RC=$?
+    if { [ "$RC" -ne 0 ] && [ "$RC" -ne 3 ]; } || ! printf '%s' "$TRIAGE" | jq -e 'type == "array"' >/dev/null 2>&1; then
+      echo "card-ready failed (exit $RC): $(head -c 300 "$TMPD/err") — no Ready card dispatched" >&2
+      TRIAGE=$(echo "$CANDIDATES" | jq -c '[ .[] | { number, ready: false, missing: ["card-ready failed"],
+                 hints: ["super-board-card-ready.py crashed; rerun it on this card"] } ]')
+    fi
+  fi
+fi
+
 # Review extras used to be gated behind human_approves_merge, because concurrent
 # auto-merges into one base branch race. That guard now lives where the race
 # actually is — the merge step takes a lock inside the wave workflow and the
 # freshness gate re-verifies under it — so reviews may run in parallel here.
-echo "$ITEMS" | jq --argjson cols "$COLUMNS" --argjson cap "$MAX_WORKERS" --argjson deps "$DEPS" '
+echo "$ITEMS" | jq --argjson cols "$COLUMNS" --argjson cap "$MAX_WORKERS" --argjson deps "$DEPS" \
+                   --argjson triage "$TRIAGE" '
   def dep($n): $deps[($n | tostring)];
+  ([ $triage[] | select(.ready | not) | { key: (.number | tostring), value: . } ] | from_entries) as $notReady
+  | def unready($n): $notReady[($n | tostring)] != null;
   # gh project item-list puts label names on the item (`labels`); some shapes put
   # them on the content, as strings or {name}. Lower-cased, names only.
   def labels_of: [ ((.labels // []) + (.content.labels // []))[]
@@ -163,7 +198,8 @@ echo "$ITEMS" | jq --argjson cols "$COLUMNS" --argjson cap "$MAX_WORKERS" --argj
   | [ $cols[] as $c | $all[] | select(.status == $c and $c != "Ready") ] as $flight
 
   # Ready: only the ones the graph says are actually free.
-  | [ $all[] | select(.status == "Ready") | select(free(.number)) ] as $ready
+  # Ready: only the ones the graph says are actually free, and written well enough.
+  | [ $all[] | select(.status == "Ready") | select(free(.number)) | select(unready(.number) | not) ] as $ready
 
   # Downstream-first, so work already begun finishes before new work starts.
   | ($flight + $ready) as $picked
@@ -198,4 +234,12 @@ echo "$ITEMS" | jq --argjson cols "$COLUMNS" --argjson cap "$MAX_WORKERS" --argj
                | { number, title, why: (dep(.number) | .why) } ],
 
       # Building with no claim between waves = no live worker. Back to Ready.
-      stranded: [ $all[] | select(.status == "Building") | { number, title } ] }'
+      stranded: [ $all[] | select(.status == "Building") | { number, title } ],
+
+      # Ready cards card-ready says are too vague to dispatch. Left in Ready, labelled
+      # needs-triage by the orchestrator. A card already in `flag` is reported there only.
+      triage: [ $all[]
+                | select(.status == "Ready" and unready(.number))
+                | select((dep(.number) != null and (dep(.number).parseable | not)) | not)
+                | { number, title, missing: $notReady[(.number | tostring)].missing,
+                    hints: $notReady[(.number | tostring)].hints } ] }'
