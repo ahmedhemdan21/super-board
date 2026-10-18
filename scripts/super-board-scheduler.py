@@ -701,7 +701,9 @@ def collect_receipts(repo, start, end):
         except (OSError, ValueError):
             continue
         for fp, r in receipts.items():
-            if isinstance(r, dict) and start <= (r.get("at") or 0) <= end:
+            # Receipts stamp whole seconds; the run's start/end are floats. Compare on whole
+            # seconds or a receipt filed in the run's first second is dropped.
+            if isinstance(r, dict) and int(start) <= (r.get("at") or 0) <= int(end) + 1:
                 src = fp.split("|", 1)[0]
                 out[src] = out.get(src, 0) + 1
     return dict(sorted(out.items()))

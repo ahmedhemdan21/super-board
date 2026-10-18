@@ -238,12 +238,13 @@ class Execute(unittest.TestCase):
         self.assertIn("never the legacy claude-p runner", run["error"])
 
     def test_run_record_and_summary_from_snapshots(self):
-        col = self.repo / ".claude" / "super-board" / "collect"
-        col.mkdir(parents=True)
-        (col / "x.json").write_text(json.dumps({"receipts": {
-            "err|sentry|1": {"issue": "3", "at": int(time.time()) + 1},
-            "prs|a|b": {"issue": "4", "at": 1}}}))
-        d, run = self.sched(collect_sources=["sentry", "posthog"]).execute("nightly", "manual")
+        # The stub's collect step writes the receipt mid-run (a pre-stamped `now + 1` raced
+        # the run's [start, end] window on slow CI); the old prs receipt is outside it.
+        os.environ["STUB_CLAUDE_RECEIPT"] = str(self.repo / ".claude" / "super-board" / "collect" / "x.json")
+        try:
+            d, run = self.sched(collect_sources=["sentry", "posthog"]).execute("nightly", "manual")
+        finally:
+            os.environ.pop("STUB_CLAUDE_RECEIPT")
         self.assertEqual(run["status"], "ok", run)
         self.assertEqual([x["step"] for x in run["steps"]], ["collect", "run"])
         self.assertEqual(run["steps"][0]["prompt"], "/super-collect sentry posthog --yes")
