@@ -117,6 +117,7 @@ The orchestrator will halt or route according to the Super Build skill, remove/a
 - You are in a git worktree at `.claude/worktrees/issue-<N>` on branch `loop/issue-<N>`.
 - The base branch (the orchestrator's currently-checked-out branch — `frontend-rebuild`, `main`, or a release branch) is your starting point. **Do not assume `main`.**
 - Other workers may be running concurrently in sibling worktrees on different branches. Don't read or write outside your own worktree.
+- The GitHub repo is exactly `repo.remote` in the board config (owner/name). Use it for every REST path and GraphQL `owner`/`name`; never derive it from folder names, the git root or memory — a guessed name halts the whole run.
 - Logs go to `.planning/super-build-logs/issue-<N>.log` (auto-captured by stdout/stderr redirect).
 - The full issue body (including any `Depends on:`, `Skills:`, and acceptance criteria) is in the prompt block below.
 

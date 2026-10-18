@@ -54,6 +54,8 @@ const READ_SHAPES = [
   `- PR metadata: --kind metadata -- pr view <N> --json files,labels,body,additions,deletions,changedFiles`,
   `- issue state: --kind state -- issue view <N> --json state --jq .state`,
   `A read whose output misses its shape exits 64 for that call only and prints the valid form: fix the read, do not halt.`,
+  // A lane once queried a guessed repo name (owner + folder name) and halted the run (seen 2026-10-18).
+  `{owner}/{repo} (REST paths, GraphQL owner/name) is exactly the owner/name in repo.remote of ${input.configPath}; never derive it from folder names, the git root or memory. Plain gh issue/pr commands in the project checkout already target it.`,
 ].join('\n')
 const READ_FAILURE = READ_SHAPES + '\n' + `Verification-readiness exit 9 means missing/unusable config.verify_commands: preserve card/worktree/approval/claims, report status=halted (preflight verdict=halted), stop dispatch, repair project configuration before explicit restart; no Build bounce or automatic retries. ` + `Required GitHub reads use .claude/bin/super-board-github-read.py: three total attempts, exit 79 means run halted. Check --check before any GitHub write, migration, or merge. On exit 79 preserve worktree/card/approval/claims, make no more GitHub calls, and report status=halted (preflight verdict=halted). Never retry a mutation. Config: ${input.configPath}.`
 

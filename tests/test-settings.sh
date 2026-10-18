@@ -25,4 +25,13 @@ printf '{ nope' > "$F"; RC=0; python3 "$S" allow "$F" 'X' >/dev/null 2>&1 || RC=
 [ "$RC" -eq 2 ] && [ "$(cat "$F")" = "{ nope" ] || fail "invalid settings must be untouched (rc $RC)"
 python3 "$S" allow "$T/new/settings.json" 'X' >/dev/null && jq -e '.permissions.allow == ["X"]' "$T/new/settings.json" >/dev/null || fail "a missing file should be created"
 
-echo "PASS: test-settings.sh (3 scenarios)"
+# 4 — CRLF-read rules (seen on Windows onboard: "Bash(gh pr view:*)\r") are stripped on
+# the way in, and existing broken entries are repaired and deduped on the next write.
+G="$T/crlf/settings.json"; mkdir -p "$T/crlf"
+printf '%s' '{"permissions":{"allow":["Bash(gh pr view:*)\r","Bash(ls:*)"]}}' > "$G"
+python3 "$S" allow "$G" $'Bash(gh pr view:*)\r' $'Bash(git add:*)\r' >/dev/null
+jq -e '.permissions.allow == ["Bash(gh pr view:*)","Bash(ls:*)","Bash(git add:*)"]' "$G" >/dev/null \
+  || fail "stray \\r not stripped or not deduped: $(cat "$G")"
+python3 "$S" allow "$G" 'Bash(ls:*)' | grep -q "already present" || fail "repaired file should be stable"
+
+echo "PASS: test-settings.sh (4 scenarios)"

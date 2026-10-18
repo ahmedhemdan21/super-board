@@ -380,4 +380,17 @@ TXT=$(python3 "$SETUP" check --root "$T" --text || true)
 echo "$TXT" | grep -q 'frontend/.env.local' || fail "remedy names .env.local: $TXT"
 echo "$TXT" | grep -q 'sntrys_offline_value' && fail "a secret value leaked into the text report"
 
-echo "PASS: test-setup.sh (13 scenarios)"
+# 14 — allow rules carrying a stray \r (a CRLF read during a Windows onboard) never match
+#      a command: check is red, fix repairs them with no question, re-check has none left.
+T="$WORK/bare"   # installed and green from scenario 1
+jq '.permissions.allow = ["Bash(gh pr view:*)\r", "Bash(ls:*)"]' "$T/.claude/settings.json" > "$WORK/s.json" \
+  && mv "$WORK/s.json" "$T/.claude/settings.json"
+OUT=$(python3 "$SETUP" check --root "$T" || true)
+echo "$OUT" | q '.missing | index("settings.json: 1 permission rule(s) with stray whitespace")' \
+  || fail "a \\r-suffixed allow rule should be reported: $OUT"
+OUT=$(python3 "$SETUP" fix --root "$T" --no-helpers || true)
+echo "$OUT" | q '.fixed | index("settings.json permission rules repaired (stray whitespace)")' || fail "fix should repair: $OUT"
+jq -e '.permissions.allow == ["Bash(gh pr view:*)","Bash(ls:*)"]' "$T/.claude/settings.json" >/dev/null \
+  || fail "rules not repaired: $(jq -c .permissions "$T/.claude/settings.json")"
+
+echo "PASS: test-setup.sh (14 scenarios)"

@@ -3,6 +3,7 @@
 
     super-board-settings.py hooks <settings.json> <snippet.json> [...] [--dry-run]
     super-board-settings.py allow <settings.json> <rule> [<rule> ...]  [--dry-run]
+    super-board-settings.py repair <settings.json>  [--dry-run]   (strip stray whitespace from allow rules)
 
 `hooks` adds each hook command from the snippets once per event + matcher
 (install.sh and onboard's protect-main step). `allow` adds permission rules to
@@ -75,19 +76,35 @@ def merge_hooks(settings: dict, snippets: list[dict]) -> list[str]:
 
 
 def merge_allow(settings: dict, rules: list[str]) -> list[str]:
-    allow = settings.setdefault("permissions", {}).setdefault("allow", [])
+    """Add rules once each. Rules are stripped first: rules read from a CRLF file on
+    Windows arrived as `Bash(gh pr view:*)<CR>`, which never matches a command, so every
+    lane asked for permission (and a headless `claude -p` run was denied). Existing
+    entries with stray whitespace are repaired in place and reported as changes."""
+    perms = settings.setdefault("permissions", {})
+    allow = perms.setdefault("allow", [])
     added = []
+    clean = []
+    for r in allow:
+        c = r.strip() if isinstance(r, str) else r
+        if c != r:
+            added.append(f"{c} (repaired: stray whitespace)")
+        if c and c not in clean:
+            clean.append(c)
     for r in rules:
-        if r not in allow:
-            allow.append(r)
+        r = r.strip()
+        if r and r not in clean:
+            clean.append(r)
             added.append(r)
+    perms["allow"] = clean
     return added
 
 
 def main(argv: list[str]) -> int:
     dry = "--dry-run" in argv
     args = [a for a in argv if a != "--dry-run"]
-    if len(args) < 3 or args[0] not in ("hooks", "allow"):
+    if args[:1] == ["repair"] and len(args) == 2:
+        args.append("")  # merge_allow ignores the empty rule; only the repair runs
+    if len(args) < 3 or args[0] not in ("hooks", "allow", "repair"):
         print(__doc__, file=sys.stderr)
         return 64
     verb, path, rest = args[0], args[1], args[2:]
