@@ -105,6 +105,15 @@
   // `{path, remote}`. `remote` can be `null` for local-only (no pull requests).
   "repo": { "path": ".", "remote": "https://github.com/<owner>/<repo>" },
 
+  // Cross-board flow: other repos (`owner/name`) whose issues may block cards on
+  // this board, e.g. the backend repo for a frontend board. Default []. A
+  // `## Blocked by` bullet or `blocked-by:` line may then name `owner/name#123`
+  // (or the issue/PR URL); super-board-deps.sh reads its state in one batched
+  // query and frees the card only when that issue closed COMPLETED or that PR
+  // merged. A foreign ref to a repo NOT listed here makes the card unreadable
+  // (flagged, never built). `/super-board link` creates linked pairs.
+  "linked_repos": [],
+
   // The branch all per-issue branches are cut from and squash-merged back into.
   // Default `"main"`. Onboard warns and suggests `"staging"` or `"develop"` if
   // `main` appears to be production.

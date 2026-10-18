@@ -743,7 +743,9 @@ Before planning any wave, `super-board-wave-plan.sh` reports five lists the orch
 **before** launching:
 
 - **`sweep`** — `Blocked` cards whose blockers have all closed. Move each to `Ready` and comment
-  naming what cleared it (`clearedBy` carries the numbers). They then join this very wave.
+  naming what cleared it (`clearedBy` carries the numbers, plus `owner/repo#N` strings for
+  blockers on a linked repo's board — write those as-is, GitHub links them). They then join
+  this very wave.
 - **`stranded`** — `Building` cards with no claim. Nothing selects from Building,
   so a wave stopped mid-build leaves them there forever. Remove any leftover build worktree, keep
   the branch, move the card to `Ready`, and comment naming the branch. The legacy dispatcher does

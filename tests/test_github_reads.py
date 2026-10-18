@@ -69,6 +69,24 @@ sys.exit(r.get('rc', 0))
         self.assertEqual(r.returncode, 79)
         self.assertEqual(self.log.read_text(), '1')
 
+    def test_foreign_state_tolerates_only_per_ref_errors(self):
+        # Cross-repo blocker state (super-board-deps.sh): gh exits 1 on a missing
+        # number, but the rest of the batch is an answer — that ref stays blocked.
+        q = ['api', 'graphql', '-f', 'query=query{ r0: repository(owner:"o",name:"r"){ i9: issueOrPullRequest(number:9){ __typename } } }']
+        partial = json.dumps({'data': {'r0': {'i9': None, 'i3': {'__typename': 'Issue', 'state': 'OPEN'}}},
+                              'errors': [{'type': 'NOT_FOUND', 'message': 'Could not resolve to an Issue or PullRequest with the number of 9.'}]})
+        r = self.read([{'rc': 1, 'out': partial, 'err': 'gh: Could not resolve to an Issue'}], 'foreign-state', q)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)['data']['r0']['i9'], None)
+        self.assertEqual(self.log.read_text(), '1')
+        self.assertFalse(self.halt.exists())
+        # Any other error beside the data is not an answer: retried, then halted.
+        self.log.unlink()
+        bad = json.dumps({'data': {'r0': None}, 'errors': [{'type': 'RATE_LIMITED', 'message': 'slow down'}]})
+        r = self.read([{'rc': 1, 'out': bad, 'err': 'gh: slow down'}], 'foreign-state', q)
+        self.assertEqual(r.returncode, 79)
+        self.assertEqual(self.log.read_text(), '3')
+
     def test_successful_exit_with_malformed_or_partial_payload_halts(self):
         for out, kind in [('{"resources":{"graphql":null,"core":null}}', 'quota'), ('[{}]', 'prs-open'), ('{"items":[{"id":"I","content":{}}],"totalCount":1}', 'items'), ('{"items":[]}', 'items'),
                           ('{"items":[],"totalCount":1}', 'items'),

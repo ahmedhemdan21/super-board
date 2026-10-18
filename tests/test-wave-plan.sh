@@ -153,4 +153,20 @@ OUT19=$("$PLAN" --config <(echo "$NOCAP") --items "$ITEMS" --deps <(jq '.["21"].
 echo "$OUT19" | jq -e '[.refreshApproval[].number] == [21]' >/dev/null || fail "stale approval must get a fresh request"
 echo "$OUT19" | jq -e '[.resume[].number, .cards[].number, .sweep[].number] | index(21) == null' >/dev/null || fail "refresh is not permission to merge or build"
 
-echo "PASS: test-wave-plan.sh (19 scenarios)"
+# 20 — cross-board sweep: a Blocked card whose only blockers live on a linked
+#      repo's board is swept once they are all done (closed COMPLETED / merged),
+#      named in clearedBy as owner/repo#N. One still open stays; one closed not
+#      planned is flagged for a person, never swept. The graph comes from
+#      super-board-deps.sh over the cross-repo fixture, so both ends are real.
+XDEPS=$(../scripts/super-board-deps.sh --from fixtures/deps-cross.json --repo acme/web --linked acme/api)
+XITEMS=$(jq -n '{items: [
+  {status:"Blocked", content:{type:"Issue", number:101, title:"foreign done", assignees:[]}},
+  {status:"Blocked", content:{type:"Issue", number:102, title:"foreign open", assignees:[]}},
+  {status:"Blocked", content:{type:"Issue", number:104, title:"foreign not planned", assignees:[]}},
+  {status:"Blocked", content:{type:"Issue", number:113, title:"foreign done, other case", assignees:[]}}]}')
+OUT20=$("$PLAN" --config <(echo "$NOCAP") --items <(echo "$XITEMS") --deps <(echo "$XDEPS"))
+echo "$OUT20" | jq -e '[.sweep[].number] == [101,113]' >/dev/null   || fail "cards whose foreign blockers are done must be swept, got: $(echo "$OUT20" | jq -c .sweep)"
+echo "$OUT20" | jq -e '.sweep[0].clearedBy == ["acme/api#5"]' >/dev/null   || fail "clearedBy must name the foreign blocker, got: $(echo "$OUT20" | jq -c .sweep)"
+echo "$OUT20" | jq -e '[.flag[].number] == [104]' >/dev/null   || fail "a not-planned foreign blocker must be flagged, got: $(echo "$OUT20" | jq -c .flag)"
+
+echo "PASS: test-wave-plan.sh (20 scenarios)"

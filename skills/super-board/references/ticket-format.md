@@ -13,6 +13,7 @@ it into the target's `docs/agents/issue-tracker.md` under `## Ticket format` (th
   - a. <step>
   - b. <step>
 - **Who:** <who sees it>
+- **Linked:** <owner/repo#N> — <blocks this card | waits on this card>   ← linked pairs only
 
 ![<page> · desktop](https://github.com/<owner>/<repo>/raw/<sha>/<path>.png)
 
@@ -28,6 +29,7 @@ it into the target's `docs/agents/issue-tracker.md` under `## Ticket format` (th
 
 ## Blocked by
 - #<N> — <why>          ← or exactly: - None.
+- <owner/repo#N> — <why>   ← a blocker on a linked repo's board
 ```
 
 | Rule | Value |
@@ -37,7 +39,8 @@ it into the target's `docs/agents/issue-tracker.md` under `## Ticket format` (th
 | Bugs | add `## Evidence`: the folded 12-row table (writing-standard.md § 3) · a missing row says `n/a — why` |
 | Acceptance Criteria | 2–5 `- [ ]` lines · each checkable · NEVER "works well", "is fast" |
 | Risk | 🟢 Low · 🟡 Medium · 🔴 High + one line |
-| Blocked by | `- #N — why` bullets, or a bare `- None.` · NEVER "None — but #N first" |
+| Blocked by | `- #N — why` bullets, or a bare `- None.` · NEVER "None — but #N first" · another repo: `- owner/repo#N — why`, repo listed in `linked_repos` |
+| Linked pair | both cards carry `- **Linked:** owner/repo#N — <role>` in Context · `super-board-card.sh link` writes both |
 | Labels | `money`, `auth`, `schema` route the merge to a human (merge_policy) · `schema` = destructive only (DROP/TRUNCATE/RENAME); additive migrations need no label |
 | Human-only step | a `needs-you: <command>` line in the PR body → 🙋 Blocked until done |
 | Size | one card = one PR under 400 changed lines (`merge_policy.auto_max_lines`) · bigger → split with `/to-tickets` |

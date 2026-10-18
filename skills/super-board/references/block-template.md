@@ -60,6 +60,9 @@ same rule: **prose above for the human, one parseable line below for the loop.**
 - `blocked-by: 32, 91` — this card returns to `Ready` the moment both close. The sweep does it.
 - `blocked-by: -` — nothing on this board clears it. It waits for a person, and the sweep leaves it
   alone. Use this for every `🔐`, `💳`, `🔑`, `🧑`, `🎨` and `🙋` block.
+- `blocked-by: 32, owner/api#7` — a blocker on a linked repo's board (config `linked_repos`) is
+  written `owner/repo#N`; it clears when that issue closes as completed or that PR merges
+  ([link.md](link.md)). A repo not in `linked_repos` makes the line unreadable, never free.
 
 Write the numbers alone. **Never `blocked-by: none — but #26 must merge first`**: a line that says
 none and then names an issue is read as *no blocker* by the sweep and as *one blocker* by a human,
