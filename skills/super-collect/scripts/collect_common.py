@@ -175,9 +175,19 @@ def ssh_argv(transport, url):
         raise FetchError("transport.image has unsafe characters")
     if not _SAFE_URL.fullmatch(url):
         raise FetchError("refusing URL with unsafe characters")
-    # ssh joins the remote args with spaces for the remote shell: quote the URL there.
-    return ["ssh", "-o", "BatchMode=yes", host, "docker", "run", "--rm", "--network", net,
-            image, "-fsS", "--max-time", "20", "'" + url + "'"]
+    # The URL never goes on the remote command line: curl reads it from stdin (`-K -`, see
+    # curl_config). Quoting it for the remote shell is not portable: Python on Windows starting
+    # Git's MSYS ssh.exe has its single quotes stripped, the remote shell then cuts the URL at
+    # the first `&`, and Loki silently answers the default last hour (seen 2026-10-18).
+    return ["ssh", "-o", "BatchMode=yes", host, "docker", "run", "-i", "--rm", "--network", net,
+            image, "-fsS", "--max-time", "20", "-K", "-"]
+
+
+def curl_config(url):
+    """The curl config ssh_argv's remote curl reads from stdin: one quoted `url` line."""
+    if not _SAFE_URL.fullmatch(url):
+        raise FetchError("refusing URL with unsafe characters")
+    return 'url = "' + url.replace("\\", "\\\\").replace('"', '\\"') + '"\n'
 
 
 def get_json(base, path, params=None, transport=None, timeout=25, label="source"):
@@ -198,7 +208,8 @@ def get_json(base, path, params=None, transport=None, timeout=25, label="source"
     if kind != "ssh":
         raise FetchError(f"transport.kind must be http or ssh (got {kind})")
     try:
-        p = subprocess.run(ssh_argv(transport, url), capture_output=True, text=True, timeout=timeout + 20)
+        p = subprocess.run(ssh_argv(transport, url), input=curl_config(url), capture_output=True,
+                           text=True, timeout=timeout + 20)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise FetchError(f"{label} unreachable over ssh: {e}") from None
     if p.returncode != 0:

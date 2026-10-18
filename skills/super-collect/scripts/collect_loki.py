@@ -146,9 +146,9 @@ def groups(st, start, end, extra="", samples=200):
                 ts, line = value[0], value[1] or ""
                 meta = value[2] if len(value) > 2 else None
                 msg, stack = entry_message(line, labels_s, meta)
-                # A non-empty line keeps keying the group as before (no dedupe-key churn);
-                # only lines that were empty fall back to the metadata message.
-                sig = (cc.signature(line) if line.strip() else cc.signature(msg)) or "unsampled"
+                # Key on the chosen message (exception_message first): rendered lines carry
+                # per-request values (names, ids, urls) that split one error into many groups.
+                sig = cc.signature(msg) or "unsampled"
                 t = int(ts) // 1_000_000_000
                 sample = (msg[:300] + ("\n" + stack if stack else ""))[:1200]
                 e = sigs.setdefault(sig, {"count": 0, "sample": sample, "first": t, "last": t})

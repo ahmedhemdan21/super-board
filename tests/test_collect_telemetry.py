@@ -55,7 +55,13 @@ class Transport(unittest.TestCase):
         argv = cc.ssh_argv(SSH, "http://primecore-loki:3100/x?a=%7B")
         self.assertEqual(argv[:4], ["ssh", "-o", "BatchMode=yes", "primecore-dev"])
         self.assertIn("primecore-network", argv)
-        self.assertEqual(argv[-1], "'http://primecore-loki:3100/x?a=%7B'")
+        # The URL is sent on stdin (curl -K -), never on the remote command line: MSYS ssh
+        # started from Windows Python strips quotes and the remote shell cuts it at `&`.
+        self.assertEqual(argv[-2:], ["-K", "-"])
+        self.assertIn("-i", argv)
+        self.assertFalse(any("primecore-loki" in a for a in argv))
+        cfg = cc.curl_config("http://primecore-loki:3100/x?a=%7B&start=1&end=2")
+        self.assertEqual(cfg, 'url = "http://primecore-loki:3100/x?a=%7B&start=1&end=2"\n')
         for bad in ({"kind": "ssh", "host": "h;rm -rf /", "docker_network": "n"},
                     {"kind": "ssh", "host": "h", "docker_network": "$(x)"}, {"kind": "ssh"}):
             with self.assertRaises(cc.FetchError):
@@ -65,12 +71,13 @@ class Transport(unittest.TestCase):
         seen = {}
 
         def run(argv, **kw):
-            seen["argv"] = argv
+            seen["argv"], seen["input"] = argv, kw.get("input")
             return mock.Mock(returncode=0, stdout='{"status":"success","data":{"alerts":[]}}', stderr="")
         with mock.patch("subprocess.run", run):
             out = cc.get_json("http://p:9090", "/api/v1/alerts", None, SSH)
         self.assertEqual(out["data"], {"alerts": []})
         self.assertIn("curlimages/curl", seen["argv"])
+        self.assertEqual(seen["input"], 'url = "http://p:9090/api/v1/alerts"\n')
 
     def test_ssh_failure_is_fetch_error(self):
         with mock.patch("subprocess.run", return_value=mock.Mock(returncode=255, stdout="", stderr="ssh: no route")):
@@ -266,12 +273,16 @@ class LokiStructuredMetadata(unittest.TestCase):
             ["1000000000000", "", {"structuredMetadata": {"body": "db pool exhausted"}}]]}])
         self.assertEqual(rows[0]["sample"], "db pool exhausted")
 
-    def test_non_empty_line_keeps_its_fingerprint(self):
+    def test_exception_message_keys_over_rendered_line(self):
+        # Rendered lines carry per-request values; the same exception must group once.
+        rows = self.run_groups([{"stream": {"service_name": "api", "exception_message": self.EXC},
+                                 "values": [["1000000000000", "Validation failure on: tenant acme"],
+                                            ["2000000000000", "Validation failure on: tenant vanti"]]}])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["signature"], cc.signature(self.EXC))
         line = '{"message":"Timeout after 3000ms"}'
         plain = self.run_groups([{"stream": {"service_name": "api"}, "values": [["1000000000000", line]]}])
-        meta = self.run_groups([{"stream": {"service_name": "api", "exception_message": self.EXC},
-                                 "values": [["1000000000000", line]]}])
-        self.assertEqual(plain[0]["fingerprint"], meta[0]["fingerprint"])
+        self.assertEqual(plain[0]["signature"], cc.signature(line))
 
     def test_all_empty_is_unsampled(self):
         rows = self.run_groups([{"stream": {"service_name": "api"}, "values": [
