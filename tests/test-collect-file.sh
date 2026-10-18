@@ -101,6 +101,7 @@ case "$1 ${2:-}" in
     hits="${STUB_HITS:-[]}"
     echo "$hits" | jq '[{data:{repository:{issues:{totalCount:length,pageInfo:{hasNextPage:false,endCursor:null},nodes:.}}}}]' ;;
   "issue view")    echo "https://github.com/acme/app/issues/55" ;;
+  "api repos/"*)   echo "${STUB_COMMENTS:-[[]]}" ;;
   "issue create")
     prev=""
     for a in "$@"; do [ "$prev" = "--body-file" ] && [ -r "$a" ] && cat "$a" > "$BODY_LOG"; prev="$a"; done
@@ -200,6 +201,62 @@ has "labels needs-triage"     "$(cat "$GH_LOG")" "--add-label needs-triage"
 has "labels ux"               "$(cat "$GH_LOG")" "--add-label ux"
 has "labels collect:posthog"  "$(cat "$GH_LOG")" "collect:posthog"
 lacks "never Ready"           "$(cat "$GH_LOG")" "opt_Ready"
+
+echo "── one card per problem across sources (sb-signature)"
+SIG=abcdef012345
+SIGBODY="x
+<!-- sb-signature: ${SIG} -->"
+HIT_OPEN=$(jq -cn --arg b "$SIGBODY" '[{number:301,state:"OPEN",body:$b}]')
+is "--signature must be 12 hex" 64 "$(run "${BUG[@]}" --signature nothex >/dev/null; echo $?)"
+OUT=$(STUB_HITS="$HIT_OPEN" run --type bug --source loki --title "Checkout 500" --body-file "$WORK/bug.md" --fingerprint "loki|gw|aa11bb22cc33" --signature "$SIG")
+is "open signature hit plans evidence, not a card" "evidence|#301|loki|Checkout 500" "$OUT"
+OUT=$(STUB_HITS="$HIT_OPEN" run --type bug --source loki --title "Checkout 500" --body-file "$WORK/bug.md" --fingerprint "loki|gw|aa11bb22cc33" --signature "$SIG" --count 7 --first-seen 2026-10-17 --last-seen 2026-10-18 --yes)
+is    "evidence returns the existing issue" "301" "$OUT"
+has   "evidence comment on the open issue" "$(cat "$GH_LOG")" "issue comment 301"
+has   "evidence comment header"           "$(cat "$GH_LOG")" "[collect] [evidence]"
+has   "evidence comment marker"           "$(cat "$GH_LOG")" "<!-- sb-evidence: loki:loki|gw|aa11bb22cc33 -->"
+has   "evidence comment counts"           "$(cat "$GH_LOG")" "7 events · first 2026-10-17 · last 2026-10-18"
+lacks "no second card"                    "$(cat "$GH_LOG")" "issue create"
+NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# comment(<body>, <created_at>) in the REST shape the comments read validates.
+comment() { jq -cn --arg b "$1" --arg t "$2" '{id:1,body:$b,user:{login:"bot"},created_at:$t,updated_at:$t}'; }
+RECENT="[[$(comment '<!-- sb-evidence: loki:loki|gw|other -->' "$NOW_ISO")]]"
+RC=0; OUT=$(STUB_COMMENTS="$RECENT" STUB_HITS="$HIT_OPEN" run --type bug --source loki --title "Checkout 500" --body-file "$WORK/bug.md" --fingerprint "loki|gw|aa11bb22cc33" --signature "$SIG" --yes) || RC=$?
+is    "recent same-source evidence: exit 0" 0 "$RC"
+is    "recent same-source evidence: issue returned" "301" "$OUT"
+has   "the comments were read" "$(cat "$GH_LOG")" "api repos/acme/app/issues/301/comments"
+lacks "at most one evidence comment per source per 24h" "$(cat "$GH_LOG")" "issue comment"
+OLD="[[$(comment '<!-- sb-evidence: loki:loki|gw|other -->' 2026-01-01T00:00:00Z),$(comment '<!-- sb-evidence: sentry:err|sentry|1 -->' "$NOW_ISO")]]"
+OUT=$(STUB_COMMENTS="$OLD" STUB_HITS="$HIT_OPEN" run --type bug --source loki --title "Checkout 500" --body-file "$WORK/bug.md" --fingerprint "loki|gw|aa11bb22cc33" --signature "$SIG" --yes)
+has   "older or other-source evidence does not block" "$(cat "$GH_LOG")" "issue comment 301"
+HIT_CLOSED=$(jq -cn --arg b "$SIGBODY" '[{number:88,state:"CLOSED",body:$b}]')
+OUT=$(STUB_HITS="$HIT_CLOSED" run --type bug --source loki --title "Checkout 500" --body-file "$WORK/bug.md" --fingerprint "loki|gw|aa11bb22cc33" --signature "$SIG")
+is  "closed signature hit is a recurrence" "recurrence|#88|bug|Checkout 500|Backlog" "$OUT"
+OUT=$(STUB_HITS="$HIT_CLOSED" run --type bug --source loki --title "Checkout 500" --body-file "$WORK/bug.md" --fingerprint "loki|gw|aa11bb22cc33" --signature "$SIG" --yes)
+is  "closed signature hit files new" "412" "$OUT"
+has "names the closed issue"     "$(cat "$BODY_LOG")" "Seen before in #88"
+has "stamps the signature"       "$(cat "$BODY_LOG")" "<!-- sb-signature: ${SIG} -->"
+has "keeps the fingerprint stamp" "$(cat "$BODY_LOG")" "super-collect-fingerprint: loki|gw|aa11bb22cc33"
+
+echo "── trace evidence"
+TID=0b7b05232a90b467cc6111b73ccb480a
+is "--trace-id must be 32 hex" 64 "$(run "${BUG[@]}" --trace-id 123 >/dev/null; echo $?)"
+OUT=$(run "${BUG[@]}" --trace-id "$TID" --yes)
+is  "files with a trace id" "412" "$OUT"
+has "no collect.tempo: just the trace id in Evidence" "$(cat "$BODY_LOG")" "- **Trace:** \`${TID}\`"
+EV_BLOCK=$(awk '/^## Evidence/{on=1;next} /^## /{on=0} on' "$BODY_LOG")
+has "the Trace line sits inside Evidence" "$EV_BLOCK" "**Trace:**"
+
+echo "── triage: thin collector bodies get needs-triage"
+sed 's/^- \[ \] verify_commands install before typecheck\./- [ ] works/' "$WORK/fix.md" > "$WORK/fix-vague.md"
+OUT=$(run --type fix --source prs --title "Vague" --body-file "$WORK/fix-vague.md" --fingerprint "prs|x|vague" --yes)
+is  "vague body still files" "412" "$OUT"
+has "vague body labelled needs-triage" "$(cat "$GH_LOG")" "--add-label needs-triage"
+OUT=$(run "${BUG[@]}" --yes)
+lacks "a ready body gets no needs-triage" "$(cat "$GH_LOG")" "needs-triage"
+jq '.triage.enabled = false' "$WORK/config.json" > "$WORK/config-notriage.json"
+OUT=$("$SCRIPT" --config "$WORK/config-notriage.json" --type fix --source prs --title "Vague" --body-file "$WORK/fix-vague.md" --fingerprint "prs|x|vague2" --yes 2>/dev/null)
+lacks "triage.enabled=false skips the label" "$(cat "$GH_LOG" | tail -20)" "needs-triage"
 
 echo "── adopt a user-filed issue"
 is  "adopt dry-run" "would-adopt|#55|feature|Backlog" "$(run --adopt 55 --type feature)"
