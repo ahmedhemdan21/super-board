@@ -62,8 +62,10 @@
 # Without --items, fetches live board state via super-board-card.sh items — the
 # item-list shape for ~1 GraphQL point per 100 cards, where `gh project item-list`
 # spends 101 per 100 (fieldValues x four nested connections).
-# Without --deps, derives the graph via super-board-deps.sh. Pass --deps in tests
-# to keep the script offline.
+# Without --deps, derives the graph via super-board-deps.sh (passing
+# config.linked_repos as --linked, so blockers on another repo's board count).
+# Pass --deps in tests to keep the script offline. `clearedBy` holds numbers for
+# this repo's blockers and "owner/repo#N" strings for a linked repo's.
 #
 # Stdout:
 #   { "cards": [ {"number":10,"status":"Review","title":"…","lane":"review","labels":[]} ],
@@ -124,7 +126,9 @@ else
   HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
   # A graph we cannot fetch is not a graph of zero blockers. Fail rather than
   # plan a wave that treats every card as free.
-  DEPS=$("$HERE/super-board-deps.sh" --repo "$REPO" --limit 300) || {
+  # Cross-board flow: foreign blockers are trusted only for config.linked_repos.
+  LINKED=$(echo "$CONFIG_JSON" | jq -r '(.linked_repos // []) | join(",")' | tr -d '')
+  DEPS=$("$HERE/super-board-deps.sh" --repo "$REPO" --linked "$LINKED" --limit 300) || {
     rc=$?; echo "could not derive the dependency graph for ${REPO}" >&2; exit "$rc"; }
 fi
 

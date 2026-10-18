@@ -30,8 +30,11 @@ Rules, from references/config-schema.json → merge_policy / migrations:
   lines are reported separately. Per-file counts come from `files[].additions/
   deletions`; without them the PR totals are used.
 - merge_policy.always_human.<category>: any label, path glob or added-line
-  keyword match → human. Categories ship as money, auth, schema; setting
-  always_human replaces them all (`{}` turns category gating off).
+  keyword match → human. Categories ship as money, auth, schema, deploy;
+  setting always_human replaces them all (`{}` turns category gating off).
+  Category PATHS match case-insensitively (src/Auth/ = **/auth/**): a false
+  hit costs one human review, a miss merges an auth change unreviewed. Size,
+  migration and exclude globs stay case-sensitive — they decide what runs.
 - migrations: a changed path matching migrations.globs makes this a migration
   PR. Every env in allowed_envs with a command runs (a command of "-" means the
   deploy pipeline applies it: nothing to run). target_env not in allowed_envs, or
@@ -55,13 +58,24 @@ DEFAULT_ALWAYS_HUMAN = {
     },
     "auth": {
         "labels": ["auth", "security"],
-        "paths": ["**/auth/**", "**/authz/**", "**/permissions/**"],
+        # .NET solutions name these folders PascalCase; category paths match
+        # case-insensitively, so **/auth/** also catches src/Auth/.
+        "paths": ["**/auth/**", "**/authz/**", "**/permissions/**",
+                  "**/Authentication/**", "**/Authorization/**", "**/Identity/**"],
         "keywords": ["jwt.sign", "bcrypt", "password_hash", "service_role"],
     },
     "schema": {
         "labels": ["schema", "destructive"],
         "paths": [],
         "keywords": ["drop table", "drop column", "truncate table", "rename column", "drop schema"],
+    },
+    # What ships to production: a deploy/release workflow, a prod compose file, a
+    # deploy/ tree. A wrong merge here deploys, it does not just break a build.
+    "deploy": {
+        "labels": [],
+        "paths": [".github/workflows/deploy*.yml", ".github/workflows/release*.yml",
+                  "**/docker-compose*.prod*.yml", "**/deploy/**"],
+        "keywords": [],
     },
 }
 DEFAULT_MIGRATION_GLOBS = [
@@ -90,7 +104,7 @@ DEFAULT_SIZE_EXCLUDE = [
 ]
 
 
-def glob_re(pattern: str) -> re.Pattern:
+def glob_re(pattern: str, flags: int = 0) -> re.Pattern:
     out, i = "", 0
     while i < len(pattern):
         if pattern.startswith("**/", i):
@@ -103,12 +117,13 @@ def glob_re(pattern: str) -> re.Pattern:
             out += "[^/]"; i += 1
         else:
             out += re.escape(pattern[i]); i += 1
-    return re.compile("^" + out + "$")
+    return re.compile("^" + out + "$", flags)
 
 
-def matches(path: str, globs) -> str | None:
+def matches(path: str, globs, ignore_case: bool = False) -> str | None:
+    flags = re.IGNORECASE if ignore_case else 0
     for g in globs or []:
-        if glob_re(g).match(path):
+        if glob_re(g, flags).match(path):
             return g
     return None
 
@@ -171,7 +186,7 @@ def main() -> int:
         hit = next((f"label {l}" for l in rule.get("labels") or [] if l.lower() in labels), None)
         if not hit:
             hit = next((f"path {p} (matches {g})" for p in paths
-                        for g in [matches(p, rule.get("paths"))] if g), None)
+                        for g in [matches(p, rule.get("paths"), ignore_case=True)] if g), None)
         if not hit:
             hit = next((f"keyword \"{k}\" in an added line" for k in rule.get("keywords") or []
                         if k.lower() in added), None)

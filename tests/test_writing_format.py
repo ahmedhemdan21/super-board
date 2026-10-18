@@ -225,6 +225,19 @@ def test_ticket_template_has_required_sections_in_order():
         assert re.search(r"^- \*\*Where:\*\*.*\n(  - [a-z]\. .+\n)+", text, flags=re.M), f"{name}: Context needs lettered steps under Where"
 
 
+def test_linked_pair_line_matches_the_standard():
+    # Cross-board flow: the standard, the template and the writer agree on one line.
+    linked = "- **Linked:** owner/repo#N — <role>"
+    assert linked in STANDARD, "writing-standard.md must define the Linked line"
+    assert "`blocks this card`" in STANDARD and "`waits on this card`" in STANDARD
+    assert "- owner/repo#N — why" in STANDARD, "writing-standard.md must show the cross-repo blocker bullet"
+    template = (REF / "ticket-format.md").read_text(encoding="utf-8")
+    assert re.search(r"^- \*\*Linked:\*\* <owner/repo#N> — ", template, flags=re.M), "ticket-format.md lacks the Linked line"
+    card = (ROOT / "scripts" / "super-board-card.sh").read_text(encoding="utf-8")
+    assert '"- **Linked:** " + ref + tail' in card, "card.sh link must write the standard's Linked line"
+    assert '"blocks this card"' in card and '"waits on this card"' in card
+
+
 def test_bug_filer_matches_the_standard():
     src = (ROOT / "scripts" / "super-qa-file-bug.sh").read_text(encoding="utf-8")
     for s in ["Problem", "Context", "Evidence", "Fix", "Acceptance Criteria", "Risk"]:

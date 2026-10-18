@@ -72,7 +72,8 @@ const checks = r.check_commands || (() => {
   const tc = pick('typecheck', 'type-check', 'check-types', 'tsc'); if (tc) out.push(run(tc))
   const lint = pick('lint'); if (lint) out.push(run(lint))
   const test = pick('test:unit', 'test'); if (test && !/no test specified/.test(scripts[test])) out.push(`CI=1 ${run(test)}`)
-  return out.length ? out : (cfg.verify_commands || [])
+  // verify_commands entries are strings or {cmd, retry} (super-board config-schema).
+  return out.length ? out : (cfg.verify_commands || []).map((c) => (typeof c === 'string' ? c : c && c.cmd)).filter(Boolean)
 })()
 
 const envFiles = r.env_files || ['.env', '.env.local', '.env.development.local'].filter(exists)

@@ -113,4 +113,77 @@ get 28 '.needsYouDone == false' || fail "#28: a 'done' before the 🙋 block mus
 get 26 '.runnable == false'     || fail "#26: done goes through resume, never the Ready sweep"
 get 2  '.needsYou == false and .needsYouDone == false' || fail "an ordinary card is not needsYou"
 
-echo "PASS: test-deps.sh (18 scenarios)"
+# ---- blockers in another repository (cross-board flow) --------------------
+# This repo is acme/web; config.linked_repos = [acme/api]. The fixture carries the
+# batched foreign-state answer, so this stays offline.
+CROSS=fixtures/deps-cross.json
+XOUT=$("$DEPS" --from "$CROSS" --repo acme/web --linked acme/api)
+xget() { echo "$XOUT" | jq -e ".[\"$1\"] | $2" >/dev/null; }
+
+# 19 — owner/repo#N to a linked repo; done only on Issue closed COMPLETED.
+xget 101 '.blockers == ["acme/api#5"] and .openBlockers == [] and .runnable == true' \
+  || fail "#101: a completed foreign issue clears the card: $(echo "$XOUT" | jq -c '.["101"]')"
+# 20 — the /issues/ URL form; an open foreign issue holds the card.
+xget 102 '.blockers == ["acme/api#6"] and .openBlockers == ["acme/api#6"] and .runnable == false' \
+  || fail "#102: an open foreign issue (URL form) must hold the card"
+# 21 — the /pull/ URL form; a merged PR is done.
+xget 103 '.blockers == ["acme/api#7"] and .runnable == true' || fail "#103: a merged foreign PR clears the card"
+# 22 — closed NOT_PLANNED, or a PR closed unmerged, never becomes done: a person
+#      decides, so the card is unparseable (flagged), never silently freed.
+xget 104 '.parseable == false and .runnable == false and (.why | test("acme/api#8"))' \
+  || fail "#104: a not-planned foreign blocker must be flagged for a person"
+xget 109 '.parseable == false and .runnable == false' || fail "#109: a PR closed unmerged must be flagged"
+# 23 — a foreign ref with no readable state is blocked, not free.
+xget 105 '.openBlockers == ["acme/api#9"] and .runnable == false and .parseable == true' \
+  || fail "#105: unreadable foreign state must hold the card"
+# 24 — a repo not in linked_repos is unparseable and the why names it.
+xget 106 '.parseable == false and .runnable == false and (.why | test("evil/other"))' \
+  || fail "#106: an unlinked repo must fail safe and name the repo"
+xget 114 '.parseable == false and (.why | test("linked_repos"))' || fail "#114: same for a blocked-by: comment line"
+# 25 — full refs to THIS repo normalize to the plain number (and dedupe).
+xget 107 '.blockers == [110] and .openBlockers == [110]' || fail "#107: same-repo full refs must be plain numbers"
+# 26 — blocked-by: comment lines take foreign refs too; numbers stay numbers.
+xget 108 '.blockers == [110, "acme/api#5"] and .openBlockers == [110]' \
+  || fail "#108: comment line with a local and a foreign blocker, got $(echo "$XOUT" | jq -c '.["108"]')"
+xget 111 '.blockers == [110, "acme/api#5"] and .openBlockers == [110]' || fail "#111: mixed bullets"
+# 27 — the None landmine applies to foreign refs as well.
+xget 112 '.parseable == false' || fail "#112: None + a foreign ref must not be trusted"
+# 28 — repo names are case-insensitive; the config's spelling is used.
+xget 113 '.blockers == ["acme/api#5"] and .runnable == true' || fail "#113: ACME/API must match linked acme/api"
+# 29 — no --linked at all: every foreign ref is unlinked, so nothing is freed on it.
+NOLINK=$("$DEPS" --from "$CROSS" --repo acme/web)
+echo "$NOLINK" | jq -e '.["101"].parseable == false and .["101"].runnable == false' >/dev/null \
+  || fail "without linked_repos a foreign blocker must not be trusted"
+echo "$NOLINK" | jq -e '.["107"].parseable == true' >/dev/null || fail "same-repo full refs need no linked_repos"
+
+# 30 — live mode: ONE batched GraphQL query for all foreign refs, aliased per repo
+#      and number, through the read helper. A NOT_FOUND ref is unreadable (blocked),
+#      it does not halt the run.
+LT=$(mktemp -d); trap 'rm -rf "$LT"' EXIT
+mkdir -p "$LT/bin"
+jq '[{data:{repository:{issues:{pageInfo:{hasNextPage:false,endCursor:null},
+      nodes:[.issues[] | select(.number == 101 or .number == 102 or .number == 105 or .number == 110)
+             | . + {labels:{nodes:[]}, comments:{nodes:[]}}]}}}}]' "$CROSS" > "$LT/pages.json"
+cat > "$LT/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+q=""; for a in "$@"; do case "$a" in query=*) q="${a#query=}" ;; esac; done
+printf '%s\n' "$q" | tr '\n' ' ' >> "$GH_LOG"; echo >> "$GH_LOG"
+case "$q" in
+  *'issues(states:OPEN'*) cat "$PAGES" ;;
+  *issueOrPullRequest*)
+    echo '{"data":{"r0":{"i5":{"__typename":"Issue","state":"CLOSED","stateReason":"COMPLETED"},"i6":{"__typename":"Issue","state":"OPEN","stateReason":null},"i9":null}},"errors":[{"type":"NOT_FOUND","path":["r0","i9"],"message":"Could not resolve to an Issue or PullRequest with the number of 9."}]}'
+    exit 1 ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$LT/bin/gh"
+LIVE=$(PATH="$LT/bin:$PATH" GH_LOG="$LT/log" PAGES="$LT/pages.json" SB_GITHUB_HALT_FILE="$LT/halt.json" \
+       SB_GITHUB_RETRY_DELAY=0 "$DEPS" --repo acme/web --linked acme/api) || fail "live cross-repo read failed"
+[ "$(grep -c issueOrPullRequest "$LT/log")" -eq 1 ] || fail "foreign state must be ONE query, got: $(cat "$LT/log")"
+grep issueOrPullRequest "$LT/log" | grep -q 'r0: repository(owner:"acme",name:"api")' || fail "query must alias the repo"
+grep issueOrPullRequest "$LT/log" | grep -q 'i9: issueOrPullRequest(number:9)' || fail "query must alias each number"
+[ ! -f "$LT/halt.json" ] || fail "a NOT_FOUND foreign ref must not halt the run"
+echo "$LIVE" | jq -e '.["101"].runnable == true and .["102"].runnable == false and .["105"].openBlockers == ["acme/api#9"]' >/dev/null \
+  || fail "live verdicts wrong: $LIVE"
+
+echo "PASS: test-deps.sh (30 scenarios)"
