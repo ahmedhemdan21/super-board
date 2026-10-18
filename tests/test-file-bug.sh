@@ -190,6 +190,17 @@ is    "returns the existing issue"   "55" "$OUT"
 has   "comments the new sighting"    "$(cat "$GH_LOG")" "issue comment 55"
 hasnt "files no duplicate card"      "$(cat "$GH_LOG")" "issue create"
 
+echo "── flaky cards (merge gate FLAKY: line): extra label, one open card per fingerprint"
+OUT=$(run "${BASE[@]}" --kind bug --priority low --label flaky --fingerprint "flaky|acme/app|Acme.Tests.OrderTests.Create")
+is  "files the flaky card"        "77" "$OUT"
+has "labels it flaky"             "$(cat "$GH_LOG")" "--label flaky"
+has "still labels it bug (built)" "$(cat "$GH_LOG")" "--label bug"
+has "fingerprint in the meta"     "$(cat "$BODY_CAPTURE")" "fingerprint: flaky|acme/app|Acme.Tests.OrderTests.Create"
+OUT=$(DEDUPE_HIT="56" run "${BASE[@]}" --label flaky --fingerprint "imports|tc-1|silent-drop")
+is    "same fingerprint → existing card" "56" "$OUT"
+hasnt "no second flaky card"             "$(cat "$GH_LOG")" "issue create"
+is "a label with spaces is refused" 64 "$(code "${BASE[@]}" --label "not ok")"
+
 echo "── uncertain placement pauses and preserves the created issue"
 OUT=$(FAIL_ITEMADD=1 run "${BASE[@]}"; echo "rc=$?")
 has "number still reaches stdout" "$OUT" "77"

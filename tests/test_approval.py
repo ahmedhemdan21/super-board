@@ -110,6 +110,14 @@ class ApprovalTests(unittest.TestCase):
     def test_ui_done_label_does_not_change_scope(self):
         self.assertEqual(approval.scope_for(PLAN), approval.scope_for(dict(PLAN, done=True)))
 
+    def test_needs_human_label_is_display_only(self):
+        # The Reviewer adds needs-human on gate exit 7. It is not evidence: a plan
+        # carrying it scopes the same, and without a trusted done nothing approves.
+        self.assertEqual(approval.scope_for(PLAN), approval.scope_for(dict(PLAN, labels=["needs-human"])))
+        labelled = [comment("Reason tag: 🙋 needs you\n" + approval.marker(REQUEST), 1)]
+        labelled[0]["labels"] = [{"name": "needs-human"}]
+        self.assertFalse(self.check(labelled)["approved"])
+
     def test_missing_time_and_malformed_marker_hold(self):
         records = evidence()
         del records[0]["created_at"]

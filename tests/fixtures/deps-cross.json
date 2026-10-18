@@ -1,0 +1,130 @@
+{
+  "$comment": "Cross-repo blockers for test-deps.sh: this repo is acme/web, linked_repos = [acme/api]. 'foreign' is the batched state answer keyed owner/repo#N; #9 is deliberately missing (unreadable).",
+  "issues": [
+    {
+      "number": 101,
+      "title": "foreign issue completed",
+      "state": "OPEN",
+      "body": "## Problem\nforeign issue completed\n\n## Blocked by\n\n- acme/api#5 — the endpoint\n"
+    },
+    {
+      "number": 102,
+      "title": "foreign issue open, by URL",
+      "state": "OPEN",
+      "body": "## Problem\nforeign issue open, by URL\n\n## Blocked by\n\n- https://github.com/acme/api/issues/6 — the schema\n"
+    },
+    {
+      "number": 103,
+      "title": "foreign PR merged",
+      "state": "OPEN",
+      "body": "## Problem\nforeign PR merged\n\n## Blocked by\n\n- https://github.com/acme/api/pull/7\n"
+    },
+    {
+      "number": 104,
+      "title": "foreign issue not planned",
+      "state": "OPEN",
+      "body": "## Problem\nforeign issue not planned\n\n## Blocked by\n\n- acme/api#8 — dropped upstream\n"
+    },
+    {
+      "number": 105,
+      "title": "foreign ref nobody answered for",
+      "state": "OPEN",
+      "body": "## Problem\nforeign ref nobody answered for\n\n## Blocked by\n\n- acme/api#9\n"
+    },
+    {
+      "number": 106,
+      "title": "repo not linked",
+      "state": "OPEN",
+      "body": "## Problem\nrepo not linked\n\n## Blocked by\n\n- evil/other#1 — typo or missing config\n"
+    },
+    {
+      "number": 107,
+      "title": "same repo, full spellings",
+      "state": "OPEN",
+      "body": "## Problem\nsame repo, full spellings\n\n## Blocked by\n\n- acme/web#110\n- https://github.com/acme/web/issues/110\n"
+    },
+    {
+      "number": 108,
+      "title": "comment line mixes both",
+      "state": "OPEN",
+      "body": "## Problem\ncomment line mixes both\n\n## Blocked by\n\n- None.\n",
+      "comments": {
+        "nodes": [
+          {
+            "body": "Reason tag: 🛡 dependency gate\nblocked-by: 110, acme/api#5"
+          }
+        ]
+      }
+    },
+    {
+      "number": 109,
+      "title": "foreign PR closed unmerged",
+      "state": "OPEN",
+      "body": "## Problem\nforeign PR closed unmerged\n\n## Blocked by\n\n- acme/api#11\n"
+    },
+    {
+      "number": 110,
+      "title": "free",
+      "state": "OPEN",
+      "body": "## Problem\nfree\n\n## Blocked by\n\n- None.\n"
+    },
+    {
+      "number": 111,
+      "title": "local and foreign",
+      "state": "OPEN",
+      "body": "## Problem\nlocal and foreign\n\n## Blocked by\n\n- #110 — local\n- acme/api#5 — remote\n"
+    },
+    {
+      "number": 112,
+      "title": "None but names a foreign ref",
+      "state": "OPEN",
+      "body": "## Problem\nNone but names a foreign ref\n\n## Blocked by\n\n- None — but acme/api#5 must merge first\n"
+    },
+    {
+      "number": 113,
+      "title": "case-insensitive repo",
+      "state": "OPEN",
+      "body": "## Problem\ncase-insensitive repo\n\n## Blocked by\n\n- ACME/API#5\n"
+    },
+    {
+      "number": 114,
+      "title": "comment names an unlinked repo",
+      "state": "OPEN",
+      "body": "## Problem\ncomment names an unlinked repo\n\n## Blocked by\n\n- None.\n",
+      "comments": {
+        "nodes": [
+          {
+            "body": "blocked-by: evil/other#1"
+          }
+        ]
+      }
+    }
+  ],
+  "foreign": {
+    "acme/api#5": {
+      "__typename": "Issue",
+      "state": "CLOSED",
+      "stateReason": "COMPLETED"
+    },
+    "acme/api#6": {
+      "__typename": "Issue",
+      "state": "OPEN",
+      "stateReason": null
+    },
+    "acme/api#7": {
+      "__typename": "PullRequest",
+      "state": "MERGED",
+      "merged": true
+    },
+    "acme/api#8": {
+      "__typename": "Issue",
+      "state": "CLOSED",
+      "stateReason": "NOT_PLANNED"
+    },
+    "acme/api#11": {
+      "__typename": "PullRequest",
+      "state": "CLOSED",
+      "merged": false
+    }
+  }
+}

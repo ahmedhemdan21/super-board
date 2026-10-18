@@ -309,6 +309,14 @@ def reason_for(body: str) -> tuple[str, str]:
     return "🚫", "other"
 
 
+def block_reason(labels: list[str], body: str) -> tuple[str, str]:
+    """A Blocked card's reason: the `needs-human` label (merge gate exit 7, a person
+    merges or approves) wins over the comment's emoji. Display only, like the label."""
+    if "needs-human" in {l.lower() for l in labels or []}:
+        return "🙋", "needs human merge"
+    return reason_for(body)
+
+
 def field_status(node: dict[str, Any]) -> str:
     """Read the `Status` single-select field from a project-item node."""
     for fv in (node.get("fieldValues", {}).get("nodes") or []):
@@ -659,7 +667,8 @@ def main() -> int:
         return f"T-{d // 86400}d"
 
     def reason_for_issue(n: int) -> tuple[str, str]:
-        return reason_for(reasons.get(n, ""))
+        item = item_by_number(n)
+        return block_reason(item["labels"] if item else [], reasons.get(n, ""))
 
     # ── header ──
     proj = cfg["project"]
