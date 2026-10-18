@@ -548,6 +548,20 @@ bash .claude/bin/super-board-deploy-wait.sh --config <cfg> --pr <PR> --issue <N>
    failure `telemetry_regression`, bug filed naming them. Loki unreachable → a warning line,
    never a failure. The after-window is what has arrived when the check runs, at most
    `window_s`.
+   Then the **regression watch**, when `deploy.regression_watch.enabled` is true (absent →
+   `watch: skipped`). It first waits until `window_s` (default 1800) has passed since the
+   deploy finished: each `--budget-s` call exits 75 while waiting and the deploy time is kept,
+   so the same command resumes; `timeout_s` bounds the wait (then the window so far is
+   checked). `collect_prometheus.py check` compares the error rate (or error ratio, with
+   `promql_request_rate`) in the window after the deploy with the window before it, plus Loki
+   error-line counts when `collect.loki` is set. Regression only when the ratio AND the
+   absolute floor (`min_abs` errors/s) are both exceeded → failure `regression`. No data →
+   `watch: inconclusive` (a warning, never ok); Prometheus unreachable → a warning.
+   Either regression (`regression` or `telemetry_regression`) files the bug with label
+   `regression` and fingerprint `regression|pr-<N>`, so one merged PR gets one open
+   regression bug; it carries both windows' numbers and the top new Loki error groups.
+   `regression_watch.revert_card: true` also files "Revert #<pr>" into Backlog naming the
+   bug. Nothing reverts, pushes or reopens: a human picks between the fix and the revert.
 
 Exits: 0 healthy or skipped · 10 failed, bug filed (`bug: #<n>`) · 11 failed, no bug filed ·
 75 the call's budget ran out, run the same command again (the `timeout_s` clock carries over)
@@ -572,7 +586,8 @@ Did: <one line>
 Next: <builder | qa | reviewer | Eric | none>
 ```
 
-- Role = who writes it: `builder` · `qa` · `reviewer` · `collect` · `orchestrator`. Label for a
+- Role = who writes it: `builder` · `qa` · `reviewer` · `collect` · `orchestrator` (`scheduler`
+  writes only on the `super-board runs` issue, never on a card). Label for a
   lane exit is `report`; `blocker` for a Block comment.
 - ≤ 8 lines. Evidence before prose. An unchecked thing is never implied to pass.
 - NEVER list changed files — the PR shows them. No restating the issue, no adjectives.

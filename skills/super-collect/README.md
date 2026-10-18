@@ -38,7 +38,8 @@ read-only. Secrets stay in a gitignored env file (`.env.local` whenever `.env` i
 `collect_common.py secret-file` prints which): `SENTRY_AUTH_TOKEN` (scopes `event:read project:read`),
 `POSTHOG_PERSONAL_API_KEY` (`query:read`, `error_tracking:read`). Loki and Prometheus need no
 secret: `collect.loki` (`url`, required `selector`) and `collect.prometheus` (`url`).
-`collect_loki.py check` also backs the post-deploy telemetry check (`deploy.telemetry`).
+`collect_loki.py check` also backs the post-deploy telemetry check (`deploy.telemetry`), and
+`collect_prometheus.py check` the error-rate regression watch (`deploy.regression_watch`).
 
 ## Install
 
