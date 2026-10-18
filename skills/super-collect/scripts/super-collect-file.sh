@@ -268,7 +268,7 @@ if [ -n "$SIG_OPEN" ]; then
 import datetime as d, json, sys
 mark = "<!-- sb-evidence: " + sys.argv[1] + ":"
 now = d.datetime.now(d.timezone.utc)
-cs = [c for page in json.load(sys.stdin) for c in page]
+cs = [c for page in json.loads(sys.stdin.buffer.read().decode("utf-8")) for c in page]
 hit = any(mark in (c.get("body") or "") and
           (now - d.datetime.fromisoformat(str(c["created_at"]).replace("Z", "+00:00"))).total_seconds() < 86400
           for c in cs)
@@ -324,7 +324,9 @@ if heads:
     body[end:end] = [""] + block + [""]
 else:
     body += ["", "## Evidence"] + block
-sys.stdout.write(chr(10).join(body) + chr(10))' "$BODY_FILE" "$TRACE_TMP" > "$CR_TMP" || exit 70
+# Written as UTF-8 to a file, not stdout: a Windows console code page cannot encode ✅ / →.
+open(sys.argv[3], "w", encoding="utf-8", newline=chr(10)).write(chr(10).join(body) + chr(10))' \
+    "$BODY_FILE" "$TRACE_TMP" "$CR_TMP" || exit 70
   SRC_BODY="$CR_TMP"
 fi
 {

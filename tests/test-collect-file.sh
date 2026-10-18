@@ -220,13 +220,14 @@ lacks "no second card"                    "$(cat "$GH_LOG")" "issue create"
 NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # comment(<body>, <created_at>) in the REST shape the comments read validates.
 comment() { jq -cn --arg b "$1" --arg t "$2" '{id:1,body:$b,user:{login:"bot"},created_at:$t,updated_at:$t}'; }
-RECENT="[[$(comment '<!-- sb-evidence: loki:loki|gw|other -->' "$NOW_ISO")]]"
+# Emoji in the body: the 24h check must read UTF-8 even under a Windows code page.
+RECENT="[[$(comment '✅ Done: 3 events → <!-- sb-evidence: loki:loki|gw|other -->' "$NOW_ISO")]]"
 RC=0; OUT=$(STUB_COMMENTS="$RECENT" STUB_HITS="$HIT_OPEN" run --type bug --source loki --title "Checkout 500" --body-file "$WORK/bug.md" --fingerprint "loki|gw|aa11bb22cc33" --signature "$SIG" --yes) || RC=$?
 is    "recent same-source evidence: exit 0" 0 "$RC"
 is    "recent same-source evidence: issue returned" "301" "$OUT"
 has   "the comments were read" "$(cat "$GH_LOG")" "api repos/acme/app/issues/301/comments"
 lacks "at most one evidence comment per source per 24h" "$(cat "$GH_LOG")" "issue comment"
-OLD="[[$(comment '<!-- sb-evidence: loki:loki|gw|other -->' 2026-01-01T00:00:00Z),$(comment '<!-- sb-evidence: sentry:err|sentry|1 -->' "$NOW_ISO")]]"
+OLD="[[$(comment '✅ Done: 9 events → <!-- sb-evidence: loki:loki|gw|other -->' 2026-01-01T00:00:00Z),$(comment '<!-- sb-evidence: sentry:err|sentry|1 -->' "$NOW_ISO")]]"
 OUT=$(STUB_COMMENTS="$OLD" STUB_HITS="$HIT_OPEN" run --type bug --source loki --title "Checkout 500" --body-file "$WORK/bug.md" --fingerprint "loki|gw|aa11bb22cc33" --signature "$SIG" --yes)
 has   "older or other-source evidence does not block" "$(cat "$GH_LOG")" "issue comment 301"
 HIT_CLOSED=$(jq -cn --arg b "$SIGBODY" '[{number:88,state:"CLOSED",body:$b}]')
