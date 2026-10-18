@@ -194,8 +194,9 @@ Repeat until a done condition or halt gate fires:
    classification. Existing docs/ux/tests/refactor rows keep their chain; check
    any proposed new label chain before writing that label.
 
-   The planner returns `cards`, `sweep`, `resume`, `refreshApproval`, `flag` and `stranded`. **Act on
-   `sweep`, `resume`, `refreshApproval`, `flag` and `stranded` BEFORE launching** (run.md → "The wave-start
+   The planner returns `cards`, `sweep`, `resume`, `refreshApproval`, `flag`, `stranded` and `triage`
+   (Ready cards `super-board-card-ready.py` holds back as too vague). **Act on
+   `sweep`, `resume`, `refreshApproval`, `flag`, `stranded` and `triage` BEFORE launching** (run.md → "The wave-start
    sweep"): move every swept card to `Ready` with a comment naming what cleared
    it, move every `resume` card (verified human approval of the current pinned
    request) to `Review`; `needs-you:done` is display-only. Move `refreshApproval`
@@ -203,7 +204,11 @@ Repeat until a done condition or halt gate fires:
    clear their stale `needs-you:done` display labels. They have no approval to merge.
    Comment on flagged cards asking for their
    `## Blocked by` line to be fixed, and return every stranded Building card to
-   `Ready` (below). Swept, resumed, approval-refresh and stranded cards are NOT in this pass's
+   `Ready` (below). Label every `triage` card `needs-triage` (create the label if missing) and
+   leave it in `Ready` (the next wave re-checks it), with one comment listing its `missing` items:
+   `[orchestrator] [report] ⚠️ held in Ready · needs triage` / `Did: card-ready check` /
+   `❌ Not done: <missing, comma-separated>` / `Next: Eric` — `/super-board triage` fixes it
+   (references/triage.md). Skip the comment when the card already carries `needs-triage`. Swept, resumed, approval-refresh and stranded cards are NOT in this pass's
    `cards`; they join the next wave.
 
    **Stranded Building cards.** A card in Building with no assignee between

@@ -53,6 +53,8 @@ SIGNALS = {
         "title": "argMax(coalesce(nullIf(toString(properties.$exception_message), ''), "
                  "nullIf(toString(properties.$exception_types), ''), 'exception'), timestamp)",
         "users": "count(distinct person_id)", "min_users": 5,
+        # The newest $exception_list (type / value / stacktrace frames) → crossSignature.
+        "detail": "argMax(toString(properties.$exception_list), timestamp)",
         "type": "bug", "category": "error", "label": "Exception:",
         "hint": "Enable exception autocapture: posthog.init(…, { capture_exceptions: true }).",
     },
@@ -149,7 +151,8 @@ def min_users(st, sig):
 
 def group_query(sig, since, users_min):
     return (f"select {sig['group']} as k, {sig['title']} as t, count() as events, {sig['users']} as users, "
-            f"min(timestamp), max(timestamp), {SESSION} from events "
+            f"min(timestamp), max(timestamp), {SESSION}" + (f", {sig['detail']}" if sig.get("detail") else "") +
+            " from events "
             f"where event = {lit(sig['event'])} and timestamp >= {ts(since)} "
             f"group by k having users >= {int(users_min)} order by users desc limit {LIMIT}")
 
@@ -170,12 +173,28 @@ def candidate(st, name, sig, key, title, events, users, first, last, session, **
     return c
 
 
+def exception_cross(raw):
+    """crossSignature of a `$exception_list` (JSON text): its first entry is the raised
+    exception; frames come outermost first, as in Sentry."""
+    try:
+        lst = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        return ""
+    if not isinstance(lst, list) or not lst or not isinstance(lst[0], dict):
+        return ""
+    x = lst[0]
+    frames = (x.get("stacktrace") or {}).get("frames") or []
+    return cc.cross_signature(x.get("type"), x.get("value"), cc.frames_top_frame(frames))
+
+
 def run_signal(st, name, since):
     sig = SIGNALS[name]
     out, extra = [], {}
     if sig["kind"] == "group":
-        for k, t, events, users, first, last, session in hogql(st, group_query(sig, since, min_users(st, sig))):
-            out.append(candidate(st, name, sig, k, t or k, events, users, first, last, session))
+        for row in hogql(st, group_query(sig, since, min_users(st, sig))):
+            k, t, events, users, first, last, session = row[:7]
+            more = {"crossSignature": exception_cross(row[7])} if sig.get("detail") and len(row) > 7 else {}
+            out.append(candidate(st, name, sig, k, t or k, events, users, first, last, session, **more))
     elif sig["kind"] == "vitals":
         metrics = list(sig["limits"])
         for row in hogql(st, vitals_query(sig, since)):

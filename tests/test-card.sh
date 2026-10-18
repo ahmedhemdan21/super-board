@@ -94,14 +94,14 @@ ok "issue not on this board → 3"
 # 8 — items: gh item-list shape, the fields the wave planner reads.
 cat > "$TMP/items.json" <<'EOF'
 [{"data":{"repositoryOwner":{"projectV2":{"items":{"totalCount":3,"pageInfo":{"hasNextPage":true,"endCursor":"c1"},"nodes":[
-  {"id":"I1","fieldValueByName":{"name":"Ready"},"content":{"__typename":"Issue","number":12,"title":"Twelve","url":"u12","repository":{"nameWithOwner":"acme/app"},"labels":{"nodes":[{"name":"qa"}]}}},
+  {"id":"I1","fieldValueByName":{"name":"Ready"},"content":{"__typename":"Issue","number":12,"title":"Twelve","url":"u12","body":"Problem: x","repository":{"nameWithOwner":"acme/app"},"labels":{"nodes":[{"name":"qa"}]}}},
   {"id":"I2","fieldValueByName":null,"content":{"__typename":"DraftIssue","title":"Draft"}}]}}}}},
  {"data":{"repositoryOwner":{"projectV2":{"items":{"totalCount":3,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
   {"id":"I3","fieldValueByName":{"name":"Review"},"content":{"__typename":"PullRequest","number":40,"title":"Forty","url":"u40","repository":{"nameWithOwner":"acme/app"},"labels":{"nodes":[]}}}]}}}}}]
 EOF
 OUT=$(card items)
 echo "$OUT" | jq -e '.totalCount == 3 and (.items | length) == 3' >/dev/null || fail "items count: $OUT"
-echo "$OUT" | jq -e '.items[0] == {id:"I1",title:"Twelve",status:"Ready",labels:["qa"],content:{type:"Issue",title:"Twelve",number:12,url:"u12",repository:"acme/app"}}' >/dev/null || fail "issue item shape: $OUT"
+echo "$OUT" | jq -e '.items[0] == {id:"I1",title:"Twelve",status:"Ready",labels:["qa"],content:{type:"Issue",title:"Twelve",number:12,url:"u12",repository:"acme/app",body:"Problem: x"}}' >/dev/null || fail "issue item shape: $OUT"
 echo "$OUT" | jq -e '.items[1] | has("status") | not' >/dev/null || fail "no-status item must omit status: $OUT"
 echo "$OUT" | jq -e '.items[2].content.type == "PullRequest" and (.items[2] | has("labels") | not)' >/dev/null || fail "PR item shape: $OUT"
 ok "items in gh item-list shape"

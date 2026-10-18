@@ -308,7 +308,7 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
       • No, ask me each time
    Folded details = ONE dim line under each, never a table:
       merge_policy.default auto · always_human: money, auth, schema, deploy · push guard on (main, master,
-      <base>) · migrations.allowed_envs: test, staging
+      <base>) · migrations.allowed_envs: test, staging · triage on (vague Ready cards held, needs-triage)
       + Bash(gh project:*) + Bash(gh issue:*) + Bash(gh pr:*) + … (the --dry-run output, joined)
    Review each → ONE more AskUserQuestion call, up to three questions:
     a. "Merge" — "Who merges a change that passes review?" [Robot merges normal changes
@@ -355,6 +355,8 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    │    Loki / Prometheus (offered when the user names them, or the compose files run them): ask
    │    the url, the Loki `selector` (required, never guessed: one Loki may hold prod) and, when
    │    the stack is only reachable in a remote Docker network, the ssh host + docker_network.
+   │    Tempo is optional enrichment, not a source: when the stack runs it, save collect.tempo
+   │    {url (+ grafana_url, grafana_datasource_uid for an Explore link)} so cards get a Trace line.
    │    Missing key → the exact line to add (name only) to the file `python3 .claude/skills/super-collect/scripts/collect_common.py secret-file` prints (a tracked .env → ALWAYS .env.local; confirm `git check-ignore .env.local` before writing) + scopes: Sentry `event:read
    │    project:read`; PostHog personal key `query:read error_tracking:read`. PostHog failure
    │    events: grep capture() calls for *_failed / *_error, propose them, user confirms.
@@ -390,7 +392,7 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    ├─ Write, in order (each atomic; stop and report on the first failure — answers are kept):
    │    ├─ .claude/super-board/configs/<slug>.json (committed): description, project, target
    │    │    {type: repo | repo+url}, repo, base_branch, timezone, columns (the seven), labels,
-   │    │    paths, merge_policy, migrations, collect (incl. custom), writing (when detected), notifications {channel:
+   │    │    paths, merge_policy, migrations, triage (defaults), collect (incl. custom), writing (when detected), notifications {channel:
    │    │    "session", bot_identity}, worker_backend "workflow", verify_commands (non-blank project checks). No `variant`.
    │    ├─ .claude/super-board/active ← <slug>
    │    ├─ .gitignore += .claude/super-board/active, onboard-answers.json, onboard-staged/,

@@ -17,15 +17,28 @@
 #      github `github|<issue#>`, prs `prs|<boundary>|<cause>`,
 #      architecture `arch|<module>|<problem>`, loki `loki|<group>|<signature>`,
 #      prometheus `prom|alert|<name>|<labels>` or `prom|target|<job>|<instance>`.
+#   5. one card per real problem ACROSS sources: `--signature <crossSignature>` is stamped as
+#      `<!-- sb-signature: <hash> -->`. When no issue holds this fingerprint but an OPEN one
+#      holds the signature (Sentry, Loki and PostHog saw the same crash), it appends ONE
+#      `[collect] [evidence]` comment there instead of filing (at most one per source per
+#      issue per 24h, marker `<!-- sb-evidence: <source>:<fingerprint> -->`). A CLOSED one
+#      with the signature: file new, "seen before in #n".
+#   6. `--trace-id <32 hex>` adds a Trace line to Evidence (collect_tempo.py evidence:
+#      summary + Grafana Explore link when collect.tempo is configured, else the id).
+#   7. triage: the composed body goes through super-board-card-ready.py; a body that is
+#      not ready is filed with the `needs-triage` label (references/triage.md).
 #
 # Usage:
 #   super-collect-file.sh --config <cfg.json> --type bug|feature|refactor|fix \
 #     --source sentry|posthog|loki|prometheus|github|prs|architecture|custom --title "<one line>" --body-file <md> \
 #     --fingerprint "<stable key>" [--priority high|medium|low] [--area <a>] \
 #     [--label <l>]... [--yes]          # e.g. --label needs-triage --label ux
+#     [--signature <12 hex>] [--trace-id <32 hex>]
+#     [--count N] [--first-seen T] [--last-seen T] [--link URL] [--sample "<one line>"]
+#                                       # the evidence comment on a signature match
 #   super-collect-file.sh --config <cfg.json> --adopt <issue#> --type bug|feature|refactor [--yes]
 #
-# Stdout: dry-run → one `would-file|duplicate|recurrence|would-adopt` plan line;
+# Stdout: dry-run → one `would-file|duplicate|evidence|recurrence|would-adopt` plan line;
 #         --yes   → the issue number (new, existing on a dedupe hit, or adopted).
 # Exits:  0 ok · 64 bad args · 65 no holding column · 66 unreadable/weak body
 #         70 gh failure · 71 filed but not placed (number still on stdout)
@@ -35,6 +48,7 @@ set -uo pipefail
 ORIGINAL_ARGS=("$@")
 CONFIG=""; TYPE=""; SOURCE=""; TITLE=""; BODY_FILE=""; FP=""
 PRIORITY="medium"; AREA=""; ADOPT=""; YES=0; EXTRA_LABELS=()
+SIG=""; TRACE_ID=""; EV_COUNT=""; EV_FIRST=""; EV_LAST=""; EV_LINK=""; EV_SAMPLE=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -48,6 +62,13 @@ while [ $# -gt 0 ]; do
     --area)        AREA="$2"; shift 2 ;;
     --adopt)       ADOPT="$2"; shift 2 ;;
     --label)       EXTRA_LABELS+=("$2"); shift 2 ;;
+    --signature)   SIG="$2"; shift 2 ;;
+    --trace-id)    TRACE_ID="$2"; shift 2 ;;
+    --count)       EV_COUNT="$2"; shift 2 ;;
+    --first-seen)  EV_FIRST="$2"; shift 2 ;;
+    --last-seen)   EV_LAST="$2"; shift 2 ;;
+    --link)        EV_LINK="$2"; shift 2 ;;
+    --sample)      EV_SAMPLE="$2"; shift 2 ;;
     --yes)         YES=1; shift ;;
     *) echo "unknown arg: $1" >&2; exit 64 ;;
   esac
@@ -74,6 +95,11 @@ if [ -z "$ADOPT" ]; then
   case "$SOURCE|$FP" in "posthog|gap|"?*) FP_PREFIX="gap|" ;; esac
   case "$FP" in "$FP_PREFIX"?*) ;; *) die "--fingerprint for source ${SOURCE} must start with '${FP_PREFIX}' (got: $FP)" 64 ;; esac
   [ -n "$BODY_FILE" ] && [ -r "$BODY_FILE" ] || die "--body-file missing or unreadable: ${BODY_FILE:-<unset>}" 66
+  case "$SIG" in ""|[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) die "--signature must be the 12-hex crossSignature (got: $SIG)" 64 ;; esac
+  case "$TRACE_ID" in "") ;; *[!0-9a-f]*) die "--trace-id must be 32 lower-case hex" 64 ;;
+    *) [ "${#TRACE_ID}" -eq 32 ] || die "--trace-id must be 32 lower-case hex" 64 ;; esac
+  case "$EV_COUNT" in *[!0-9]*) die "--count takes a number" 64 ;; esac
 else
   case "$ADOPT" in *[!0-9]*|"") die "--adopt takes an issue number (got: $ADOPT)" 64 ;; esac
   [ "$TYPE" != "fix" ] || die "--adopt takes bug|feature|refactor" 64
@@ -209,6 +235,14 @@ HITS=$(printf '%s' "$ISSUES_JSON" | jq -r --arg fp "$FP" '[.[] | select(any(.bod
 OPEN_HIT=$(echo "$HITS" | awk '$2=="OPEN"{print $1; exit}')
 CLOSED_HIT=$(echo "$HITS" | awk '$2!="OPEN" && $1!=""{print $1; exit}')
 
+# Cross-source signature (header § 5), from the same history read: no extra GitHub call.
+SIG_OPEN=""; SIG_CLOSED=""; SEEN_BEFORE=""
+if [ -n "$SIG" ]; then
+  SIG_HITS=$(printf '%s' "$ISSUES_JSON" | jq -r --arg m "sb-signature: ${SIG} -->" '[.[] | select(.body | contains($m))] | sort_by(.state != "OPEN") | map("\(.number) \(.state)") | .[]') || exit 70
+  SIG_OPEN=$(echo "$SIG_HITS" | awk '$2=="OPEN"{print $1; exit}')
+  SIG_CLOSED=$(echo "$SIG_HITS" | awk '$2!="OPEN" && $1!=""{print $1; exit}')
+fi
+
 if [ -n "$OPEN_HIT" ]; then
   if [ "$YES" -ne 1 ]; then echo "duplicate|#${OPEN_HIT}|${TYPE}|${TITLE}"; exit 0; fi
   python3 "$GITHUB_READ" --check || { RC=$?; echo "$OPEN_HIT"; exit "$RC"; }
@@ -222,11 +256,47 @@ $(cat "$BODY_FILE")" >/dev/null 2>&1 || { python3 "$GITHUB_READ" --halt "Collect
   echo "$OPEN_HIT"; exit 0
 fi
 
+# Another source already filed this problem: evidence on that card, never a second card.
+if [ -n "$SIG_OPEN" ]; then
+  if [ "$YES" -ne 1 ]; then echo "evidence|#${SIG_OPEN}|${SOURCE}|${TITLE}"; exit 0; fi
+  python3 "$GITHUB_READ" --check || { RC=$?; echo "$SIG_OPEN"; exit "$RC"; }
+  COMMENTS=$(python3 "$GITHUB_READ" --kind comments -- api "repos/${REPO_NAME}/issues/${SIG_OPEN}/comments" --paginate --slurp) \
+    || { RC=$?; echo "$SIG_OPEN"; exit "$RC"; }
+  # One evidence comment per source per issue per 24h. Unreadable dates count as recent:
+  # a skipped comment costs nothing, a comment storm costs the issue's readability.
+  RECENT=$(printf '%s' "$COMMENTS" | python3 -c '
+import datetime as d, json, sys
+mark = "<!-- sb-evidence: " + sys.argv[1] + ":"
+now = d.datetime.now(d.timezone.utc)
+cs = [c for page in json.loads(sys.stdin.buffer.read().decode("utf-8")) for c in page]
+hit = any(mark in (c.get("body") or "") and
+          (now - d.datetime.fromisoformat(str(c["created_at"]).replace("Z", "+00:00"))).total_seconds() < 86400
+          for c in cs)
+print("yes" if hit else "no")' "$SOURCE") || RECENT=yes
+  if [ "$RECENT" != no ]; then echo "$SIG_OPEN"; exit 0; fi
+  state begin "$SIG_OPEN" || exit $?
+  EV_BODY="[collect] [evidence] 🔁 seen again · ${SOURCE}
+Did: matched sb-signature \`${SIG}\` from ${SOURCE} (\`${FP}\`)
+✅ Done: ${EV_COUNT:-?} events · first ${EV_FIRST:-?} · last ${EV_LAST:-?}${EV_LINK:+
+Link: ${EV_LINK}}${EV_SAMPLE:+
+Sample: \`$(printf '%s' "$EV_SAMPLE" | tr '\r\n`' '  '"'" | cut -c1-200)\`}${TRACE_ID:+
+Trace: \`${TRACE_ID}\`}
+Next: none
+<!-- sb-evidence: ${SOURCE}:${FP} -->"
+  gh issue comment "$SIG_OPEN" ${REPO_FLAG[@]+"${REPO_FLAG[@]}"} --body "$EV_BODY" >/dev/null 2>&1 \
+    || { python3 "$GITHUB_READ" --halt "Collector evidence comment outcome unknown for #${SIG_OPEN}; reconcile before retrying"; echo "$SIG_OPEN"; exit 79; }
+  state success "$SIG_OPEN" || exit $?
+  echo "$SIG_OPEN"; exit 0
+fi
+# A closed issue with the same signature: file new, naming it (recurrence across sources).
+[ -n "$CLOSED_HIT" ] || [ -z "$SIG_CLOSED" ] || SEEN_BEFORE="$SIG_CLOSED"
+
 if [ "$YES" -ne 1 ]; then
   # A bug's full shape is the QA filer's check; run it now so the plan never says
   # would-file for a body --yes would refuse with 66.
   if [ "$TYPE" = bug ]; then "$BIN/super-qa-file-bug.sh" --title "$TITLE" --body-file "$BODY_FILE" --check-body || exit $?; fi
   if [ -n "$CLOSED_HIT" ]; then echo "recurrence|#${CLOSED_HIT}|${TYPE}|${TITLE}|${HOLD}"
+  elif [ -n "${SEEN_BEFORE:-}" ]; then echo "recurrence|#${SEEN_BEFORE}|${TYPE}|${TITLE}|${HOLD}"
   else echo "would-file|${TYPE}|${TITLE}|${HOLD}"; fi
   exit 0
 fi
@@ -234,16 +304,61 @@ fi
 state begin || exit $?
 
 # --- compose + dispatch -----------------------------------------------------
-BODY_TMP=$(mktemp)
-trap 'rm -f "$BODY_TMP"' EXIT
+BODY_TMP=$(mktemp); TRACE_TMP=$(mktemp); CR_TMP=$(mktemp)
+trap 'rm -f "$BODY_TMP" "$TRACE_TMP" "$CR_TMP"' EXIT
+HERE_SC=$(cd "$(dirname "$0")" && pwd)
+SRC_BODY="$BODY_FILE"
+if [ -n "$TRACE_ID" ]; then
+  # The Trace line goes at the end of Evidence (header § 6). collect_tempo.py never fails
+  # the filing: no collect.tempo → just the id; Tempo down → the id and why.
+  python3 "$HERE_SC/collect_tempo.py" --config "$CONFIG" evidence "$TRACE_ID" > "$TRACE_TMP" 2>/dev/null \
+    || printf -- '- **Trace:** `%s`\n' "$TRACE_ID" > "$TRACE_TMP"
+  python3 -c '
+import re, sys
+body = open(sys.argv[1], encoding="utf-8").read().splitlines()
+block = open(sys.argv[2], encoding="utf-8").read().splitlines()
+heads = [i for i, l in enumerate(body) if re.match(r"^#{1,3}\s+Evidence\s*$", l, re.I)]
+if heads:
+    nxt = [i for i in range(heads[-1] + 1, len(body)) if re.match(r"^#{1,3}\s", body[i])]
+    end = nxt[0] if nxt else len(body)
+    body[end:end] = [""] + block + [""]
+else:
+    body += ["", "## Evidence"] + block
+# Written as UTF-8 to a file, not stdout: a Windows console code page cannot encode ✅ / →.
+open(sys.argv[3], "w", encoding="utf-8", newline=chr(10)).write(chr(10).join(body) + chr(10))' \
+    "$BODY_FILE" "$TRACE_TMP" "$CR_TMP" || exit 70
+  SRC_BODY="$CR_TMP"
+fi
 {
-  cat "$BODY_FILE"
+  cat "$SRC_BODY"
   if [ -n "$CLOSED_HIT" ]; then
     echo; echo "> Recurrence: this fingerprint was last filed as #${CLOSED_HIT}, which is closed."
+  elif [ -n "$SEEN_BEFORE" ]; then
+    echo; echo "> Seen before in #${SEEN_BEFORE} (closed), reported by another source with the same signature."
   fi
   echo; echo "<!-- super-collect-fingerprint: ${FP} -->"
   echo "<!-- super-collect-source: ${SOURCE} -->"
+  [ -z "$SIG" ] || echo "<!-- sb-signature: ${SIG} -->"
 } > "$BODY_TMP"
+
+# Triage (header § 7): a body card-ready rejects is filed with `needs-triage`. Both filers
+# add `## Blocked by: - None.` when it is absent, so it is judged that way. A missing or
+# crashing checker counts as not ready. `triage.enabled: false` skips it.
+if [ "$(jq -r 'if .triage.enabled == false then "off" else "on" end' "$CONFIG")" = on ]; then
+  case "$TYPE" in bug) TL=bug ;; feature) TL=feature ;; *) TL="" ;; esac
+  CR_RC=0
+  python3 -c '
+import json, re, sys
+body = open(sys.argv[1], encoding="utf-8").read()
+if not re.search(r"^#{1,3}\s+Blocked by\s*$", body, re.I | re.M):
+    body += chr(10) + "## Blocked by" + chr(10) + "- None." + chr(10)
+print(json.dumps({"number": 0, "title": sys.argv[2], "body": body, "labels": [l for l in sys.argv[3:] if l]}))' \
+    "$BODY_TMP" "$TITLE" "$TL" > "$CR_TMP" \
+    && python3 "$BIN/super-board-card-ready.py" --from "$CR_TMP" --config "$CONFIG" >/dev/null 2>&1 || CR_RC=$?
+  if [ "$CR_RC" -ne 0 ]; then
+    case " ${EXTRA_LABELS[*]-} " in *" needs-triage "*) ;; *) EXTRA_LABELS+=("needs-triage") ;; esac
+  fi
+fi
 
 ERR=$(mktemp)
 case "$TYPE" in

@@ -19,7 +19,10 @@ Stdlib only. Config `collect.loki`:
 `list` prints {"source":"loki","since":…,"candidates":[…]}: one candidate per group and
 error signature (sampled lines, numbers / GUIDs / timestamps collapsed; an empty line falls
 back to structured metadata exception_message, then message / msg / body), fingerprint
-`loki|<group>|<signature hash>`. `check` is the post-deploy telemetry check: error groups
+`loki|<group>|<signature hash>`, plus `crossSignature` (collect_common.cross_signature over
+exception_type / exception_message / exception_stacktrace, "" when the entry has no
+exception) and `traceId` / `spanId` (structured metadata trace_id / span_id of the newest
+sampled entry that has one; collect_tempo.py summarises the trace). `check` is the post-deploy telemetry check: error groups
 in [deploy, deploy+window] that were not seen in the same-length window before the deploy;
 `regression` is true when there are more than --max-new of them. When the selector
 matches no log line at all after the deploy, `check` returns status "no_data" (not
@@ -118,6 +121,21 @@ def entry_message(line, stream_labels=None, meta=None):
     return "", ""
 
 
+_HEX32 = re.compile(r"[0-9a-f]{32}")
+_HEX16 = re.compile(r"[0-9a-f]{16}")
+
+
+def entry_links(stream_labels=None, meta=None):
+    """(crossSignature, traceId, spanId) for one entry, from structured metadata
+    exception_type / exception_message / exception_stacktrace and trace_id / span_id."""
+    f = entry_fields(stream_labels, meta)
+    cross = cc.cross_signature(f.get("exception_type"), f.get("exception_message"),
+                               cc.stack_top_frame(f.get("exception_stacktrace")))
+    trace = str(f.get("trace_id") or f.get("traceid") or "").strip().lower()
+    span = str(f.get("span_id") or f.get("spanid") or "").strip().lower()
+    return cross, (trace if _HEX32.fullmatch(trace) and set(trace) != {"0"} else ""),         (span if _HEX16.fullmatch(span) else "")
+
+
 def groups(st, start, end, extra="", samples=200):
     """{key: {labels, count, sigs: {sig: {count, sample, first, last}}}} for [start, end] (unix s)."""
     rng = max(1, int(end - start))
@@ -151,7 +169,14 @@ def groups(st, start, end, extra="", samples=200):
                 sig = cc.signature(msg) or "unsampled"
                 t = int(ts) // 1_000_000_000
                 sample = (msg[:300] + ("\n" + stack if stack else ""))[:1200]
-                e = sigs.setdefault(sig, {"count": 0, "sample": sample, "first": t, "last": t})
+                e = sigs.setdefault(sig, {"count": 0, "sample": sample, "first": t, "last": t,
+                                          "cross": "", "trace": "", "span": ""})
+                # Entries arrive newest first: keep the newest entry that carries each link.
+                cross, trace, span = entry_links(labels_s, meta)
+                if cross and not e["cross"]:
+                    e["cross"] = cross
+                if trace and not e["trace"]:
+                    e["trace"], e["span"] = trace, span
                 e["count"] += 1
                 e["first"], e["last"] = min(e["first"], t), max(e["last"], t)
         out[key] = {"labels": labels, "count": count, "sigs": sigs or {"unsampled": {"count": count, "sample": "", "first": None, "last": None}}}
@@ -182,7 +207,9 @@ def flatten(gs):
         for sig, e in g["sigs"].items():
             rows.append({"fingerprint": cc.fingerprint("loki", key, sig), "group": key, "labels": g["labels"],
                          "signature": sig, "sample": e["sample"], "sampleCount": e["count"],
-                         "groupCount": g["count"], "firstSeen": iso(e["first"]), "lastSeen": iso(e["last"])})
+                         "groupCount": g["count"], "firstSeen": iso(e["first"]), "lastSeen": iso(e["last"]),
+                         "crossSignature": e.get("cross") or "", "traceId": e.get("trace") or "",
+                         "spanId": e.get("span") or ""})
     rows.sort(key=lambda r: (-r["groupCount"], -r["sampleCount"]))
     return rows
 

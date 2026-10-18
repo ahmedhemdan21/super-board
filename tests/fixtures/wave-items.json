@@ -8,7 +8,8 @@
         "title": "assigned ready card",
         "assignees": [
           "someone"
-        ]
+        ],
+        "body": "## Problem\nThe cart total is wrong after a coupon.\n\n## Context\n- **Where:** Cart, `/cart`\n  - a. Add an item\n  - b. Apply coupon SAVE10\n- **Who:** any shopper\n\n## Fix\nApply the coupon before tax.\n\n## Acceptance Criteria\n- [ ] Total for a 100.00 cart with SAVE10 shows 90.00 before tax\n\n## Risk\n🟢 **Low** · one calculation.\n\n## Blocked by\n- None.\n"
       }
     },
     {
@@ -17,7 +18,8 @@
         "type": "Issue",
         "number": 12,
         "title": "first free ready card",
-        "assignees": []
+        "assignees": [],
+        "body": "## Problem\nThe cart total is wrong after a coupon.\n\n## Context\n- **Where:** Cart, `/cart`\n  - a. Add an item\n  - b. Apply coupon SAVE10\n- **Who:** any shopper\n\n## Fix\nApply the coupon before tax.\n\n## Acceptance Criteria\n- [ ] Total for a 100.00 cart with SAVE10 shows 90.00 before tax\n\n## Risk\n🟢 **Low** · one calculation.\n\n## Blocked by\n- None.\n"
       }
     },
     {
@@ -26,7 +28,8 @@
         "type": "Issue",
         "number": 14,
         "title": "second free ready card",
-        "assignees": []
+        "assignees": [],
+        "body": "## Problem\nThe cart total is wrong after a coupon.\n\n## Context\n- **Where:** Cart, `/cart`\n  - a. Add an item\n  - b. Apply coupon SAVE10\n- **Who:** any shopper\n\n## Fix\nApply the coupon before tax.\n\n## Acceptance Criteria\n- [ ] Total for a 100.00 cart with SAVE10 shows 90.00 before tax\n\n## Risk\n🟢 **Low** · one calculation.\n\n## Blocked by\n- None.\n"
       }
     },
     {
@@ -69,7 +72,8 @@
         "type": "Issue",
         "number": 15,
         "title": "unreadable dependency line",
-        "assignees": []
+        "assignees": [],
+        "body": "## Problem\nThe cart total is wrong after a coupon.\n\n## Context\n- **Where:** Cart, `/cart`\n  - a. Add an item\n  - b. Apply coupon SAVE10\n- **Who:** any shopper\n\n## Fix\nApply the coupon before tax.\n\n## Acceptance Criteria\n- [ ] Total for a 100.00 cart with SAVE10 shows 90.00 before tax\n\n## Risk\n🟢 **Low** · one calculation.\n\n## Blocked by\n- None.\n"
       }
     },
     {

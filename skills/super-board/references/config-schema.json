@@ -489,6 +489,20 @@
       "job_filter": null,
       "transport": { "kind": "http" }
     },
+    // Optional ENRICHER, not a source (never in `sources`, files nothing): when a Loki or
+    // Sentry candidate carries a traceId, super-collect-file.sh --trace-id adds a Trace line to
+    // Evidence via skills/super-collect/scripts/collect_tempo.py (GET /api/traces/<id>).
+    // Absent → the Evidence line is just the trace id.
+    "tempo": {
+      "url": "http://tempo:3200",
+      // Default: collect.loki.transport (Tempo usually sits next to Loki), else http.
+      "transport": { "kind": "ssh", "host": "dev-server", "docker_network": "app-network" },
+      // Optional Explore link: Grafana base URL + the Tempo datasource uid there. No link
+      // without both. grafana_org_id defaults to 1.
+      "grafana_url": "http://grafana:3000",
+      "grafana_datasource_uid": "tempo",
+      "grafana_org_id": 1
+    },
     "posthog": {
       // App host (us.posthog.com / eu.posthog.com or self-hosted), not the ingest host.
       "host": "https://us.posthog.com",
@@ -558,6 +572,19 @@
       "ports": [25432, 28200, 18080],
       "message": "Dev and prod share one server; only the dev containers (primecore-*, never primecore-prod-*) are in scope."
     }
+  },
+
+  // Optional. Triage before Ready (references/triage.md). The wave planner runs
+  // .claude/bin/super-board-card-ready.py on every free Ready card and holds back a card that
+  // is too vague to build (label needs-triage); super-collect labels a thin filed body the same.
+  //   enabled          — default true; false skips both checks (`/super-board triage` still works)
+  //   auto_ready       — default false: a Backlog card that triage makes ready stays in Backlog
+  //                      for a human to move; true moves it to Ready
+  //   checkable_ac_min — default 1: `- [ ]` criteria a test can assert, at minimum
+  "triage": {
+    "enabled": true,
+    "auto_ready": false,
+    "checkable_ac_min": 1
   },
 
   // Commit and PR-title header shape (writing-standard.md § 1). Optional.

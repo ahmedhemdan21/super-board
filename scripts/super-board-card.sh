@@ -23,7 +23,8 @@
 #     item-id <issue>         print the card's project item id (cached)
 #     ids                     print {projectId, fieldId, options:{name:id}} (cached)
 #     items                   the whole board in `gh project item-list --format json` shape
-#                             ({items:[{id,status,labels,title,content:{type,number,title,url,repository}}],totalCount})
+#                             ({items:[{id,status,labels,title,content:{type,number,title,url,repository,body}}],totalCount})
+#                             body: the issue body, for super-board-card-ready.py (no extra points)
 #     link <issue> --to <owner/name> --project <owner/number> --new blocks|waits
 #          --title <title> [--body-file <md>] [--why <text>]
 #                             create the counterpart of <issue> on a linked repo's board
@@ -68,7 +69,7 @@ while [ $# -gt 0 ]; do
     --owner)  OWNER="$2"; shift 2 ;;
     --number) NUMBER="$2"; shift 2 ;;
     --repo)   REPO="$2"; shift 2 ;;
-    -h|--help) sed -n '2,60p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,61p' "$0"; exit 0 ;;
     --) shift; break ;;
     -*) echo "unknown flag: $1" >&2; exit 64 ;;
     *) break ;;
@@ -197,7 +198,7 @@ items() {  # whole board, gh item-list shape, ~1 point per 100 cards
         items(first:100, after:$endCursor){ totalCount pageInfo{ hasNextPage endCursor }
           nodes{ id fieldValueByName(name:"Status"){ ... on ProjectV2ItemFieldSingleSelectValue{ name } }
             content{ __typename
-              ... on Issue { number title url repository{ nameWithOwner } labels(first:30){ nodes{ name } } }
+              ... on Issue { number title url body repository{ nameWithOwner } labels(first:30){ nodes{ name } } }
               ... on PullRequest { number title url repository{ nameWithOwner } labels(first:30){ nodes{ name } } }
               ... on DraftIssue { title } } } } } } } }' \
       -F owner="$OWNER" -F number="$NUMBER") || return $?
@@ -211,7 +212,8 @@ items() {  # whole board, gh item-list shape, ~1 point per 100 cards
             content: ({ type: .content.__typename, title: .content.title }
                       + (if .content.__typename == "DraftIssue" then {} else
                           { number: .content.number, url: .content.url,
-                            repository: .content.repository.nameWithOwner } end)) }
+                            repository: .content.repository.nameWithOwner }
+                          + (if .content.body != null then { body: .content.body } else {} end) end)) }
           + (if .fieldValueByName.name then { status: .fieldValueByName.name } else {} end)
           + (if ((.content.labels.nodes // []) | length) > 0
              then { labels: [ .content.labels.nodes[].name ] } else {} end) ] as $items

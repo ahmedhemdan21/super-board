@@ -7,7 +7,7 @@ project:read. Org / project / host / environment come from the config's
 `collect.sentry` block, falling back to SENTRY_ORG / SENTRY_PROJECT / SENTRY_URL.
 Never prints the token.
 
-    collect_sentry.py list  [--since 14d|YYYY-MM-DD] [--limit 100] [--config cfg.json]
+    collect_sentry.py list  [--since 14d|YYYY-MM-DD] [--limit 100] [--links 25] [--config cfg.json]
     collect_sentry.py event <issue_id> [--which recommended|latest|oldest]
     collect_sentry.py tags  <issue_id>
     collect_sentry.py check <issue_id> [--after YYYY-MM-DD]     # verifier: still happening?
@@ -15,7 +15,8 @@ Never prints the token.
 
 `list` prints {"source":"sentry","since":…,"candidates":[…]} sorted by urgency; each
 candidate carries its fingerprint `err|sentry|<id>`. Issues under the config's
-`min_events` / `min_users` thresholds are dropped.
+`min_events` / `min_users` thresholds are dropped. The --links most urgent (default 25)
+also carry `crossSignature` and `traceId` from their latest event (one call each).
 HTTP 429 is retried with backoff (Retry-After when sent).
 """
 from __future__ import annotations
@@ -101,7 +102,24 @@ def score(issue, now):
     return round(s, 2), active, last24
 
 
-def list_issues(st, since, limit=100, now=None):
+def event_links(e):
+    """(crossSignature, traceId) of a raw event: the raised exception (Sentry lists chained
+    causes first, so the last value) through collect_common.cross_signature, and
+    contexts.trace.trace_id."""
+    e = e if isinstance(e, dict) else {}
+    entries = {x.get("type"): x.get("data") for x in e.get("entries") or [] if isinstance(x, dict)}
+    values = (entries.get("exception") or {}).get("values") or []
+    cross = ""
+    if values:
+        x = values[-1]
+        dotnet = str(e.get("platform") or "").lower() in ("csharp", "dotnet")
+        top = cc.frames_top_frame((x.get("stacktrace") or {}).get("frames") or [], dotnet=dotnet)
+        cross = cc.cross_signature(x.get("type"), x.get("value"), top)
+    trace = str(((e.get("contexts") or {}).get("trace") or {}).get("trace_id") or "").lower()
+    return cross, trace if re.fullmatch(r"[0-9a-f]{32}", trace) else ""
+
+
+def list_issues(st, since, limit=100, now=None, links=0):
     now = now or dt.datetime.now(cc.UTC)
     params = {"statsPeriod": f"{max(1, (now - since).days)}d", "groupStatsPeriod": "24h",
               "query": "is:unresolved", "sort": "user", "limit": str(limit)}
@@ -124,6 +142,14 @@ def list_issues(st, since, limit=100, now=None):
             "stillHappening": active, "permalink": i.get("permalink"),
         })
     out.sort(key=lambda x: -x["score"])
+    # crossSignature / traceId come from each issue's latest event: one call per issue, so
+    # only the `links` most urgent are enriched (--links 0 skips it).
+    for c in out[:max(0, links)]:
+        try:
+            c["crossSignature"], c["traceId"] = event_links(
+                api(st, f"/api/0/organizations/{st['org']}/issues/{c['id']}/events/latest/", env_params(st)))
+        except SentryError as e:
+            print(f"warn: no latest event for {c['id']}: {e}", file=sys.stderr)
     return out
 
 
@@ -138,7 +164,9 @@ def event(st, issue_id, which="recommended"):
     e = api(st, f"/api/0/organizations/{st['org']}/issues/{issue_id}/events/{which}/", env_params(st))
     entries = {x.get("type"): x.get("data") for x in e.get("entries", [])}
     rel = e.get("release")
+    cross, trace = event_links(e)
     return {
+        "crossSignature": cross, "traceId": trace,
         "eventId": e.get("eventID"), "dateCreated": e.get("dateCreated"), "title": e.get("title"),
         "release": rel.get("version") if isinstance(rel, dict) else rel,
         "tags": {t["key"]: t["value"] for t in e.get("tags", []) if t.get("key") not in ("user", "user.email")},
@@ -192,6 +220,7 @@ def main(argv=None):
     lp = sub.add_parser("list")
     lp.add_argument("--since")
     lp.add_argument("--limit", type=int, default=100)
+    lp.add_argument("--links", type=int, default=25, help="enrich the N most urgent with crossSignature/traceId")
     ev = sub.add_parser("event")
     ev.add_argument("issue_id")
     ev.add_argument("--which", default="recommended", choices=["recommended", "latest", "oldest"])
@@ -207,7 +236,7 @@ def main(argv=None):
         st = settings(cfg)
         if a.cmd == "list":
             since = cc.since(a.since, cc.window_days(cfg))
-            out = {"source": "sentry", "since": since.isoformat(), "candidates": list_issues(st, since, a.limit)}
+            out = {"source": "sentry", "since": since.isoformat(), "candidates": list_issues(st, since, a.limit, links=a.links)}
         elif a.cmd == "event":
             out = event(st, a.issue_id, a.which)
         elif a.cmd == "tags":

@@ -1,8 +1,41 @@
 {
   "items": [
-    { "status": "Review", "content": { "type": "Issue", "number": 20, "title": "review card a", "assignees": [] } },
-    { "status": "Review", "content": { "type": "Issue", "number": 21, "title": "review card b", "assignees": [] } },
-    { "status": "Review", "content": { "type": "Issue", "number": 22, "title": "review card c", "assignees": [] } },
-    { "status": "Ready",  "content": { "type": "Issue", "number": 23, "title": "ready card", "assignees": [] } }
+    {
+      "status": "Review",
+      "content": {
+        "type": "Issue",
+        "number": 20,
+        "title": "review card a",
+        "assignees": []
+      }
+    },
+    {
+      "status": "Review",
+      "content": {
+        "type": "Issue",
+        "number": 21,
+        "title": "review card b",
+        "assignees": []
+      }
+    },
+    {
+      "status": "Review",
+      "content": {
+        "type": "Issue",
+        "number": 22,
+        "title": "review card c",
+        "assignees": []
+      }
+    },
+    {
+      "status": "Ready",
+      "content": {
+        "type": "Issue",
+        "number": 23,
+        "title": "ready card",
+        "assignees": [],
+        "body": "## Problem\nThe cart total is wrong after a coupon.\n\n## Context\n- **Where:** Cart, `/cart`\n  - a. Add an item\n  - b. Apply coupon SAVE10\n- **Who:** any shopper\n\n## Fix\nApply the coupon before tax.\n\n## Acceptance Criteria\n- [ ] Total for a 100.00 cart with SAVE10 shows 90.00 before tax\n\n## Risk\n🟢 **Low** · one calculation.\n\n## Blocked by\n- None.\n"
+      }
+    }
   ]
 }
