@@ -120,14 +120,23 @@ echo "$OUT" | q '.verify_commands | index("cd frontend && pnpm type-check") != n
 echo "$OUT" | q '[.verify_commands[] | select(test("nuget|docker|\\$\\{"))] | length == 0' || fail "publish/deploy steps are not checks: $OUT"
 echo "$OUT" | q '.unresolved == []' || fail "every stack is covered: $OUT"
 # real PrimeCore CI: only pull_request workflows, no deploy/release, no setup, no shell fragments
-echo "$OUT" | q '[.verify_commands[] | select(test("install|dotnet restore|commitlint|lhci|playwright|[$|]|&& .*&&|[\\\\]|-p:Version|--filter dashboard|--filter=admin"))] | length == 0' \
+echo "$OUT" | q '[.sources[] | select(.source != "install") | .cmd | select(test("install|dotnet restore|commitlint|lhci|playwright|[$|]|&& .*&&|[\\\\]|-p:Version|--filter dashboard|--filter=admin"))] | length == 0' \
   || fail "junk CI lines proposed as checks: $OUT"
+# dependency steps come first, one per stack dir: restore the solution, frozen pnpm install
+echo "$OUT" | q '.verify_commands[0:2] == ["cd backend && dotnet restore PrimeCore.Platform.slnx","cd frontend && pnpm install --frozen-lockfile"]' \
+  || fail "dependency steps must be prepended: $OUT"
+for lock in "package-lock.json:npm ci" "yarn.lock:yarn install --frozen-lockfile" "berry:yarn install --immutable"; do
+  N="$WORK/lock-${lock%%:*}"; mkdir -p "$N"
+  echo '{"scripts":{"lint":"eslint ."}}' > "$N/package.json"
+  case "${lock%%:*}" in berry) printf '__metadata:\n  version: 8\n' > "$N/yarn.lock" ;; *) : > "$N/${lock%%:*}" ;; esac
+  python3 "$SETUP" stack --root "$N" | q --arg s "${lock#*:}" '.verify_commands[0] == $s' || fail "install step for ${lock%%:*}"
+done
 echo "$OUT" | q '.verify_commands | index("cd frontend/apps/dashboard && pnpm build") != null' || fail "leading cd X && is kept: $OUT"
 echo "$OUT" | q '[.sources[] | .source | select(test("deploy|release|validate-commits|frontend-type-check"))] | length == 0' \
   || fail "non-PR or deploy/release workflows harvested: $OUT"
 rm -rf "$T/frontend/.github"
 OUT=$(python3 "$SETUP" stack --root "$T")
-echo "$OUT" | q '[.verify_commands[] | select(startswith("cd frontend"))] == ["cd frontend && pnpm run lint","cd frontend && pnpm run type-check","cd frontend && pnpm run test","cd frontend && pnpm run format:check"]' \
+echo "$OUT" | q '[.verify_commands[] | select(startswith("cd frontend"))] == ["cd frontend && pnpm install --frozen-lockfile","cd frontend && pnpm run lint","cd frontend && pnpm run type-check","cd frontend && pnpm run test","cd frontend && pnpm run format:check"]' \
   || fail "no CI falls back to package.json scripts: $OUT"
 rm -rf "$T/backend/.github/workflows/ci.yml"
 python3 "$SETUP" stack --root "$T" | q '[.unresolved[] | .stack] == ["dotnet"]' || fail "a stack with no documented check is unresolved, never invented"

@@ -721,8 +721,43 @@ def stack(root):
                 continue
         if st["stack"] != "turbo":
             unresolved.append(st)
+    # A fresh worktree has no node_modules / obj: checks fail before they test anything
+    # unless the dependency step runs first. Prepend one per stack dir that has a check.
+    installs = []
+    for st in stacks:
+        prefix = "" if st["dir"] == "." else f"cd {st['dir']} && "
+        in_dir = [c for c in commands if (c["cmd"].startswith(prefix) if prefix else not c["cmd"].startswith("cd "))]
+        step = install_step(os.path.join(root, st["dir"]), st)
+        if not step or not in_dir or any(step in c["cmd"] for c in commands + installs):
+            continue
+        installs.append({"cmd": prefix + step, "source": "install"})
+    commands = installs + commands
     return {"stacks": stacks, "verify_commands": [c["cmd"] for c in commands],
             "sources": commands, "unresolved": unresolved}
+
+
+def install_step(d, st):
+    """The dependency restore / install command for one detected stack, or None."""
+    has = lambda name: os.path.isfile(os.path.join(d, name))
+    kind = st["stack"]
+    if kind == "dotnet":
+        marker = st["marker"]
+        return f"dotnet restore {marker}" if marker.endswith((".sln", ".slnx", ".csproj")) else "dotnet restore"
+    if kind in ("pnpm", "node"):
+        if kind == "pnpm" or has("pnpm-lock.yaml"):
+            return "pnpm install --frozen-lockfile"
+        if has("yarn.lock"):
+            berry = has(".yarnrc.yml") or "__metadata:" in read(os.path.join(d, "yarn.lock"))[:2000]
+            return "yarn install --immutable" if berry else "yarn install --frozen-lockfile"
+        if has("bun.lockb") or has("bun.lock"):
+            return "bun install --frozen-lockfile"
+        return "npm ci" if has("package-lock.json") or has("npm-shrinkwrap.json") else "npm install"
+    if kind == "python":
+        if has("uv.lock"):
+            return "uv sync --frozen"
+        if has("poetry.lock"):
+            return "poetry install --no-interaction"
+    return None
 
 COMMITLINT_FILES = ["commitlint.config." + e for e in ("js", "cjs", "mjs", "ts", "cts", "mts")] + \
     [".commitlintrc"] + [".commitlintrc." + e for e in ("json", "yaml", "yml", "js", "cjs", "mjs", "ts")]
