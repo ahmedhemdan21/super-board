@@ -30,7 +30,8 @@ SUBJECT = re.compile(
     r"[a-z0-9][a-z0-9._/-]*: \S"
 )
 COMMENT_HEADER = re.compile(
-    r"^\[(builder|qa|reviewer|collect|orchestrator)\] \[(blocker|issue|suggestion|nit|question|praise|report)\] \S"
+    r"^\[(builder|qa|reviewer|collect|orchestrator|triage)\] "
+    r"\[(blocker|issue|suggestion|nit|question|praise|report|needs-info|evidence)\] \S"
 )
 TICKET_SECTIONS = ["Problem", "Context", "Fix", "Acceptance Criteria", "Risk", "Blocked by"]
 EVIDENCE_ROWS = [
@@ -252,6 +253,24 @@ def test_comment_header_regex():
     assert not COMMENT_HEADER.match("🔍 super-board · QA fail · v1")
     assert not COMMENT_HEADER.match("[QA] [report] ❌ failing")
     assert not COMMENT_HEADER.match("[qa] [fyi] ❌ failing")
+
+
+def test_header_regex_in_standard_matches_tests():
+    m = re.search(r"^Header regex: `(.+)`$", STANDARD, flags=re.M)
+    assert m and m[1] == COMMENT_HEADER.pattern, f"standard header regex drifted: {m and m[1]}"
+    assert COMMENT_HEADER.match("[triage] [needs-info] 🙋 2 questions before this card can be built")
+    assert COMMENT_HEADER.match("[collect] [evidence] 🔁 seen again · loki")
+
+
+def test_collector_markers_match_the_standard():
+    """super-collect-file.sh writes the signature, evidence marker and comment header the standard shows."""
+    src = (ROOT / "skills" / "super-collect" / "scripts" / "super-collect-file.sh").read_text(encoding="utf-8")
+    for marker in ("<!-- sb-signature: ", "<!-- sb-evidence: ", "[collect] [evidence] "):
+        assert marker in src, f"super-collect-file.sh lacks {marker}"
+        assert marker in STANDARD, f"writing-standard.md lacks {marker}"
+    assert "needs-triage" in STANDARD and "super-board-card-ready.py" in STANDARD
+    triage = (REF / "triage.md").read_text(encoding="utf-8")
+    assert "[triage] [needs-info]" in triage, "triage.md must use the standard question comment"
 
 
 def test_comment_examples_follow_the_header():

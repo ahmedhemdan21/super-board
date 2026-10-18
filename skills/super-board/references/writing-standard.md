@@ -335,6 +335,24 @@ An unavailable prior witness stays unverified. See
 The filers (`super-qa-file-bug.sh`, `super-collect-file.sh`, `super-review-file-refactor.sh`)
 refuse a body that misses a required section.
 
+**Collector cards** (`super-collect-file.sh`) carry machine lines after the body, never
+edited by hand: `<!-- super-collect-fingerprint: <fp> -->` (one source's dedupe key) and
+`<!-- sb-signature: <12 hex> -->` (the cross-source key: one exception seen by Sentry, Loki
+and PostHog has one signature). A second source with the same signature adds an evidence
+comment (§ 4) instead of a card. When the candidate has a trace id, Evidence ends with a
+Trace line, at most 10 lines:
+
+```
+- **Trace:** `0b7b05232a90b467cc6111b73ccb480a` · root `gateway` POST /api/tenants · 176.6 ms · 265 spans · 19 errors
+  - services: `gateway`, `admin-bff`
+  - ❌ `admin-bff` ImportExternalImageCommand · 422.5 ms · EntitlementException · ×19
+  - [Open in Grafana Explore](<grafana_url>/explore?panes=…&schemaVersion=1&orgId=1)
+```
+
+A card that is not ready (`super-board-card-ready.py`: a required section missing or empty,
+no checkable criterion, an unreadable `## Blocked by`, a bug without Evidence) gets the
+`needs-triage` label and stays out of every wave until `/super-board triage` fixes it.
+
 ## 4 · Comment
 
 ### Author notes on a PR
@@ -372,12 +390,12 @@ Next: <owner>
 
 | Field | Values |
 |---|---|
-| role (who writes it) | `builder` · `qa` · `reviewer` · `collect` · `orchestrator` |
-| label | `blocker` · `issue` · `suggestion` · `nit` · `question` · `praise` · `report` |
+| role (who writes it) | `builder` · `qa` · `reviewer` · `collect` · `orchestrator` · `triage` |
+| label | `blocker` · `issue` · `suggestion` · `nit` · `question` · `praise` · `report` · `needs-info` · `evidence` |
 | status emoji | ✅ pass/done · ❌ fail · ⏳ in progress · 🛑 blocked · 🙋 needs you · ↩️ moved back · ⚠️ warning |
 | Next | `builder` · `qa` · `reviewer` · `Eric` · `none` |
 
-Header regex: `^\[(builder|qa|reviewer|collect|orchestrator)\] \[(blocker|issue|suggestion|nit|question|praise|report)\] \S`
+Header regex: `^\[(builder|qa|reviewer|collect|orchestrator|triage)\] \[(blocker|issue|suggestion|nit|question|praise|report|needs-info|evidence)\] \S`
 
 - ≤ 8 lines of prose. Evidence before adjectives: the command, the sha, the file:line.
 - Machine lines (`Local tests:`, `gh-quota-on-exit:`, `blocked-by:`, `root-cause-hash:`) go
@@ -394,6 +412,30 @@ Did: ran AC1–AC2, desktop + mobile
 ❌ Not done: AC1 mobile: message under the keyboard
 Next: builder
 Local tests: npx playwright test e2e/upload-size.spec.ts
+```
+
+**Triage questions** — `/super-board triage` posts ONE comment per card for what it cannot
+derive from the card, the evidence or the code; numbered questions, never invented answers:
+
+```
+[triage] [needs-info] 🙋 2 questions before this card can be built
+Did: rewrote the body into the ticket format; original kept under Original
+❌ Not done: Acceptance Criteria for the business rule, Risk
+Next: Eric
+1. What should a shopper see when the coupon has expired: an error, or the full price?
+2. Should an expired coupon still count toward the per-user limit?
+```
+
+**Evidence from another source** — `super-collect-file.sh` posts it when an open card already
+carries the same `sb-signature`; at most one per source per card per 24 hours:
+
+```
+[collect] [evidence] 🔁 seen again · loki
+Did: matched sb-signature `c0c08d47b4b6` from loki (`loki|admin-bff|9f3a1c2b4d5e`)
+✅ Done: 19 events · first 2026-10-17T09:12:00Z · last 2026-10-18T08:40:00Z
+Trace: `0b7b05232a90b467cc6111b73ccb480a`
+Next: none
+<!-- sb-evidence: loki:loki|admin-bff|9f3a1c2b4d5e -->
 ```
 
 **Review threads** (line-level, resolvable) start with the lane that owns the fix, then the

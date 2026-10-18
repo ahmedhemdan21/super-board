@@ -739,7 +739,7 @@ usual template — and, per §4, a `blocked-by:` line.
 
 ### The wave-start sweep
 
-Before planning any wave, `super-board-wave-plan.sh` reports five lists the orchestrator must act on
+Before planning any wave, `super-board-wave-plan.sh` reports six lists the orchestrator must act on
 **before** launching:
 
 - **`sweep`** — `Blocked` cards whose blockers have all closed. Move each to `Ready` and comment
@@ -762,6 +762,10 @@ Before planning any wave, `super-board-wave-plan.sh` reports five lists the orch
 - **`flag`** — cards whose `## Blocked by` section could not be parsed. Leave them where they are
   and comment asking for the line to be fixed, quoting the `why`. Never guess: a card treated as
   free on an unreadable line gets built against a base that does not have what it needs.
+- **`triage`** — free `Ready` cards `super-board-card-ready.py` judged too vague (a required
+  section missing or empty, no checkable criterion, a bug without Evidence). They are not in
+  `cards`. Label each `needs-triage`, leave it in Ready, and comment once with its `missing` list;
+  `/super-board triage` (references/triage.md) rewrites it. `triage.enabled: false` turns it off.
 
 **Why the sweep exists.** `Blocked` used to be terminal. A card parked naming the issue it waited
 for, that issue later merged, and nothing ever read the note back — the run's own done-condition
