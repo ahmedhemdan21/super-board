@@ -53,6 +53,9 @@ fi
 
 # ───────────────────────────── config read ─────────────────────────────
 BOT_LOGIN=$(jq -r '.notifications.bot_identity // .bot_identity // ""' "$CONFIG_PATH")
+# Every gh issue/pr/run call targets the config's repo, not whatever the cwd is (GH_REPO).
+GH_REPO_NAME=$(jq -r '.repo.remote // ""' "$CONFIG_PATH" | tr -d '\r' | sed -E 's#^(https?://github\.com/|git@github\.com:)##; s#\.git$##')
+[ -z "$GH_REPO_NAME" ] || export GH_REPO="$GH_REPO_NAME"
 INFLIGHT_DIR=".claude/super-board/inflight"
 RUN_DATE=$(date +%Y-%m-%d)
 RUN_MANIFEST="docs/super-board/runs/${RUN_DATE}-${CONFIG_SLUG}.md"

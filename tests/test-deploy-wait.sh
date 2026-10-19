@@ -351,6 +351,16 @@ is "exit 75" 75 "$RC"
 [ -f "$WORK/lane/.claude/super-board/deploy/$SHA.json" ] && ok "state in the lane's repo.path" || bad "state in the lane's repo.path" "lane state file" "$(find "$WORK" -name "$SHA.json")"
 [ -e "$WORK/main/.claude" ] && bad "main clone untouched" "no main/.claude" "created" || ok "main clone untouched"
 
+echo "== every gh call names the config's repo (a hub run calls from another member's cwd)"
+config "$GOOD"
+jq '.repo.remote = "https://github.com/acme/app.git"' "$WORK/cfg.json" > "$WORK/cfg2.json" && mv "$WORK/cfg2.json" "$WORK/cfg.json"
+RUN_SEQ="completed:failure" run
+is "exit 10" 10 "$RC"
+has "pr view names the repo" "$(cat "$GH_LOG")" "pr view 12 --repo acme/app"
+has "run list names the repo" "$(cat "$GH_LOG")" "run list --repo acme/app --workflow"
+has "run view names the repo" "$(cat "$GH_LOG")" "run view 42 --repo acme/app"
+hasnt "no gh issue/pr/run call without it" "$(grep -E '^(issue|pr|run) ' "$GH_LOG" | grep -v -- '--repo acme/app')" "a"
+
 echo
 echo "PASS: $PASS  FAIL: $FAIL"
 [ "$FAIL" -eq 0 ]

@@ -194,7 +194,7 @@ bounce forever on a moving target.
 `prior_report` is the newest PR comment carrying it:
 
 ```bash
-gh pr view <PR> --json comments \
+gh pr view <PR> --repo <owner/repo> --json comments \
   --jq '[.comments[] | select(.body | contains("<!-- super-review:report -->"))] | last | {url, body} // {}'
 ```
 
@@ -344,10 +344,10 @@ Builder opens PRs as **drafts**, and GitHub never auto-merges a draft. Skipping 
 `gh pr ready` step is why a six-hour run landed zero commits on `main` while producing
 two complete builds. In order, no shortcuts:
 
-1. `gh pr ready <PR>` — idempotent, safe on an already-ready PR.
+1. `gh pr ready <PR> --repo <owner/repo>` — idempotent, safe on an already-ready PR.
 2. Merge through the gate, pinned to the head you reviewed (`merge_policy.default: "human"`
    keeps a person on every merge — the gate returns exit 7 below):
-   record `gh pr view <PR> --json headRefOid` when review passes, then
+   record `gh pr view <PR> --repo <owner/repo> --json headRefOid` when review passes, then
    `super-board-merge-gate.sh --config <cfg> --pr <PR> --expect-head <sha> --subject "<PR title>"
    --body-file <msg.md>` (it merges with `--match-head-commit`; the message is the PR title plus the
    commit bullets and `Closes #N` — writing-standard.md § 1; with `writing.commit_format: "conventional"` the gate
@@ -394,7 +394,7 @@ two complete builds. In order, no shortcuts:
    do not classify missing data as safe, bounce it to Build, or post a new approval
    request. Explicit recovery is in run-workflow.md → Required GitHub evidence.
 
-   `gh pr view <PR> --json state,mergeCommit` must report `MERGED` plus a commit sha,
+   `gh pr view <PR> --repo <owner/repo> --json state,mergeCommit` must report `MERGED` plus a commit sha,
    and that sha must be an ancestor of the base branch
    (`git merge-base --is-ancestor <sha> origin/<base>`).
 4. Only then: close the issue, move card Review → **Done**, post the ✅ comment citing

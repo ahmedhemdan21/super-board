@@ -56,7 +56,7 @@ Exit 0 ready, 3 not ready (the JSON names `missing` and `hints`), 64 bad input.
 
    Keep every machine line (`<!-- super-collect-fingerprint … -->`, `<!-- sb-signature … -->`,
    `<!-- super-qa-meta … -->`) outside the fold, unchanged. Edit with
-   `gh issue edit <N> --body-file <file>`, once.
+   `gh issue edit <N> --repo <owner/repo> --body-file <file>`, once.
 4. **Ask** what you could not derive in ONE comment (writing-standard.md § 4), numbered
    questions, nothing else. Skip it when nothing is missing. Do not post a second question
    comment while one is unanswered; edit it.

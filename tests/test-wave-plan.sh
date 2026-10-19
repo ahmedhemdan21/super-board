@@ -224,4 +224,74 @@ echo "$OUT22" | jq -e '.foreign[0].why | test("linked repo")' >/dev/null || fail
 OUT22B=$("$PLAN" --config <(echo "$KCFG") --items <(echo "$KITEMS" | jq '.items |= map(select(.content.repository != "acme/api"))') --deps <(echo "$KDEPS"))
 echo "$OUT22B" | jq -e '.cards == [] and (.foreign | length) == 4' >/dev/null || fail "web #7 must not be planned on api #7's verdict: $OUT22B"
 
-echo "PASS: test-wave-plan.sh (22 scenarios)"
+# 23 — hub board (hub.md → Config). A members config plans backend (acme/api) and
+#      frontend (acme/web) each as home over one board read; every card carries
+#      `member`. acme/other and the hub repo's own card are `foreign`. Frontend #7
+#      waits on open acme/api#3 and stays; frontend #8 waits on closed acme/api#2 and
+#      is swept: members trust each other without linked_repos. The graph is derived
+#      for real (deps.sh --from per repo); a stub only records the --linked it got.
+HUB="$STUBBIN/hub"; mkdir -p "$HUB/.claude/super-board/configs" "$HUB/backend" "$HUB/frontend"
+cp ../scripts/super-board-config.py ../scripts/super-board-approval.py "$STUBBIN/"
+cp ../scripts/super-board-deps.sh "$STUBBIN/super-board-deps-real.sh"
+cat > "$STUBBIN/super-board-deps.sh" <<STUB
+#!/usr/bin/env bash
+r=""; a=("\$@"); while [ \$# -gt 0 ]; do [ "\$1" = --repo ] && r="\$2"; shift; done
+printf '%s %s\n' "\$r" "\${a[*]}" >> "$STUBBIN/deps-calls"
+exec "$STUBBIN/super-board-deps-real.sh" --from "$STUBBIN/deps-\${r//\//_}.json" "\${a[@]}"
+STUB
+chmod +x "$STUBBIN/super-board-deps.sh"
+cp ../scripts/super-board-wave-plan.sh "$STUBBIN/super-board-wave-plan.sh"
+cp ../scripts/super-board-card-ready.py "$STUBBIN/"
+WEB7=$(printf '%s' "$GOODBODY" | sed 's/^- None\.$/- acme\/api#3 — the endpoint/')
+WEB8=$(printf '%s' "$GOODBODY" | sed 's/^- None\.$/- https:\/\/github.com\/acme\/api\/issues\/2/')
+jq -n --arg b "$GOODBODY" '[{number:7, title:"api seven", state:"OPEN", body:$b}]' > "$STUBBIN/deps-acme_api.json"
+jq -n --arg w7 "$WEB7" --arg w8 "$WEB8" --arg b "$GOODBODY" '{issues: [
+    {number:7, title:"web seven", state:"OPEN", body:$w7},
+    {number:8, title:"web eight", state:"OPEN", body:$w8},
+    {number:9, title:"web nine", state:"OPEN", body:$b}],
+  foreign: {"acme/api#3": {__typename:"Issue", state:"OPEN"},
+            "acme/api#2": {__typename:"Issue", state:"CLOSED", stateReason:"COMPLETED"}}}' > "$STUBBIN/deps-acme_web.json"
+HCFG="$HUB/.claude/super-board/configs/hub.json"
+jq -n '{project:{owner:"acme", number:3}, hub:{remote:"https://github.com/acme/docs"},
+  members:{backend:{repo:{path:"backend", remote:"https://github.com/acme/api"}, base_branch:"dev"},
+           frontend:{repo:{path:"frontend", remote:"https://github.com/acme/web"}, base_branch:"dev"}},
+  verify_commands:["git diff --check"]}' > "$HCFG"
+HITEMS=$(jq -n --arg b "$GOODBODY" --arg w7 "$WEB7" '{items: [
+  {status:"Ready",   content:{type:"Issue", number:7, title:"api seven", repository:"acme/api", assignees:[], body:$b}},
+  {status:"Ready",   content:{type:"Issue", number:7, title:"web seven", repository:"acme/web", assignees:[], body:$w7}},
+  {status:"Blocked", content:{type:"Issue", number:8, title:"web eight", repository:"acme/web", assignees:[]}},
+  {status:"QA",      content:{type:"Issue", number:9, title:"web nine", repository:"acme/web", assignees:[]}},
+  {status:"Ready",   content:{type:"Issue", number:1, title:"other one", repository:"acme/other", assignees:[]}},
+  {status:"Ready",   content:{type:"Issue", number:4, title:"hub parent", repository:"acme/docs", assignees:[]}}]}')
+echo "$HITEMS" > "$STUBBIN/hub-items.json"
+OUT23=$("$STUBBIN/super-board-wave-plan.sh" --config "$HCFG" --items "$STUBBIN/hub-items.json") || fail "hub plan failed"
+echo "$OUT23" | jq -e '[.cards[] | "\(.member):\(.repository)#\(.number):\(.lane)"] == ["frontend:acme/web#9:qa","backend:acme/api#7:build"]' >/dev/null \
+  || fail "both members' cards are planned with member, in flight first, got: $(echo "$OUT23" | jq -c .cards)"
+echo "$OUT23" | jq -e '[.foreign[] | "\(.repository)#\(.number)"] == ["acme/docs#4","acme/other#1"]' >/dev/null \
+  || fail "only non-member repos are foreign, got: $(echo "$OUT23" | jq -c .foreign)"
+echo "$OUT23" | jq -e '.foreign | all(.why == "card from \(.repository): not a member of this board")' >/dev/null \
+  || fail "foreign why names the repo: $(echo "$OUT23" | jq -c .foreign)"
+echo "$OUT23" | jq -e '.sweep == [{number:8, repository:"acme/web", title:"web eight", clearedBy:["acme/api#2"], member:"frontend"}]' >/dev/null \
+  || fail "a cross-member blocker that closed sweeps the card, got: $(echo "$OUT23" | jq -c .sweep)"
+echo "$OUT23" | jq -e '.flag == [] and .triage == [] and .stranded == []' >/dev/null \
+  || fail "a cross-member ref is trusted, never flagged: $OUT23"
+grep -q '^acme/web .*--linked acme/api ' "$STUBBIN/deps-calls" && grep -q '^acme/api .*--linked acme/web ' "$STUBBIN/deps-calls" \
+  || fail "each member's graph links the other members, got: $(cat "$STUBBIN/deps-calls")"
+# max_workers caps the merged wave, in-flight first; --deps per member stays offline.
+jq '.max_workers = 1' "$HCFG" > "$HCFG.tmp" && mv "$HCFG.tmp" "$HCFG"
+HDEPS=$(jq -n --argjson a "$(../scripts/super-board-deps.sh --from "$STUBBIN/deps-acme_api.json" --repo acme/api)" \
+              --argjson w "$(../scripts/super-board-deps.sh --from "$STUBBIN/deps-acme_web.json" --repo acme/web --linked acme/api)" \
+              '{backend:$a, frontend:$w}')
+OUT23B=$("$STUBBIN/super-board-wave-plan.sh" --config "$HCFG" --items "$STUBBIN/hub-items.json" --deps <(echo "$HDEPS")) || fail "hub plan with --deps failed"
+echo "$OUT23B" | jq -e '[.cards[] | "\(.member):\(.number)"] == ["frontend:9"]' >/dev/null \
+  || fail "max_workers caps the merged wave, got: $(echo "$OUT23B" | jq -c .cards)"
+# A halt in one member stops the hub plan (board-wide --check), naming the member.
+mkdir -p "$HUB/frontend/.claude/super-board" && echo '{}' > "$HUB/frontend/.claude/super-board/github-halt.json"
+RC=0; ERR=$("$STUBBIN/super-board-wave-plan.sh" --config "$HCFG" --items "$STUBBIN/hub-items.json" 2>&1 >/dev/null) || RC=$?
+[ "$RC" -eq 79 ] && echo "$ERR" | grep -q 'frontend' || fail "a member halt must stop the hub plan (79, naming it), got $RC: $ERR"
+# An invalid hub config is refused before anything is read.
+jq '.repo = {path:".", remote:"https://github.com/acme/x"}' "$HCFG" > "$HCFG.tmp" && mv "$HCFG.tmp" "$HCFG"
+RC=0; "$STUBBIN/super-board-wave-plan.sh" --config "$HCFG" --items "$STUBBIN/hub-items.json" >/dev/null 2>&1 || RC=$?
+[ "$RC" -eq 65 ] || fail "a members config with a top-level repo must exit 65, got $RC"
+
+echo "PASS: test-wave-plan.sh (23 scenarios)"

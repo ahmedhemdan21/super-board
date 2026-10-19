@@ -83,10 +83,16 @@ TICK_SECONDS=$(jq -r '.tick_seconds // 120' "$CONFIG_PATH")
 MAX_WORKERS=$(jq -r '.max_workers // 3' "$CONFIG_PATH")
 BOT_LOGIN=$(jq -r '.notifications.bot_identity // .bot_identity // ""' "$CONFIG_PATH")
 WORKER_BACKEND=$(jq -r '.worker_backend // "workflow"' "$CONFIG_PATH")
+# Every gh issue/pr/run call targets the config's repo, not whatever the cwd is (GH_REPO).
+GH_REPO_NAME=$(jq -r '.repo.remote // ""' "$CONFIG_PATH" | tr -d '\r' | sed -E 's#^(https?://github\.com/|git@github\.com:)##; s#\.git$##')
+[ -z "$GH_REPO_NAME" ] || export GH_REPO="$GH_REPO_NAME"
 # Runaway controls (issue #8). NO_PROGRESS_CYCLES counts dispatch cycles with no
 # card reaching Done, regardless of lane occupancy. MAX_DISPATCHES=0 disables the ceiling.
 NO_PROGRESS_CYCLES=$(jq -r '.no_progress_cycles // 6' "$CONFIG_PATH")
 MAX_DISPATCHES=$(jq -r '.max_dispatches // 0' "$CONFIG_PATH")
+
+# A hub (members) config plans but does not run until P4 (hub.md): exit 78.
+python3 "$(dirname "$SB_GITHUB_READ")/super-board-config.py" run-gate --config "$CONFIG_PATH" || exit $?
 
 # Workflow is the default backend (v1.6.0). This legacy dispatcher only runs
 # when the config opts in explicitly — never by accident or stale habit.

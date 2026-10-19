@@ -311,7 +311,7 @@ acceptable; a fix can silently disable a feature to make a wrong spec pass.
    - <spec that proves it>
    Refs #${ISSUE_N}"
    git push -u origin HEAD
-   gh pr create \
+   gh pr create --repo <owner/repo> \
      --title "🐛 [fix] <area>: <one-line bug summary>" \
      --label super-qa \
      --label "$([[ "$SIGNAL" = "objective" ]] && echo auto-merge-candidate || echo needs-human-review)" \

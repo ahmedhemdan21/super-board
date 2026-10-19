@@ -46,16 +46,16 @@ let halted = false
 // Valid form per --kind, from validate() in scripts/super-board-github-read.py (#32).
 const READ_SHAPES = [
   `Read shapes (helper: .claude/bin/super-board-github-read.py --kind <kind> -- <gh args>):`,
-  `- issue title+body: --kind issue -- issue view <N> --json number,title,body`,
+  `- issue title+body: --kind issue -- issue view <N> --repo {owner}/{repo} --json number,title,body`,
   `- issue comments: --kind comments -- api repos/{owner}/{repo}/issues/<N>/comments --paginate --slurp (zero comments = [[]])`,
   `- other JSON, incl. maybe-empty lists: --kind json -- <gh args> (no --jq that prints a plain string)`,
-  `- PR branch+head: --kind head -- pr view <N> --json headRefName,headRefOid --jq '"\\(.headRefName) \\(.headRefOid)"'`,
-  `- PR body+head: --kind body -- pr view <N> --json body,headRefOid`,
-  `- PR metadata: --kind metadata -- pr view <N> --json files,labels,body,additions,deletions,changedFiles`,
-  `- issue state: --kind state -- issue view <N> --json state --jq .state`,
+  `- PR branch+head: --kind head -- pr view <N> --repo {owner}/{repo} --json headRefName,headRefOid --jq '"\\(.headRefName) \\(.headRefOid)"'`,
+  `- PR body+head: --kind body -- pr view <N> --repo {owner}/{repo} --json body,headRefOid`,
+  `- PR metadata: --kind metadata -- pr view <N> --repo {owner}/{repo} --json files,labels,body,additions,deletions,changedFiles`,
+  `- issue state: --kind state -- issue view <N> --repo {owner}/{repo} --json state --jq .state`,
   `A read whose output misses its shape exits 64 for that call only and prints the valid form: fix the read, do not halt.`,
   // A lane once queried a guessed repo name (owner + folder name) and halted the run (seen 2026-10-18).
-  `{owner}/{repo} (REST paths, GraphQL owner/name) is exactly the owner/name in repo.remote of ${input.configPath}; never derive it from folder names, the git root or memory. Plain gh issue/pr commands in the project checkout already target it.`,
+  `{owner}/{repo} (REST paths, GraphQL owner/name) is exactly the owner/name in repo.remote of ${input.configPath}; never derive it from folder names, the git root or memory. Pass --repo {owner}/{repo} on every gh issue/pr/run command, wherever it runs.`,
 ].join('\n')
 const READ_FAILURE = READ_SHAPES + '\n' + `Verification-readiness exit 9 means missing/unusable config.verify_commands: preserve card/worktree/approval/claims, report status=halted (preflight verdict=halted), stop dispatch, repair project configuration before explicit restart; no Build bounce or automatic retries. ` + `Required GitHub reads use .claude/bin/super-board-github-read.py: three total attempts, exit 79 means run halted. Check --check before any GitHub write, migration, or merge. On exit 79 preserve worktree/card/approval/claims, make no more GitHub calls, and report status=halted (preflight verdict=halted). Never retry a mutation. Config: ${input.configPath}.`
 
@@ -363,7 +363,7 @@ const results = await pipeline(
       (typed
         ? `Its label says "${typed}": return kind "${typed}" — the label routes the card, you never override it.`
         : `It has no type label, so it is built (no label = Building). Return feature or bug — never qa, ` +
-          `which only a person sets. Existing docs/ux/tests/refactor/tech-debt rows keep their label chain: classify complexity without adding feature/bug. For a truly untyped card, re-run skills-ready against a copy of this card with the proposed label before any label write, then add that label: gh issue edit ${card.number} --add-label <kind>.`),
+          `which only a person sets. Existing docs/ux/tests/refactor/tech-debt rows keep their label chain: classify complexity without adding feature/bug. For a truly untyped card, re-run skills-ready against a copy of this card with the proposed label before any label write, then add that label: gh issue edit ${card.number}${card.repository ? ` --repo ${card.repository}` : ''} --add-label <kind>.`),
       { label: `classify:#${card.number}`, phase: 'Classify', model: classifyModel, schema: CLASSIFY_SCHEMA }
     )
     if (cls && cls.status === 'halted') halted = true

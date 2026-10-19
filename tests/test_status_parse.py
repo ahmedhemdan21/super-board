@@ -409,6 +409,42 @@ def test_items_query_reads_repository() -> None:
     assert "repository { nameWithOwner }" in sbs.ITEMS_QUERY
 
 
+def test_every_issue_read_names_its_repo() -> None:
+    """A hub config (members, no top-level repo): each Blocked card's comments are read
+    with --repo <its repo>, never from the cwd's repo."""
+    import contextlib, io, json as _json, os, tempfile
+    cfg = {"project": {"owner": "acme", "title": "Acme", "number": 3}, "hub": {"remote": "https://github.com/acme/docs"},
+           "members": {"backend": {"repo": {"path": "backend", "remote": "https://github.com/acme/api"},
+                                   "base_branch": "dev"},
+                       "frontend": {"repo": {"path": "frontend", "remote": "https://github.com/acme/web"},
+                                    "base_branch": "dev"}}}
+    page = {"data": {"repositoryOwner": {"projectV2": {"items": {
+        "pageInfo": {"endCursor": None, "hasNextPage": False},
+        "nodes": [_node(7, "acme/api", "Blocked"), _node(7, "acme/web", "Blocked")]}}}}}
+    calls: list = []
+
+    def fake_gh(*args: str, check: bool = True) -> str:
+        calls.append(list(args))
+        return _json.dumps(page) if args[:2] == ("api", "graphql") else '{"comments": []}'
+
+    real_gh, real_argv, cwd = sbs.gh, sys.argv, os.getcwd()
+    with tempfile.TemporaryDirectory() as tmp:
+        conf = Path(tmp) / ".claude/super-board/configs/hub.json"
+        conf.parent.mkdir(parents=True)
+        conf.write_text(_json.dumps(cfg), encoding="utf-8")
+        try:
+            sbs.gh, sys.argv = fake_gh, ["super-board-status.py", "hub"]
+            os.chdir(tmp)
+            with contextlib.redirect_stdout(io.StringIO()):
+                sbs.main()
+        finally:
+            sbs.gh, sys.argv = real_gh, real_argv
+            os.chdir(cwd)
+    views = [c for c in calls if c[:2] == ["issue", "view"]]
+    assert sorted(c[c.index("--repo") + 1] for c in views if "--repo" in c) == ["acme/api", "acme/web"], views
+    assert all("--repo" in c for c in views), views
+
+
 def _run() -> int:
     tests = [
         (name, fn) for name, fn in globals().items()

@@ -5,6 +5,7 @@ A logical read gets three total attempts. Success resets its own sequence; other
 reads cannot reset it. Permanent query/auth errors stop on the first attempt.
 The halt file is shared through the main checkout, including linked worktrees.
 Only an explicit new run clears it with --resume after preserving the old reason.
+`--check --config C` checks a whole board: the hub checkout and every member's.
 Mutations never enter this retry helper. For the agent-facing kinds in FORMS, a
 payload that fails its shape on every attempt is the caller's malformed read, not
 an outage: that call exits 64 with the valid form and the run keeps going. Scripts
@@ -125,6 +126,36 @@ def board_root(cwd):
 def check_halt():
     if halt_path().exists():
         raise ReadHalted('GitHub reads are halted; inspect the saved reason and explicitly restart the run')
+
+
+def check_board(config):
+    """--check --config: the hub checkout's halt file and every member checkout's.
+    A halt anywhere stops the whole board run; the message names where."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'sb_config', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'super-board-config.py'))
+    resolver = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(resolver)
+    try:
+        cfg = resolver.checked(config)
+    except resolver.ConfigError as error:
+        raise ValueError(f'config: {error}') from None
+    except SystemExit as error:
+        raise ValueError(str(error.code)) from None
+    places = [(m['key'] or 'repo', m['path']) for m in resolver.members_of(cfg, config)]
+    if 'members' in cfg:
+        places.insert(0, ('hub', resolver.hub_path(cfg, config)))
+    halted = []
+    for name, path in places:
+        halt_file = board_root(Path(path)) / '.claude/super-board/github-halt.json'
+        if halt_file.exists():
+            halted.append(f'{name} ({halt_file})')
+    override = os.environ.get('SB_GITHUB_HALT_FILE')
+    if override and Path(override).exists():
+        halted.append(f'override ({override})')
+    if halted:
+        raise ReadHalted('GitHub reads are halted in ' + ', '.join(halted)
+                         + '; inspect the saved reason and explicitly restart the run')
 
 
 def halt(reason, attempts, operation=None):
@@ -442,6 +473,7 @@ def main():
     parser.add_argument('--issue-history', help='complete paginated all-state issue history for owner/name')
     parser.add_argument('--meta')
     parser.add_argument('--check', action='store_true')
+    parser.add_argument('--config', help='with --check: check the hub and every member checkout of this config')
     parser.add_argument('--halt', help='record an unresolved mutation outcome and stop; never retry it')
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('command', nargs=argparse.REMAINDER)
@@ -470,7 +502,10 @@ def main():
                 path.replace(path.with_name(f'github-halt-{time.time_ns()}.json'))
             return 0
         if args.check:
-            check_halt()
+            if args.config:
+                check_board(args.config)
+            else:
+                check_halt()
             return 0
         if args.issue_history:
             require(re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', args.issue_history) is not None, 'issue history requires owner/name')
@@ -484,7 +519,8 @@ def main():
         sys.stdout.write(output)
         return 0
     except ReadHalted as error:
-        print(f'[github-read] HALT: {error}. Saved at {halt_path()}', file=sys.stderr)
+        where = '' if args.check and args.config else f' Saved at {halt_path()}'
+        print(f'[github-read] HALT: {error}.{where}', file=sys.stderr)
         return HALTED
     except (ValueError, OSError) as error:
         print(f'[github-read] {error}', file=sys.stderr)

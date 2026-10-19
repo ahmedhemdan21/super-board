@@ -49,3 +49,53 @@ GitHub spells them.
 
 Later: member cards (P4) get worktree and branch names with a member prefix, so `issue-7` of
 two members never share a folder.
+
+## Config
+
+P2: a hub config plans and resolves; running a members board arrives in P4. Until then
+`/super-board run` refuses one (`super-board-config.py run-gate`, exit 78), as do the
+legacy runner and the Codex wave.
+
+```json
+{ "project": { "owner": "acme", "title": "Acme", "number": 3 },
+  "hub": { "remote": "https://github.com/acme/docs", "path": "." },
+  "members": {
+    "backend":  { "repo": { "path": "backend",  "remote": "https://github.com/acme/api" },
+                  "base_branch": "dev", "verify_commands": ["dotnet test"],
+                  "collect": { "sources": ["loki"] } },
+    "frontend": { "repo": { "path": "frontend", "remote": "https://github.com/acme/web" },
+                  "base_branch": "dev" } },
+  "split": { "default_order": ["backend", "frontend"], "confirm": true },
+  "collect": { "sources": ["slack", "github"] },
+  "verify_commands": ["git diff --check"], "max_workers": 6 }
+```
+
+- **Members**: one or more (a board can be onboarded one repo at a time). Keys match
+  `^[a-z][a-z0-9-]{0,30}$`. Each needs `repo.remote` (unique, not the hub's), `repo.path`
+  and `base_branch`. Paths are relative to the board root (the folder holding
+  `.claude/super-board/configs/`; members are usually its submodule folders) or absolute.
+- **No top-level `repo`** in a members config: the hub repo is `hub`, code repos are members.
+- **Per member** (member wins over a top-level default): `repo`, `base_branch`,
+  `verify_commands`/`verify_retry`/`merge_gate`, `merge_policy`, `migrations`, `deploy`,
+  `target`/`qa`, `env_check`, `runtime_verification`, `refine`, `writing`, `paths`, `guard`,
+  `linked_repos`, `collect` (merged one level: a member's `collect.sources` replaces the board's).
+- **Per board** (a member setting one is refused): `project`, `columns`, `labels`, `triage`,
+  `max_workers`, `worker_backend`, `model_tier`, `no_progress_cycles`, `rebuild_cap`,
+  `notifications`.
+
+`scripts/super-board-config.py` is the one resolver:
+
+| Command | Gives |
+|---|---|
+| `validate --config C` | exit 65 with every reason; `super-board-setup.py check` runs it per config |
+| `member <key> --config C [--out F \| --path]` | a full single-repo config: `repo.path` absolute, `member`, `hub_config`, the other members added to `linked_repos`. `--path` caches it at `.claude/super-board/resolved/<slug>.<key>.json` (gitignored; rebuilt when the source is newer) and prints the path |
+| `members --config C` | `[{key, repo, path}]`; a single-repo config is one member with key `""` |
+| `for-repo <owner/name> --config C` | the member key; exit 3 when not a member |
+| `run-gate --config C` | exit 78 for a members config |
+
+Every single-repo script (merge gate, deploy wait, preflight, verify, card.sh) takes the
+resolved config unchanged. `super-board-wave-plan.sh --config <hub config>` plans each member
+as home over one board read: every card carries `member`, `foreign` lists only repos that
+are no member (the hub's own parents too, until P3), `max_workers` caps the merged wave.
+`super-board-github-read.py --check --config C` checks the hub's and every member's halt
+file. Every `gh issue|pr|run` call names `--repo`.

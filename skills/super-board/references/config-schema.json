@@ -103,7 +103,34 @@
   },
 
   // `{path, remote}`. `remote` can be `null` for local-only (no pull requests).
+  // Not set in a hub config (`members` below): the hub repo goes in `hub`.
   "repo": { "path": ".", "remote": "https://github.com/<owner>/<repo>" },
+
+  // HUB BOARDS (hub.md → Config). Optional; absent = a single-repo board, as above.
+  // One board over several member repos. Parents are filed in the hub repo; code,
+  // PRs, merge gates and deploys stay in each member. `scripts/super-board-config.py`
+  // validates the shape and resolves one member into a full single-repo config
+  // (board-wide keys + the member's, member wins, `collect` merged one level).
+  // The hub repo: `remote` required; `path` is its checkout, relative to the board root
+  // (the folder holding .claude/super-board/configs/), default ".".
+  "hub": { "remote": "https://github.com/<owner>/<hub-repo>", "path": "." },
+  // At least one member. Keys match ^[a-z][a-z0-9-]{0,30}$. Each needs `repo.remote`
+  // (unique, not the hub's), `repo.path` (relative to the board root, or absolute) and
+  // `base_branch`. Per-repo keys go here: verify_commands, verify_retry, merge_gate,
+  // merge_policy, migrations, deploy, target, qa, env_check, runtime_verification,
+  // refine, writing, paths, guard, linked_repos, collect (e.g. collect.sentry.project).
+  // Board-wide keys (project, columns, labels, triage, max_workers, worker_backend,
+  // model_tier, no_progress_cycles, rebuild_cap, notifications) stay top level; a
+  // member that sets one is refused. Members trust each other's issues as blockers.
+  "members": {
+    "backend": { "repo": { "path": "backend", "remote": "https://github.com/<owner>/<api>" },
+                 "base_branch": "dev", "verify_commands": ["dotnet test"] },
+    "frontend": { "repo": { "path": "frontend", "remote": "https://github.com/<owner>/<web>" },
+                  "base_branch": "dev" }
+  },
+  // How triage splits a hub parent into member sub-issues (P3). `default_order` lists
+  // member keys; `confirm` asks before filing the sub-issues.
+  "split": { "default_order": ["backend", "frontend"], "confirm": true },
 
   // Cross-board flow: other repos (`owner/name`) whose issues may block cards on
   // this board, e.g. the backend repo for a frontend board. Default []. A
