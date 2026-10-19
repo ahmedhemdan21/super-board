@@ -84,7 +84,7 @@ BIN = ["super-board-project-verifier.py", "super-board-skills-ready.py", "super-
        "super-board-settings.py", "super-board-setup.py", "super-board-usage.sh", "super-board-pr-body.sh", "super-board-commit-header.py",
        "super-review-file-refactor.sh", "super-qa-file-bug.sh", "super-board-stop.sh",
        "super-board-qa-target.sh", "super-board-deploy-wait.sh", "super-board-card-ready.py",
-       "super-board-config.py"]
+       "super-board-config.py", "super-board-split.py"]
 WORKFLOWS = ["super-board-wave.js", "ui-refine-loop.js"]
 HELPERS_CMD = "npx -y skills@latest add mattpocock/skills --skill '*' -a claude-code -y"
 
