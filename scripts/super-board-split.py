@@ -46,7 +46,8 @@ halt file and super-board-gh-guard.sh's sb_gh_guard_check first, and never retri
 write stops with what was written and what is left.
 
 Exit: 0 ok (stdout JSON has `status`) · 3 refused (decision or child body not usable; nothing
-written) · 64 usage · 66 config · 69 a GitHub write failed · 79 GitHub reads halted.
+written) · 64 usage · 65 config invalid (super-board-config.py validate) · 66 config
+unreadable or not a hub board · 69 a GitHub write failed · 79 GitHub reads halted.
 """
 from __future__ import annotations
 
@@ -74,6 +75,7 @@ def _load(name, file):
 
 github_read = _load("github_read", "super-board-github-read.py")
 card_ready = _load("card_ready", "super-board-card-ready.py")
+resolver = _load("sb_config", "super-board-config.py")  # P2: members / hub / split
 
 MARKER = re.compile(r"<!--\s*sb-split:\s*(\{.*?\})\s*-->", re.S)
 PROPOSAL = re.compile(r"<!--\s*sb-split-proposal:\s*([0-9a-f]{64})\s*-->")
@@ -83,7 +85,6 @@ APPROVE = re.compile(r"\s*done\s+([0-9a-f]{8})[.!]?\s*\Z", re.I)
 CHILD_LINK = "<!-- sb-split-child: {hub} {side} -->"  # backlink written into every child body
 TRUSTED = ("write", "maintain", "admin")
 NOT_COPIED = {"parent", "needs-triage"}  # labels a child never inherits
-REPO_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 
 
 class Refused(Exception):
@@ -96,34 +97,24 @@ class WriteFailed(Exception):
 
 # ── config ──────────────────────────────────────────────────────────────
 
-def slug(remote):
-    repo = re.sub(r"^(https?://github\.com/|git@github\.com:)", "", str(remote or "").strip())
-    repo = re.sub(r"\.git$", "", repo).strip("/")
-    return repo if REPO_RE.fullmatch(repo) else ""
-
-
-# P2 resolver replaces this: scripts/super-board-config.py (`members`, `member <key>`).
-def hub_config(cfg):
-    """{hub, members: {key: {key, repo, base_branch}}, order, confirm, owner, number}."""
-    hub = slug((cfg.get("hub") or {}).get("remote"))
-    if not hub:
-        raise ValueError("config has no hub.remote: not a hub board")
-    members = {}
-    for key, m in (cfg.get("members") or {}).items():
-        repo = slug(((m or {}).get("repo") or {}).get("remote"))
-        if not repo:
-            raise ValueError(f"member {key} has no repo.remote")
-        members[key] = {"key": key, "repo": repo, "base_branch": (m or {}).get("base_branch")}
-    if not members:
-        raise ValueError("config has no members")
+def hub_config(path):
+    """(config, {hub, members: {key: {key, repo, path, base_branch}}, order, confirm, owner,
+    number}) read through the P2 resolver (super-board-config.py), which validates the hub
+    shape; only what the resolver leaves open (a hub at all, the Project) is checked here."""
+    cfg = resolver.checked(path)
+    if "members" not in cfg:
+        raise ValueError("not a hub board: the config has no `members` (hub.md → Config)")
+    members = {m["key"]: {**m, "base_branch": cfg["members"][m["key"]].get("base_branch")}
+               for m in resolver.members_of(cfg, path)}
     split = cfg.get("split") or {}
-    order = [k for k in split.get("default_order") or [] if k in members]
+    order = list(split.get("default_order") or [])
     order += [k for k in members if k not in order]
     project = cfg.get("project") or {}
     if not project.get("owner") or not project.get("number"):
         raise ValueError("config has no project.owner / project.number")
-    return {"hub": hub, "members": members, "order": order, "confirm": split.get("confirm", True) is not False,
-            "owner": str(project["owner"]), "number": int(project["number"])}
+    return cfg, {"hub": resolver.repo_name(cfg["hub"]["remote"]), "members": members, "order": order,
+                 "confirm": split.get("confirm", True) is not False,
+                 "owner": str(project["owner"]), "number": int(project["number"])}
 
 
 def parse_ref(text, default_repo):
@@ -788,9 +779,11 @@ def main(argv=None):
     p.add_argument("--dry-run", action="store_true")
     a = p.parse_args(argv)
     try:
-        cfg = json.loads(Path(a.config).read_text(encoding="utf-8"))
-        hc = hub_config(cfg)
-    except (OSError, ValueError) as e:
+        cfg, hc = hub_config(a.config)
+    except resolver.ConfigError as e:
+        print(f"split: config invalid: {e}", file=sys.stderr)
+        return resolver.INVALID
+    except (OSError, ValueError, SystemExit) as e:
         print(f"split: config: {e}", file=sys.stderr)
         return 66
     if a.verb != "close-parents" and not a.issue:

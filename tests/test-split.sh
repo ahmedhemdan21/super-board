@@ -252,7 +252,10 @@ ERR=$(split apply --config "$TMP/cfg.json" --issue 16 --decision "$TMP/d/bad.jso
 jq '.sides = ["mobile"]' "$TMP/d/one.json" > "$TMP/d/unknown.json"; RC=0
 split apply --config "$TMP/cfg.json" --issue 16 --decision "$TMP/d/unknown.json" >/dev/null 2>&1 || RC=$?
 [ "$RC" = 3 ] && [ "$(writes)" = 0 ] || fail "unknown member must be refused (rc=$RC)"
-ok "bad child body / unknown member refused, nothing written"
+jq '.split.default_order = ["backend","mobile"]' "$TMP/cfg.json" > "$TMP/cfg-bad.json"; RC=0
+split plan --config "$TMP/cfg-bad.json" --issue 16 >/dev/null 2>&1 || RC=$?
+[ "$RC" = 65 ] || fail "a config the P2 resolver rejects must exit 65 (rc=$RC)"
+ok "bad child body / unknown member / invalid config refused, nothing written"
 
 # 9 — close-parents: closes only when every child completed; NOT_PLANNED asks once.
 jq 'reduce .issues["o/hub#10"].subIssues[] as $k (.; .issues[$k] |= (.state = "CLOSED" | .stateReason = "COMPLETED"))' "$TMP/state.json" > "$TMP/s" && mv "$TMP/s" "$TMP/state.json"
