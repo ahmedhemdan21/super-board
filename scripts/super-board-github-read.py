@@ -43,6 +43,9 @@ FORMS = {
     'body': 'pr view <N> --json body,headRefOid',
     'metadata': 'pr view <N> --json files,labels,body,additions,deletions,changedFiles',
     'state': 'issue view <N> --json state --jq .state',
+    'prs-open': 'pr list --state open --limit 100 --json number,title,body,url,headRefName,files',
+    'prs-merged': 'pr list --state merged --limit 100 --json number,title,body,url',
+    'issues-closed': 'issue list --state closed --limit 100 --json number,title,body,stateReason',
 }
 
 

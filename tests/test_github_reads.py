@@ -88,7 +88,7 @@ sys.exit(r.get('rc', 0))
         self.assertEqual(self.log.read_text(), '3')
 
     def test_successful_exit_with_malformed_or_partial_payload_halts(self):
-        for out, kind in [('{"resources":{"graphql":null,"core":null}}', 'quota'), ('[{}]', 'prs-open'), ('{"items":[{"id":"I","content":{}}],"totalCount":1}', 'items'), ('{"items":[]}', 'items'),
+        for out, kind in [('{"resources":{"graphql":null,"core":null}}', 'quota'), ('{"items":[{"id":"I","content":{}}],"totalCount":1}', 'items'), ('{"items":[]}', 'items'),
                           ('{"items":[],"totalCount":1}', 'items'),
                           ('{"data":{},"errors":[{"message":"partial"}]}', 'json')]:
             with self.subTest(out=out):
@@ -104,7 +104,11 @@ sys.exit(r.get('rc', 0))
         r = self.read([{'out': '[[]]'}], 'comments')
         self.assertEqual((r.returncode, r.stdout), (0, '[[]]'), r.stderr)
         for out, kind in [('not json', 'json'), ('{"comments":[]}', 'issue'), ('[]', 'comments'),
-                          ('0123456789abcdef0123456789abcdef01234567', 'head')]:
+                          ('0123456789abcdef0123456789abcdef01234567', 'head'),
+                          # PrimeCore 2026-10-19: an agent's open-PR read without body halted the run.
+                          ('[{"number":1,"title":"t","url":"u","headRefName":"b","files":[]}]', 'prs-open'),
+                          ('[{"number":1,"title":"t","url":"u"}]', 'prs-merged'),
+                          ('[{"number":1,"title":"t","body":""}]', 'issues-closed')]:
             with self.subTest(out=out):
                 self.log.unlink(missing_ok=True)
                 r = self.read([{'out': out}], kind)
@@ -114,6 +118,7 @@ sys.exit(r.get('rc', 0))
                 self.assertFalse(self.halt.exists(), 'shape mismatch must not halt other lanes')
         self.env['SB_GITHUB_READ_STRICT'] = '1'
         self.assertEqual(self.read([{'out': 'not json'}]).returncode, 79, 'fixed-command scripts still halt')
+        self.assertEqual(self.read([{'out': '[{}]'}], 'prs-open').returncode, 79, 'pre-flight still halts on a bad PR list')
 
     def test_no_mutation_can_be_retried(self):
         for command in [['pr', 'merge', '1'], ['issue', 'comment', '1'],
