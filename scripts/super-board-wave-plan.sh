@@ -59,6 +59,7 @@
 # Usage:
 #   super-board-wave-plan.sh --config <config.json> [--items <project-items.json>]
 #                            [--deps <deps.json>]
+# A hub config (`members`) plans every member; see HUB BOARDS below.
 # Without --items, fetches live board state via super-board-card.sh items — the
 # item-list shape for ~1 GraphQL point per 100 cards, where `gh project item-list`
 # spends 101 per 100 (fieldValues x four nested connections).
@@ -101,6 +102,52 @@ done
 # which is a FIFO and cannot be read twice.
 CONFIG_JSON=$(cat "$CONFIG")
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+# HUB BOARDS. A config with `members` plans each member as home in turn, through a
+# resolved single-repo config (super-board-config.py member), over ONE board read.
+# Every picked card carries `member`; `foreign` keeps only repos that are no member.
+# Members trust each other's issues as blockers (the resolver adds the others to
+# linked_repos). In members mode --deps is {"<member>": <deps graph>, …}.
+# max_workers caps the merged wave, in-flight cards first.
+if printf '%s' "$CONFIG_JSON" | jq -e 'has("members")' >/dev/null; then
+  [ -f "$CONFIG" ] || { echo "a members config must be a file (paths resolve from its board root)" >&2; exit 64; }
+  python3 "$HERE/super-board-config.py" validate --config "$CONFIG" || exit $?
+  python3 "$HERE/super-board-github-read.py" --check --config "$CONFIG"
+  MTMP=$(mktemp -d)
+  trap 'rm -rf "$MTMP"' EXIT
+  if [ -n "$ITEMS_FILE" ]; then cat "$ITEMS_FILE" > "$MTMP/items.json"
+  else
+    "$HERE/super-board-card.sh" --owner "$(printf '%s' "$CONFIG_JSON" | jq -r '.project.owner')"       --number "$(printf '%s' "$CONFIG_JSON" | jq -r '.project.number')" items > "$MTMP/items.json"
+  fi
+  [ -z "$DEPS_FILE" ] || cat "$DEPS_FILE" > "$MTMP/deps.json"
+  MEMBERS=$(python3 "$HERE/super-board-config.py" members --config "$CONFIG") || exit $?
+  printf '[]' > "$MTMP/plans.json"
+  for KEY in $(printf '%s' "$MEMBERS" | jq -r '.[].key' | tr -d '\r'); do
+    python3 "$HERE/super-board-config.py" member "$KEY" --config "$CONFIG"       | jq '.max_workers = 0' > "$MTMP/$KEY.json" || exit $?
+    DEPS_ARGS=()
+    if [ -n "$DEPS_FILE" ]; then
+      jq --arg k "$KEY" '.[$k] // {}' "$MTMP/deps.json" > "$MTMP/$KEY.deps.json"
+      DEPS_ARGS=(--deps "$MTMP/$KEY.deps.json")
+    fi
+    PLAN=$("${BASH_SOURCE[0]}" --config "$MTMP/$KEY.json" --items "$MTMP/items.json" ${DEPS_ARGS[@]+"${DEPS_ARGS[@]}"}) || exit $?
+    printf '%s' "$PLAN" > "$MTMP/$KEY.plan.json"
+    jq --arg k "$KEY" --slurpfile p "$MTMP/$KEY.plan.json" '. + [{key: $k, plan: $p[0]}]'       "$MTMP/plans.json" > "$MTMP/plans.next" && mv "$MTMP/plans.next" "$MTMP/plans.json"
+  done
+  jq --argjson members "$MEMBERS" --argjson cap "$(printf '%s' "$CONFIG_JSON" | jq -r '.max_workers // 0')" '
+    def tagged($f): [ .[] | .key as $k | .plan[$f][] | . + { member: $k } ];
+    ([ $members[].repo | ascii_downcase ]) as $mine
+    | def rank: { "Review": 0, "QA": 1 }[.status] // 2;
+    (tagged("cards") | sort_by(rank)) as $cards
+    | { cards: (if $cap > 0 then $cards[:$cap] else $cards end),
+        sweep: tagged("sweep"), resume: tagged("resume"), refreshApproval: tagged("refreshApproval"),
+        flag: tagged("flag"),
+        foreign: ([ .[].plan.foreign[] | select((.repository | ascii_downcase) as $r | $mine | index($r) | not) ]
+                  | unique_by([(.repository | ascii_downcase), .number])
+                  | map(.why = "card from \(.repository): not a member of this board")),
+        stranded: tagged("stranded"), triage: tagged("triage") }' "$MTMP/plans.json"
+  exit 0
+fi
+
 printf '%s\n' "$CONFIG_JSON" | python3 "$HERE/super-board-verification-ready.py" --config -
 export SB_REPO_PATH=$(echo "$CONFIG_JSON" | jq -r '.repo.path // "."')
 python3 "$HERE/super-board-github-read.py" --check

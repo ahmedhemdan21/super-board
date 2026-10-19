@@ -83,6 +83,9 @@ SMOKE=$(echo "$DEPLOY" | jqx -r '.smoke // empty')
 POLL="${SB_DEPLOY_POLL:-10}"          # first poll interval, seconds
 POLL_MAX="${SB_DEPLOY_POLL_MAX:-60}"  # backoff ceiling
 export SB_REPO_PATH="${SB_REPO_PATH:-$(echo "$CFG" | jqx -r '.repo.path // "."')}"
+# Every gh call names its repo: the caller's cwd may be another member's checkout.
+REPO=$(echo "$CFG" | jqx -r '.repo.remote // ""' | tr -d '\r' | sed -E 's#^(https?://github\.com/|git@github\.com:)##; s#\.git$##')
+[ -z "$REPO" ] || export SUPER_QA_REPO="${SUPER_QA_REPO:-$REPO}"  # the bug filer's repo, not the cwd's
 [ -n "$ISSUE" ] || ISSUE=""
 
 # gh quota discipline (rate-limit-etiquette.md): the guard before the burst.
@@ -94,7 +97,7 @@ python3 "$GITHUB_READ" --check || exit $?
 guard
 
 # The merge commit, and whether this PR merged into the deploy branch at all.
-PRJSON=$(python3 "$GITHUB_READ" --kind merge-state -- pr view "$PR" --json state,headRefOid,mergeCommit,baseRefName,url) || exit $?
+PRJSON=$(python3 "$GITHUB_READ" --kind merge-state -- pr view "$PR" ${REPO:+--repo "$REPO"} --json state,headRefOid,mergeCommit,baseRefName,url) || exit $?
 STATE_PR=$(echo "$PRJSON" | jqx -r '.state')
 [ "$STATE_PR" = "MERGED" ] || { echo "deploy: skipped (PR #$PR is $STATE_PR, not merged)"; exit 0; }
 BASE_REF=$(echo "$PRJSON" | jqx -r '.baseRefName // empty')
@@ -151,7 +154,7 @@ fail() { REASON="$1"; DETAIL="$2"; }
 if [ -z "$RUN_ID" ]; then
   while :; do
     POLLS=$((POLLS + 1)); [ $((POLLS % 5)) -eq 0 ] && guard
-    RUNS=$(python3 "$GITHUB_READ" --kind array -- run list --workflow "$WORKFLOW" --commit "$SHA" --json databaseId,status,conclusion --limit 5) || exit $?
+    RUNS=$(python3 "$GITHUB_READ" --kind array -- run list ${REPO:+--repo "$REPO"} --workflow "$WORKFLOW" --commit "$SHA" --json databaseId,status,conclusion --limit 5) || exit $?
     RUN_ID=$(echo "$RUNS" | jqx -r 'first | .databaseId // empty')
     [ -z "$RUN_ID" ] || { save_state; break; }
     nap || { fail timeout "no $WORKFLOW run for $SHORT appeared within ${TIMEOUT}s"; break; }
@@ -164,7 +167,7 @@ if [ -z "$REASON" ]; then
   DELAY="$POLL"
   while :; do
     POLLS=$((POLLS + 1)); [ $((POLLS % 5)) -eq 0 ] && guard
-    RUN=$(python3 "$GITHUB_READ" --kind object -- run view "$RUN_ID" --json status,conclusion,url) || exit $?
+    RUN=$(python3 "$GITHUB_READ" --kind object -- run view "$RUN_ID" ${REPO:+--repo "$REPO"} --json status,conclusion,url) || exit $?
     RUN_STATUS=$(echo "$RUN" | jqx -r '.status // empty'); RUN_CONCLUSION=$(echo "$RUN" | jqx -r '.conclusion // empty')
     RUN_URL=$(echo "$RUN" | jqx -r '.url // empty')
     if [ "$RUN_STATUS" = "completed" ]; then

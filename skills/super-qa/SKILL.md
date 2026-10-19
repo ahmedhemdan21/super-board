@@ -194,7 +194,7 @@ The `iteration-N.md` Section 3 is the per-iter audit (with `gh_issue: <N>` back-
 
 **Triage all loop-filed findings:**
 ```bash
-gh issue list -l source:qa --state open
+gh issue list --repo <owner/repo> -l source:qa --state open
 ```
 
 This is a carved exception to the project rule "ask before `gh issue create`": the loop is autonomous and unattended, so it is authorized to auto-file — but ONLY with the clear `source:qa` label and the evidence template below.

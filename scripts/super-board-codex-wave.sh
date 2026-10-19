@@ -62,6 +62,11 @@ try:
     pinned = codex[0].startswith('--codex=') or (isinstance(configured, str) and configured.strip())
 except (OSError, ValueError, subprocess.CalledProcessError) as error:
     parser.error(str(error))
+# A hub (members) config plans but does not run until P4 (hub.md): exit 78.
+gate = subprocess.run([sys.executable, str(launcher.with_name('super-board-config.py')), 'run-gate',
+                       '--config', str(config_path)])
+if gate.returncode:
+    sys.exit(gate.returncode)
 readiness = launcher.with_name('super-board-verification-ready.py')
 if subprocess.run([sys.executable, str(readiness), '--config', str(config_path)]).returncode:
     result = json.dumps({'cards': [dict(number=c['number'], finalStatus='halted', lastLane='none',
@@ -149,9 +154,10 @@ def grade(card):
         return card.get('complexity') if card.get('complexity') in ['low', 'medium', 'high'] else None, False
     if card.get('complexity') in ['low', 'medium', 'high']:
         return card['complexity'], False
+    repo = card.get('repository') or '{owner}/{repo}'
     prompt = (f"Read GitHub issue #{card['number']} (\"{card.get('title', '')}\") - body and all comments - with "
-              f".claude/bin/super-board-github-read.py --kind issue -- issue view {card['number']} --json number,title,body and "
-              f"--kind comments -- api repos/{{owner}}/{{repo}}/issues/{card['number']}/comments --paginate --slurp. "
+              f".claude/bin/super-board-github-read.py --kind issue -- issue view {card['number']} --repo {repo} --json number,title,body and "
+              f"--kind comments -- api repos/{repo}/issues/{card['number']}/comments --paginate --slurp. "
               'Grade complexity (low|medium|high) by the scope of change required. Read only: change no file, '
               'label, comment or board state. Exit 79 from the read helper means stop and return nothing.\n')
     with tempfile.TemporaryDirectory(prefix='super-board-codex-grade-') as temporary:

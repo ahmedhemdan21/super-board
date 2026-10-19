@@ -48,7 +48,7 @@ See `skills/super-board/references/rate-limit-etiquette.md` for the full discipl
 ├── skills/<all eight>/...
 ├── hooks/guard-*.py, cleanup-wt.py   (wired into settings.json; --no-hooks skips)
 ├── workflows/super-board-wave.js, ui-refine-loop.js
-└── bin/super-board-*.sh (incl. pr-body), super-board-*.py (status, merge-policy, agents-md, settings, setup, commit-header, metrics, scheduler), super-qa-file-bug.sh, super-review-file-refactor.sh
+└── bin/super-board-*.sh (incl. pr-body), super-board-*.py (status, merge-policy, agents-md, settings, setup, commit-header, metrics, scheduler, config), super-qa-file-bug.sh, super-review-file-refactor.sh
 ```
 
 It also refreshes the managed `<!-- super-board:begin … -->` block in the target's AGENTS.md when

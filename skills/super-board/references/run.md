@@ -60,6 +60,7 @@ bounded receipt and delegate the external skill after normal final reconciliatio
 
 | Check | Action on fail |
 |---|---|
+| Not a hub config | `python3 .claude/bin/super-board-config.py run-gate --config <config>`. Exit 78: a `members` config plans but does not run until P4 (hub.md). |
 | Usable verification commands | Run `python3 .claude/bin/super-board-verification-ready.py --config <config>`. Exit 9 halts setup before dispatch: configure the owning project's checks, then restart explicitly. |
 | Active config exists | Halt: "Run `super-board onboard` first." |
 | Project + required columns exist | Halt: "Project / columns missing. Run `super-board onboard` to repair." |
@@ -410,7 +411,7 @@ If a screenshot file is >5MB, downscale to ≤1920px wide before committing; Git
 3. Read the issue ACs and the raw diff (code + test files) FIRST and write 2–4 hypotheses of your own — what must hold, where it would break. Only then read the PR description, the `[builder] [report]` comment and Tester's handoff, and check each claim like a hypothesis. Spot-check Tester's evidence (one screenshot at least), read CLAUDE.md / AGENTS.md.
 3b. **Prior-report check (review remembers — added 2.5.0).** Load the last Reviewer report on this PR as `prior_report`. One call:
    ```
-   gh pr view <PR> --json comments \
+   gh pr view <PR> --repo <owner/repo> --json comments \
      --jq '[.comments[] | select(.body | contains("<!-- super-review:report -->"))] | last | {url, body} // {}'
    ```
    - Empty → first review of this card. Skip to step 4; behave exactly as before.
@@ -468,13 +469,13 @@ walk these steps in order, and the card **must not reach Done until the merge is
 on the base branch**.
 
 ```
-1. Mark ready      gh pr ready <PR>                     # idempotent; no-op if already ready
+1. Mark ready      gh pr ready <PR> --repo <owner/repo>                     # idempotent; no-op if already ready
 2. Merge through the gate (step 5), pinned to the reviewed head — never a bare
    `gh pr merge`. The gate applies `merge_policy` (who merges; `default: "human"`
    keeps a person on every merge) and `migrations` (which databases the robot may
    migrate) itself; the Reviewer does not second-guess either, it routes the exit code.
 3. Confirm the merge LANDED, do not trust the exit code:
-     gh pr view <PR> --json state,mergeCommit -q '.state + " " + (.mergeCommit.oid // "none")'
+     gh pr view <PR> --repo <owner/repo> --json state,mergeCommit -q '.state + " " + (.mergeCommit.oid // "none")'
      Expect: MERGED <sha>.  Then verify the sha is reachable from the base branch:
      git fetch origin <base> && git merge-base --is-ancestor <sha> origin/<base>
 4. Only after step 3 passes: close the issue, move card Review → Done, rewrite `status` (`> [!TIP]` ✅ Merged) and append the `history` row, post the `[reviewer] [report] ✅ merged` comment
@@ -483,7 +484,7 @@ on the base branch**.
    workflow backend: the wave's Deploy step does). Its outcome never changes this card.
 5. Merge through the gate, never with a bare `gh pr merge`. Record the head you
    reviewed when review passes, and hand it to the gate:
-     HEAD=$(gh pr view <N> --json headRefOid -q .headRefOid)   # at the moment review passes
+     HEAD=$(gh pr view <N> --repo <owner/repo> --json headRefOid -q .headRefOid)   # at the moment review passes
      bash .claude/bin/super-board-merge-gate.sh --config <config> --pr <N> --expect-head "$HEAD" \
        --subject "<PR title>" --body-file <msg.md>
    <msg.md> = the PR's commit bullets, deduplicated, plus `Closes #<issue>` (writing-standard.md § 1).
@@ -682,21 +683,21 @@ Claim uses a **GitHub Issue assignee mutex** — atomic compare-and-set via `gh 
 
 ```
 1. ATTEMPT CLAIM (atomic):
-   ├─ `gh issue edit <N> --add-assignee super-board-bot[bot]`
+   ├─ `gh issue edit <N> --repo <owner/repo> --add-assignee super-board-bot[bot]`
    │      (if a different assignee is already set → 422; treat as "already claimed")
    ├─ On 422 / conflict → another worker has it; skip this dispatch.
    └─ On success → continue. Apply descriptive label
        (loop:in-build / loop:in-qa / loop:in-review) for UI clarity only.
 2. SANITY CHECK: issue body has `## Acceptance Criteria` with ≥1 bullet
    ├─ Missing → write the full Block template (see §4) with reason ❓
-   │           release claim (`gh issue edit --remove-assignee`)
+   │           release claim (`gh issue edit <N> --repo <owner/repo> --remove-assignee`)
    │           move card to Blocked, continue with next card.
    └─ Present → proceed.
 3. Do the lane's work (build / QA / review).
 4. If this lane opened a PR or pushed changes, refresh [PR author notes](pr-author-notes.md).
    Comment evidence on issue + PR (writing-standard.md § 4) and rewrite your PR body blocks.
 5. Move card to next column (or Blocked with the full §4 template; dropped on purpose → closed, Done, 🤷 comment).
-6. RELEASE CLAIM (`gh issue edit --remove-assignee super-board-bot[bot]`) and remove descriptive label.
+6. RELEASE CLAIM (`gh issue edit <N> --repo <owner/repo> --remove-assignee super-board-bot[bot]`) and remove descriptive label.
 ```
 
 The `super-board-bot[bot]` identity is either (a) a GitHub App installed on the repo, or (b) the user's own account on solo projects — onboard step 2 picks which. The assignee mutex is reliable because GitHub serializes assignee writes per issue.
@@ -860,7 +861,7 @@ Before releasing the claim assignee and exiting, every worker MUST verify:
 
 - [ ] Issue comment AND PR comment both written (per "Commenting cadence" above).
 - [ ] Card column move's mutation returned success. **Trust the exit code of `super-board-card.sh move`** — a re-read of the board was the per-worker quota tax (`rate-limit-etiquette.md` §3). If the mutation returned non-zero, preserve its unknown outcome, leave the assignee in place, and pause the run locally. Reconcile the remote card state before any repeat; never blindly retry a write or depend on a successful halt comment.
-- [ ] Claim assignee released (`gh issue edit --remove-assignee <bot_identity>`) and the descriptive `loop:in-*` label removed.
+- [ ] Claim assignee released (`gh issue edit <N> --repo <owner/repo> --remove-assignee <bot_identity>`) and the descriptive `loop:in-*` label removed.
 - [ ] On failure handoff: `root-cause-hash:` line is present in the PR handoff comment (per "Root-cause hash" above).
 - [ ] On Block/Skip exit: the full template from `block-template.md` is populated on BOTH the issue and the PR (if a PR exists); the reason emoji is one of the nine in the vocabulary table (🔐 💳 🔑 ❓ 🛡 🧑 🤷 📦 🎨).
 - [ ] `gh-quota-on-exit:` line appended to PR handoff comment.

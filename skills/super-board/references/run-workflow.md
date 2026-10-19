@@ -52,6 +52,10 @@ Exit **79**, a workflow result with `halted: true`, or a failed `--check` ends t
 run. Check the helper's `--check` before claims, board/comment writes, each new
 lane/wave, and all migration/merge steps. The marker is shared through the main
 checkout's `.claude/super-board/github-halt.json`, including linked worktrees.
+The orchestrator runs `--check --config <config>`: it reads the halt file of every
+checkout the config names (a hub's and each member's, hub.md → Config) and exits 79
+naming the one that halted. Every `gh issue|pr|run` command names `--repo <owner/repo>`:
+the card's `repository`, the owner/name in its repo's `repo.remote`.
 Cancel active workflow agents using local workflow controls (Codex: stop the background wave task); do not launch more
 lanes. Already-running agents stop at their next checkpoint; this is not an
 instantaneous process-wide kill. Preserve worktrees, claims, card statuses, and
@@ -81,6 +85,9 @@ The interactive session that runs this backend is the orchestrator. It:
 ## Preconditions (before the first wave)
 
 Run the same preconditions as `run.md` §Preconditions, minus PID checks:
+0. Hub gate: `python3 .claude/bin/super-board-config.py run-gate --config <config>`.
+   Exit 78 = a hub (`members`) config: it plans and resolves, but running one arrives in
+   P4 (hub.md). Stop and tell the user; run a member's single-repo config instead.
 1. Config exists and validates against `config-schema.json`. Run
    `python3 .claude/bin/super-board-verification-ready.py --config <config>`; exit 9
    stops before dispatch until the owning project's verification commands are configured.
@@ -117,7 +124,7 @@ Run the same preconditions as `run.md` §Preconditions, minus PID checks:
 6. Crash-recovery sweep (the workflow backend's equivalent of the legacy
    reaper): with no wave running, strip `bot_identity` from any
    Review/QA/Ready/Building card that still carries it
-   (`gh issue edit <n> --remove-assignee <bot_identity>`). A crashed
+   (`gh issue edit <n> --repo <owner/repo> --remove-assignee <bot_identity>`). A crashed
    orchestrator releases nothing — leaked assignees make the planner skip
    those cards forever and the board silently stops draining.
 7. Database reach: for every env in `migrations.allowed_envs` with a command, run its read-only
@@ -239,8 +246,8 @@ Repeat until a done condition or halt gate fires:
    after a wave that hit the hourly limit. If `cards` is empty and
    Building/QA/Review counts are 0 → done. If empty but cards sit in Blocked
    only → report and stop. This is unfinished work, not a completed-run calibration trigger.
-3. **Claim** — for each card, `gh issue edit <n> --add-assignee <bot_identity>`,
-   then VERIFY: re-read assignees (`gh issue view <n> --json assignees`) and
+3. **Claim** — for each card, `gh issue edit <n> --repo <owner/repo> --add-assignee <bot_identity>`,
+   then VERIFY: re-read assignees (`gh issue view <n> --repo <owner/repo> --json assignees`) and
    proceed only if the list is exactly `[<bot_identity>]`. Adding an assignee
    does NOT fail when someone else already claimed (issues accept up to 10
    assignees), so the add alone is not a mutex — on any other assignee set,
@@ -272,7 +279,7 @@ Repeat until a done condition or halt gate fires:
    `verify_commands` and restart explicitly; do not invoke GitHub evidence recovery.
    For a GitHub read halt, follow "Required GitHub evidence" above. Otherwise,
    for EVERY card in the wave, release the assignee
-   (`gh issue edit <n> --remove-assignee <bot_identity>`, idempotent).
+   (`gh issue edit <n> --repo <owner/repo> --remove-assignee <bot_identity>`, idempotent).
    Append one line per card to the run manifest
    `docs/super-board/runs/<date>-<slug>.md`:
    `| #N | <lanesRun> | <finalStatus> | <column> | <detail> |`.
@@ -346,6 +353,7 @@ don't stall on prompts:
     "Bash(bash .claude/bin/super-board-wave-plan.sh:*)",
     "Bash(bash .claude/bin/super-board-preflight.sh:*)",
     "Bash(python3 .claude/bin/super-board-skills-ready.py:*)",
+    "Bash(python3 .claude/bin/super-board-config.py:*)",
     "Bash(bash .claude/bin/super-board-usage.sh:*)",
     "Bash(bash .claude/bin/super-board-throttle.sh:*)",
     "Bash(bash .claude/bin/super-board-codex-lane.sh:*)",

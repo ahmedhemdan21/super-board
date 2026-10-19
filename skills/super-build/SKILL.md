@@ -99,12 +99,12 @@ For each issue N in the ready set (up to the cap at a time):
 
 a. **Lock the issue:**
 ```bash
-gh issue edit N --add-label loop:in-progress
+gh issue edit N --repo <owner/repo> --add-label loop:in-progress
 ```
 
 b. **Announce on the issue** (so a human reading the issue page knows it's being worked):
 ```bash
-gh issue comment N --body "🤖 Dispatched by /super-build — worker spinning up in worktree \`.claude/worktrees/issue-N\` on branch \`loop/issue-N\`. Skills: <skills-line-from-body-or-defaults>."
+gh issue comment N --repo <owner/repo> --body "🤖 Dispatched by /super-build — worker spinning up in worktree \`.claude/worktrees/issue-N\` on branch \`loop/issue-N\`. Skills: <skills-line-from-body-or-defaults>."
 ```
 
 c. **Dispatch:**
@@ -115,7 +115,7 @@ bash .claude/skills/super-build/scripts/super-build-dispatch.sh N
 
 The dispatcher (this skill's `scripts/super-build-dispatch.sh`) handles:
 - `git worktree add -b loop/issue-N .claude/worktrees/issue-N <base-branch>`
-- `gh issue view N --json title,body,labels` to compose the worker prompt
+- `gh issue view N --repo <owner/repo> --json title,body,labels` to compose the worker prompt
 - prepend `references/worker-preamble.md` + append working-directory footer
 - `cd` into worktree and exec `claude -p --dangerously-skip-permissions --output-format stream-json --verbose --max-turns 250`
 - verify the worker produced a `🔧 [chore] loop: close #N` commit on its branch
@@ -133,9 +133,9 @@ handoff complete. Add file summaries and critical inline notes on the PR, not in
 
 **On dispatcher exit 0 (success):**
 - `git -C .claude/worktrees/issue-N push -u origin loop/issue-N`
-- `gh pr create --draft --base <base-branch> --head loop/issue-N --title "<emoji> [<type>] <scope>: <subject>" --body-file <body.md>` — title in commit-subject format (config `writing.commit_format: "conventional"` → `<type>(<scope>): <subject>`, checked with `.claude/bin/super-board-commit-header.py check --config <cfg> "<title>"`), body = the marker-block template from `skills/super-board/references/run.md` (writing-standard.md § 2), `Closes #N` in the status card, `Docs:` bullets in Solution
-- `gh issue edit N --remove-label loop:in-progress`
-- `gh issue comment N --body "[builder] [report] ✅ built · PR <URL>"` (Next line: `qa`)
+- `gh pr create --repo <owner/repo> --draft --base <base-branch> --head loop/issue-N --title "<emoji> [<type>] <scope>: <subject>" --body-file <body.md>` — title in commit-subject format (config `writing.commit_format: "conventional"` → `<type>(<scope>): <subject>`, checked with `.claude/bin/super-board-commit-header.py check --config <cfg> "<title>"`), body = the marker-block template from `skills/super-board/references/run.md` (writing-standard.md § 2), `Closes #N` in the status card, `Docs:` bullets in Solution
+- `gh issue edit N --repo <owner/repo> --remove-label loop:in-progress`
+- `gh issue comment N --repo <owner/repo> --body "[builder] [report] ✅ built · PR <URL>"` (Next line: `qa`)
 - Move the project card to `QA`. The Tester and Reviewer take it from there; the issue closes when the Reviewer merges through the merge gate.
 - Leave the worktree in place — the merge gate (after the merge) or the cleanup-wt SessionStart hook removes it once the work is on the base branch.
 - Report: `✅ Super Build issue #N → PR <URL>, card in QA`
@@ -143,22 +143,22 @@ handoff complete. Add file summaries and critical inline notes on the PR, not in
 
 **On dispatcher exit 5 (intentional WIP-PARTIAL — open a partial PR, do NOT close):**
 - `git -C .claude/worktrees/issue-N push -u origin loop/issue-N`
-- `gh pr create --draft --base <base-branch> --head loop/issue-N --title "🚧 [wip] <scope>: <slice from worker's final message>"` (conventional: `chore(<scope>): partial — <slice>`, never `wip`) — the status card says `Refs #N`, never `Closes`, so the merge does not close the issue.
-- `gh issue edit N --remove-label loop:in-progress --add-label human-gated`
-- `gh issue comment N --body "[builder] [report] ⚠️ partial · PR <URL>\nDid: <slice>\n❌ Not done: <worker's reason for stopping>\nNext: Eric"` — the issue stays open with `human-gated` until the rest lands.
+- `gh pr create --repo <owner/repo> --draft --base <base-branch> --head loop/issue-N --title "🚧 [wip] <scope>: <slice from worker's final message>"` (conventional: `chore(<scope>): partial — <slice>`, never `wip`) — the status card says `Refs #N`, never `Closes`, so the merge does not close the issue.
+- `gh issue edit N --repo <owner/repo> --remove-label loop:in-progress --add-label human-gated`
+- `gh issue comment N --repo <owner/repo> --body "[builder] [report] ⚠️ partial · PR <URL>\nDid: <slice>\n❌ Not done: <worker's reason for stopping>\nNext: Eric"` — the issue stays open with `human-gated` until the rest lands.
 - Report: `🟡 Issue #N partial PR opened — issue stays open (human-gated)`
 - **Continue dispatching the next issue in the wave.** A WIP-PARTIAL is NOT a halt. The worker did intentional, scoped work and the orchestrator advances.
 
 **On dispatcher exit 2 or 3 (worker failed or no done-commit):**
-- `gh issue edit N --remove-label loop:in-progress`
-- `gh issue comment N --body "[builder] [report] ❌ failed · exit <X>\nDid: worker ran; worktree \`.claude/worktrees/issue-N\` kept\n❌ Not done: <one line from the log>\nNext: Eric\n\n<details><summary>log tail</summary>\n\n\`\`\`\n$(tail -50 .planning/super-build-logs/issue-N.log)\n\`\`\`\n</details>"`
+- `gh issue edit N --repo <owner/repo> --remove-label loop:in-progress`
+- `gh issue comment N --repo <owner/repo> --body "[builder] [report] ❌ failed · exit <X>\nDid: worker ran; worktree \`.claude/worktrees/issue-N\` kept\n❌ Not done: <one line from the log>\nNext: Eric\n\n<details><summary>log tail</summary>\n\n\`\`\`\n$(tail -50 .planning/super-build-logs/issue-N.log)\n\`\`\`\n</details>"`
 - Report to the user with `tail -50` of `.planning/super-build-logs/issue-N.log`
 - Do NOT open a PR; leave the worktree intact for human inspection
 - Halt the loop
 
 **On dispatcher exit 4 (HUMAN GATE TRIPPED):**
-- `gh issue edit N --remove-label loop:in-progress --add-label human-gated`
-- `gh issue comment N --body "🔴 HUMAN GATE TRIPPED — needs manual handling. See worktree \`.claude/worktrees/issue-N\`."`
+- `gh issue edit N --repo <owner/repo> --remove-label loop:in-progress --add-label human-gated`
+- `gh issue comment N --repo <owner/repo> --body "🔴 HUMAN GATE TRIPPED — needs manual handling. See worktree \`.claude/worktrees/issue-N\`."`
 - Report: `🔴 Issue #N tripped HUMAN GATE — needs manual handling`
 - Halt the loop
 

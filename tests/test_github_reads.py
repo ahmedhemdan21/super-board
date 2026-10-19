@@ -308,6 +308,36 @@ top_card_in_column Review
         self.assertFalse((sup / '.git/modules/.claude').exists())
         self.assertFalse((sup / 'backend/.claude/super-board/cache').exists())
 
+    def test_board_check_covers_the_hub_and_every_member(self):
+        # A hub board (hub.md → Config) has a halt file per checkout. --check --config
+        # reads them all: a halt in any member stops the whole board, naming it.
+        hub = self.root / 'hub'
+        cfg_path = hub / '.claude/super-board/configs/board.json'
+        cfg_path.parent.mkdir(parents=True)
+        cfg_path.write_text(json.dumps({
+            'project': {'owner': 'acme', 'number': 1}, 'hub': {'remote': 'https://github.com/acme/docs'},
+            'members': {'backend': {'repo': {'path': 'backend', 'remote': 'acme/api'}, 'base_branch': 'dev'},
+                        'frontend': {'repo': {'path': 'frontend', 'remote': 'acme/web'}, 'base_branch': 'dev'}}}))
+        env = {k: v for k, v in self.env.items() if k != 'SB_GITHUB_HALT_FILE'}
+
+        def check(*extra):
+            return subprocess.run(['python3', str(HELPER), '--check', *extra], env=env, text=True,
+                                  capture_output=True, cwd=str(hub))
+        self.assertEqual(check('--config', str(cfg_path)).returncode, 0, 'no halt anywhere')
+        halt = hub / 'frontend/.claude/super-board/github-halt.json'
+        halt.parent.mkdir(parents=True)
+        halt.write_text('{}')
+        result = check('--config', str(cfg_path))
+        self.assertEqual(result.returncode, 79)
+        self.assertIn('halted in frontend (', result.stderr)
+        self.assertNotIn('backend', result.stderr)
+        self.assertEqual(check().returncode, 0, 'without --config only the cwd checkout is checked')
+        halt.unlink()
+        (hub / '.claude/super-board/github-halt.json').write_text('{}')
+        result = check('--config', str(cfg_path))
+        self.assertEqual(result.returncode, 79)
+        self.assertIn('halted in hub (', result.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()

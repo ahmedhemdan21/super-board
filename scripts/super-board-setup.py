@@ -83,7 +83,8 @@ BIN = ["super-board-project-verifier.py", "super-board-skills-ready.py", "super-
        "super-board-merge-policy.py", "super-board-approval.py", "super-board-env-check.sh", "super-board-agents-md.py",
        "super-board-settings.py", "super-board-setup.py", "super-board-usage.sh", "super-board-pr-body.sh", "super-board-commit-header.py",
        "super-review-file-refactor.sh", "super-qa-file-bug.sh", "super-board-stop.sh",
-       "super-board-qa-target.sh", "super-board-deploy-wait.sh", "super-board-card-ready.py"]
+       "super-board-qa-target.sh", "super-board-deploy-wait.sh", "super-board-card-ready.py",
+       "super-board-config.py"]
 WORKFLOWS = ["super-board-wave.js", "ui-refine-loop.js"]
 HELPERS_CMD = "npx -y skills@latest add mattpocock/skills --skill '*' -a claude-code -y"
 
@@ -448,6 +449,14 @@ def check(root, pack, host="claude", home=None, catalog=None):
                                capture_output=True, text=True, encoding="utf-8")
         if ready.returncode:
             verification[os.path.relpath(p, root)] = ready.stderr.strip()
+        # Hub configs (members): the shape check of super-board-config.py validate.
+        shape = subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__),
+                                "super-board-config.py"), "validate", "--config", p],
+                               capture_output=True, text=True, encoding="utf-8")
+        if shape.returncode:
+            rel = os.path.relpath(p, root)
+            verification[rel] = "; ".join(filter(None, [shape.stderr.strip().replace("\n", "; "),
+                                                         verification.get(rel)]))
         if isinstance(cfg, dict):
             _, ch = migrate_config(cfg)
             if ch:

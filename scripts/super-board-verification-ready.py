@@ -6,9 +6,18 @@ import sys
 
 
 def readiness_error(config):
-    """Return a setup error, or None when at least one project command is usable."""
+    """Return a setup error, or None when at least one project command is usable.
+    A hub config is ready when every member is (its own keys over the board's)."""
     if not isinstance(config, dict):
         return "config must be a JSON object"
+    if isinstance(config.get("members"), dict):
+        for key, member in config["members"].items():
+            merged = {**config, **(member if isinstance(member, dict) else {})}
+            merged.pop("members")
+            error = readiness_error(merged)
+            if error:
+                return f"members.{key}: {error}"
+        return None
     commands = config.get("verify_commands")
     if not isinstance(commands, list):
         return "verify_commands must be an array of project command strings"
