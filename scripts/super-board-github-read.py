@@ -470,7 +470,7 @@ def read(args, kind='json', meta=None, recovering=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--kind', choices=('foreign-state', 'json','scalar','issue-number','head','state','diff','metadata','items','issues','issue-history','quota','projects','project','fields','status-field','permission','comments','approval','merge-state','body','dedupe','prs-open','prs-merged','issues-closed','issue','object','array'))
-    parser.add_argument('--issue-history', help='complete paginated all-state issue history for owner/name')
+    parser.add_argument('--issue-history', help='complete paginated all-state issue history for owner/name (comma list: several repos)')
     parser.add_argument('--meta')
     parser.add_argument('--check', action='store_true')
     parser.add_argument('--config', help='with --check: check the hub and every member checkout of this config')
@@ -508,11 +508,19 @@ def main():
                 check_halt()
             return 0
         if args.issue_history:
-            require(re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', args.issue_history) is not None, 'issue history requires owner/name')
-            owner, repo = args.issue_history.split('/')
+            # owner/name, or a comma list for a whole hub board: every node then carries
+            # its `repo`, and one incomplete repo fails the whole read.
+            repos = args.issue_history.split(',')
+            require(all(re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', r) for r in repos), 'issue history requires owner/name')
             query = 'query($owner:String!,$repo:String!,$endCursor:String){repository(owner:$owner,name:$repo){issues(first:100,after:$endCursor,states:[OPEN,CLOSED]){totalCount pageInfo{hasNextPage endCursor} nodes{number state body}}}}'
-            _, pages = read(['api','graphql','--paginate','--slurp','-f','query='+query,'-F','owner='+owner,'-F','repo='+repo], 'issue-history')
-            print(json.dumps([n for page in pages for n in page['data']['repository']['issues']['nodes']]))
+            nodes = []
+            for name in repos:
+                owner, repo = name.split('/')
+                _, pages = read(['api','graphql','--paginate','--slurp','-f','query='+query,'-F','owner='+owner,'-F','repo='+repo], 'issue-history')
+                for page in pages:
+                    for node in page['data']['repository']['issues']['nodes']:
+                        nodes.append({**node, 'repo': name} if len(repos) > 1 else node)
+            print(json.dumps(nodes))
             return 0
         meta = json.loads(Path(args.meta).read_text(encoding='utf-8')) if args.meta else None
         output, _ = read(command, args.kind or 'json', meta)

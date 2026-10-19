@@ -237,6 +237,43 @@ class Execute(unittest.TestCase):
         self.assertEqual(run["status"], "failed")
         self.assertIn("never the legacy claude-p runner", run["error"])
 
+    def hub_repo(self):
+        """A hub checkout: its config names two member checkouts (P5 scheduled intake)."""
+        cfg = {"project": {"owner": "acme", "number": 1},
+               "hub": {"remote": "https://github.com/acme/docs", "path": "."},
+               "members": {k: {"repo": {"path": k, "remote": f"https://github.com/acme/{k}"},
+                               "base_branch": "dev"} for k in ("backend", "frontend")}}
+        (self.repo / ".claude" / "super-board" / "configs" / "hub.json").write_text(json.dumps(cfg), encoding="utf-8")
+        for k in ("backend", "frontend"):
+            (self.repo / k / ".claude" / "super-board").mkdir(parents=True, exist_ok=True)
+        return cfg
+
+    def test_hub_config_collects_and_checks_every_member(self):
+        self.hub_repo()
+        self.assertIsNone(s.board_busy(self.repo, "hub"))
+        lock = self.repo / "frontend" / ".claude" / "super-board" / "inflight"
+        lock.mkdir()
+        (lock / "workflow-wave.lock").write_text("SLUG=web\n")
+        self.assertIsNone(s.board_busy(self.repo), "without the config only the repo itself is checked")
+        _, run = self.sched(config="hub", steps=["collect"]).execute("nightly", "cron")
+        self.assertEqual(run["status"], "skipped")
+        self.assertIn("in member frontend", run["error"])
+        os.remove(lock / "workflow-wave.lock")
+        (self.repo / "backend" / ".claude" / "super-board" / "github-halt.json").write_text("{}")
+        _, run = self.sched(config="hub", steps=["collect"]).execute("nightly", "cron")
+        self.assertIn("github halted", run["error"])
+        self.assertIn("in member backend", run["error"])
+        os.remove(self.repo / "backend" / ".claude" / "super-board" / "github-halt.json")
+        _, run = self.sched(config="hub", steps=["collect"]).execute("nightly", "cron")
+        self.assertEqual(run["status"], "ok", run)
+        self.assertEqual(s.board_repo_name(self.hub_repo()), "acme/docs", "runs issue in the hub repo")
+
+    def test_hub_config_run_step_is_refused(self):
+        self.hub_repo()
+        _, run = self.sched(config="hub").execute("nightly", "manual")
+        self.assertEqual(run["status"], "failed")
+        self.assertIn("P4", run["error"])
+
     def test_run_record_and_summary_from_snapshots(self):
         # The stub's collect step writes the receipt mid-run (a pre-stamped `now + 1` raced
         # the run's [start, end] window on slow CI); the old prs receipt is outside it.

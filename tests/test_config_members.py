@@ -167,6 +167,48 @@ class ResolverTests(unittest.TestCase):
         self.run_resolver('member', 'backend', '--config', str(path), '--path')
         self.assertEqual(json.loads(cached.read_text())['base_branch'], 'staging')
 
+    def test_hub_resolves_the_hub_repo_as_one_repo_config(self):
+        path = self.write(hub_config())
+        result = self.run_resolver('hub', '--config', str(path))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cfg = json.loads(result.stdout)
+        self.assertEqual(cfg['repo'], {'remote': 'https://github.com/acme/docs', 'path': str(self.root)})
+        self.assertEqual(cfg['linked_repos'], ['acme/api', 'acme/web'])
+        self.assertEqual(cfg['hub_config'], str(path.resolve()))
+        self.assertEqual(cfg['collect'], hub_config()['collect'], 'top-level collect: the hub intake')
+        for key in ('members', 'hub', 'split'):
+            self.assertNotIn(key, cfg)
+        out = self.root / 'hub.json'
+        self.assertEqual(self.run_resolver('hub', '--config', str(path), '--out', str(out)).returncode, 0)
+        self.assertEqual(self.run_resolver('validate', '--config', str(out)).returncode, 0)
+        single = {'project': {'owner': 'acme', 'number': 1}, 'repo': {'path': '.', 'remote': 'acme/api'}}
+        self.assertEqual(self.run_resolver('hub', '--config', str(self.write(single, 'one'))).returncode, 65)
+
+    def test_member_key_hub_is_reserved(self):
+        cfg = hub_config()
+        cfg['members']['hub'] = cfg['members'].pop('frontend')
+        cfg['split']['default_order'] = ['backend']
+        rc, err = self.errors(cfg)
+        self.assertEqual(rc, 65)
+        self.assertIn("'hub' is reserved", err)
+
+    def test_hub_md_primecore_example_is_valid(self):
+        import re
+        doc = (ROOT / 'skills/super-board/references/hub.md').read_text(encoding='utf-8')
+        block = re.search(r'PrimeCore \(`[^`]+`[^)]*\):\s*```json\n(.*?)```', doc, re.S)
+        self.assertIsNotNone(block, 'hub.md → Intake carries the PrimeCore example')
+        cfg = json.loads(block.group(1))
+        self.assertEqual(self.errors(cfg), (0, ''))
+        path = self.write(cfg, 'primecore')
+        members = json.loads(self.run_resolver('members', '--config', str(path)).stdout)
+        self.assertEqual([(m['key'], m['repo'], m['path']) for m in members],
+                         [('backend', 'PrimeCoreDev/primecore-platform', str(self.root / 'backend')),
+                          ('frontend', 'PrimeCoreDev/primecore-frontend', str(self.root / 'frontend'))])
+        hub = json.loads(self.run_resolver('hub', '--config', str(path)).stdout)
+        self.assertEqual(hub['repo']['remote'], 'https://github.com/PrimeCoreDev/primecore-docs')
+        self.assertEqual(hub['project']['number'], 3)
+        self.assertEqual(hub['collect']['slack']['channels'], ['#bugs-reporting'])
+
     def test_run_gate_refuses_a_members_config_only(self):
         refused = self.run_resolver('run-gate', '--config', str(self.write(hub_config())))
         self.assertEqual(refused.returncode, 78)

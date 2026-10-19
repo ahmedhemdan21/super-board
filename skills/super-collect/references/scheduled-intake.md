@@ -30,6 +30,13 @@ Confirm the active config matches the intended repo/board, then test a dry run.
 > sources honestly. If reads or a write outcome are halted, preserve the reason
 > and stop; do not clear the halt or blindly retry create/comment.
 
+**Hub board.** Point the job at the hub checkout (`repo`) and the hub config (`config`), steps
+`["collect"]`: one run files the shared sources into the hub and each member's own sources into
+that member (SKILL.md → Hub boards). Keys live in the hub's `.env.local`. "Board busy" and the
+halt check cover every member checkout the config names; a `run` step is refused until hub
+boards run (P4). Receipts and the lock key on the hub repo (`--repo <hub owner/repo>` when
+reconciling).
+
 Adapt invocation to the host: Claude uses `/super-collect --yes`; Codex uses
 `$super-collect --yes`. A local timer can start that host's normal agent runner
 with this prompt. A cloud job needs equivalent repo, tool, skill and credential

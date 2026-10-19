@@ -12,6 +12,10 @@ gate, deploy wait, preflight, card.sh and the planner never learn about members.
         `hub_config`, and every other member in `linked_repos`. --path writes
         <board root>/.claude/super-board/resolved/<slug>.<key>.json (regenerated when
         the source config is newer) and prints its path.
+    super-board-config.py hub --config C [--out F]
+        the hub repo as a single-repo config (P5 intake files parents there): board-wide
+        keys, `repo` = hub.remote at the absolute hub path, `hub_config`, every member
+        in `linked_repos`.
     super-board-config.py members --config C                  [{key, repo, path}]; a
         single-repo config is one pseudo-member with key "".
     super-board-config.py for-repo <owner/name> --config C    the member key; exit 3 if none
@@ -115,6 +119,8 @@ def validate(cfg):
         where = f"members.{key}"
         if not KEY_RE.match(key):
             errors.append(f"member key {key!r} must match {KEY_RE.pattern}")
+        elif key == "hub":
+            errors.append("member key 'hub' is reserved: it names the hub repo (--target hub)")
         if not isinstance(member, dict):
             errors.append(f"{where} must be an object")
             continue
@@ -200,6 +206,17 @@ def resolve_member(cfg, path, key):
     return out
 
 
+def resolve_hub(cfg, path):
+    """The hub repo as one repo's config: where intake files parents (hub.md → Intake)."""
+    if "members" not in cfg:
+        raise ConfigError(["not a members config: it has no hub"])
+    out = {k: copy.deepcopy(v) for k, v in cfg.items() if k not in HUB_KEYS}
+    out["repo"] = {"remote": cfg["hub"]["remote"], "path": hub_path(cfg, path)}
+    out["linked_repos"] = [repo_name(m["repo"]["remote"]) for m in cfg["members"].values()]
+    out["hub_config"] = str(Path(path).resolve())
+    return out
+
+
 def cache_path(path, key):
     return board_root(path) / ".claude" / "super-board" / "resolved" / f"{Path(path).stem}.{key}.json"
 
@@ -219,7 +236,7 @@ def cached_member(cfg, path, key):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("cmd", choices=("validate", "member", "members", "for-repo", "run-gate"))
+    parser.add_argument("cmd", choices=("validate", "member", "hub", "members", "for-repo", "run-gate"))
     parser.add_argument("arg", nargs="?")
     parser.add_argument("--config", required=True)
     parser.add_argument("--out")
@@ -247,6 +264,13 @@ def main(argv=None):
                     return 0
             print(f"{args.arg} is not a member of this board", file=sys.stderr)
             return NOT_MEMBER
+        if args.cmd == "hub":
+            text = json.dumps(resolve_hub(cfg, args.config), indent=2) + "\n"
+            if args.out:
+                Path(args.out).write_text(text, encoding="utf-8")
+            else:
+                sys.stdout.write(text)
+            return 0
         if not args.arg:
             print("member needs a key", file=sys.stderr)
             return USAGE

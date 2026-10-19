@@ -28,6 +28,14 @@
 #      summary + Grafana Explore link when collect.tempo is configured, else the id).
 #   7. triage: the composed body goes through super-board-card-ready.py; a body that is
 #      not ready is filed with the `needs-triage` label (references/triage.md).
+#   8. hub boards (a config with `members`, hub.md → Intake): `--target hub|<member key>`
+#      picks the repo. Unset, the source decides: top-level `collect.sources` → hub,
+#      a member's own `members.<key>.collect.sources` → that member; a source listed in
+#      none or several needs --target. Hub filings land in Backlog with `needs-split`
+#      (triage's split maps them to members). Dedupe (fingerprint and signature) reads
+#      the hub's and every member's issue history, so a parent already split or
+#      transferred to a member is found there. The receipt lock is the hub repo's.
+#      Issue ids print as `owner/repo#N` in this mode.
 #
 # Usage:
 #   super-collect-file.sh --config <cfg.json> --type bug|feature|refactor|fix \
@@ -37,10 +45,14 @@
 #     [--signature <12 hex>] [--trace-id <32 hex>]
 #     [--count N] [--first-seen T] [--last-seen T] [--link URL] [--sample "<one line>"]
 #                                       # the evidence comment on a signature match
-#   super-collect-file.sh --config <cfg.json> --adopt <issue#> --type bug|feature|refactor [--yes]
+#     [--target hub|<member key>]       # hub configs only (§ 8)
+#   super-collect-file.sh --config <cfg.json> --adopt <issue#> --type bug|feature|refactor \
+#     [--target hub|<key> | --source <s>] [--yes]
 #
-# Stdout: dry-run → one `would-file|duplicate|evidence|recurrence|would-adopt` plan line;
-#         --yes   → the issue number (new, existing on a dedupe hit, or adopted).
+# Stdout: dry-run → one `would-file|duplicate|evidence|recurrence|would-adopt` plan line
+#         (hub configs: issues as owner/repo#N, and the target repo appended);
+#         --yes   → the issue number (new, existing on a dedupe hit, or adopted);
+#         hub configs print `owner/repo#N`.
 # Exits:  0 ok · 64 bad args · 65 no holding column · 66 unreadable/weak body
 #         70 gh failure · 71 filed but not placed (number still on stdout)
 #         79 repository paused (existing issue number still on stdout after discovery)
@@ -48,7 +60,7 @@ set -uo pipefail
 
 ORIGINAL_ARGS=("$@")
 CONFIG=""; TYPE=""; SOURCE=""; TITLE=""; BODY_FILE=""; FP=""
-PRIORITY="medium"; AREA=""; ADOPT=""; YES=0; EXTRA_LABELS=()
+PRIORITY="medium"; AREA=""; ADOPT=""; YES=0; EXTRA_LABELS=(); TARGET=""
 SIG=""; TRACE_ID=""; EV_COUNT=""; EV_FIRST=""; EV_LAST=""; EV_LINK=""; EV_SAMPLE=""
 
 while [ $# -gt 0 ]; do
@@ -70,6 +82,7 @@ while [ $# -gt 0 ]; do
     --last-seen)   EV_LAST="$2"; shift 2 ;;
     --link)        EV_LINK="$2"; shift 2 ;;
     --sample)      EV_SAMPLE="$2"; shift 2 ;;
+    --target)      TARGET="$2"; shift 2 ;;
     --yes)         YES=1; shift ;;
     *) echo "unknown arg: $1" >&2; exit 64 ;;
   esac
@@ -111,14 +124,6 @@ else
   [ "$TYPE" != "fix" ] || die "--adopt takes bug|feature|refactor" 64
 fi
 
-OWNER=$(jq -r '.project.owner // empty' "$CONFIG")
-NUMBER=$(jq -r '.project.number // empty' "$CONFIG")
-PTITLE=$(jq -r '.project.title // empty' "$CONFIG")
-REMOTE=$(jq -r '.repo.remote // empty' "$CONFIG")
-[ -n "$OWNER" ] && [ -n "$NUMBER" ] || die "config lacks project.owner / project.number" 66
-REPO_FLAG=()
-[ -z "$REMOTE" ] || REPO_FLAG=(-R "$(echo "$REMOTE" | sed -E 's#(git@github\.com:|https://github\.com/)##; s#\.git$##')")
-
 BIN="${SUPER_BOARD_BIN:-}"
 if [ -z "$BIN" ]; then
   # Installed: .claude/skills/super-collect/scripts → .claude/bin. Pack: skills/… → scripts/.
@@ -128,21 +133,78 @@ if [ -z "$BIN" ]; then
   done
 fi
 [ -n "$BIN" ] || die "cannot find super-qa-file-bug.sh — set SUPER_BOARD_BIN or run install.sh" 70
-
-# Router-owned duplicate/adopt writes share the same halt as the child filers.
 GITHUB_READ="$BIN/super-board-github-read.py"
-python3 "$GITHUB_READ" --check || exit $?
-REPO_NAME="${REPO_FLAG[1]:-}"
-if [ -z "$REPO_NAME" ]; then
-  REPO_NAME=$(python3 "$GITHUB_READ" --kind scalar -- repo view --json nameWithOwner --jq .nameWithOwner) || exit $?
-fi
-case "$REPO_NAME" in */*) ;; *) die "cannot resolve owner/name for collector" 70;; esac
 STATE="$BIN/super-board-collect-state.py"
-LOCK_KEY=$(printf '%s' "$REPO_NAME" | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().lower().encode()).hexdigest())')
-if [ "${SB_COLLECT_LOCK_HELD:-}" != "$LOCK_KEY" ]; then
-  exec python3 "$STATE" --repo "$REPO_NAME" --lock -- "$0" "${ORIGINAL_ARGS[@]}"
+RESOLVER="$BIN/super-board-config.py"
+TMPS=()
+trap 'rm -f ${TMPS[@]+"${TMPS[@]}"}' EXIT
+repo_of() { echo "$1" | sed -E 's#(git@github\.com:|https://github\.com/)##; s#\.git$##; s#/+$##'; }
+
+# --- hub boards: which repo files this (header § 8) -------------------------
+HUB_MODE=0; HUB_CONFIG=""; HUB_REPO=""; BOARD_REPOS=""; CHECK=(--check)
+if [ "$(jq -r 'has("members")' "$CONFIG")" = true ]; then
+  HUB_MODE=1; HUB_CONFIG="$CONFIG"; CHECK=(--check --config "$HUB_CONFIG")
+  python3 "$RESOLVER" validate --config "$HUB_CONFIG" >&2 || die "hub config is invalid: $HUB_CONFIG" 66
+  if [ -z "$TARGET" ]; then
+    WANT="$SOURCE"
+    [ "$SOURCE" != custom ] || WANT=$(printf '%s' "$FP" | cut -d'|' -f2)
+    [ -z "$WANT" ] || TARGET=$(jq -r --arg s "$WANT" '
+      [(.members | to_entries[] | select((.value.collect.sources // []) | index($s)) | .key)]
+      + (if ((.collect.sources // []) | index($s)) then ["hub"] else [] end)
+      | if length == 1 then .[0] else "" end' "$HUB_CONFIG")
+    [ -n "$TARGET" ] || die "hub config: source '${WANT:-<none>}' is in none or several of collect.sources / members.<key>.collect.sources — pass --target hub|<member key>" 64
+  fi
+  if [ "$TARGET" != hub ] && [ "$(jq -r --arg t "$TARGET" '.members | has($t)' "$HUB_CONFIG")" != true ]; then
+    die "--target must be hub or a member key ($(jq -r '.members | keys | join(", ")' "$HUB_CONFIG")); got: $TARGET" 64
+  fi
+  HUB_REPO=$(repo_of "$(jq -r '.hub.remote' "$HUB_CONFIG")")
+  MEMBER_REPOS=$(python3 "$RESOLVER" members --config "$HUB_CONFIG" | jq -r '[.[].repo] | join(",")') \
+    || die "cannot list the hub's members" 66
+  BOARD_REPOS="${HUB_REPO},${MEMBER_REPOS}"
+  # A hub parent waits in Backlog for triage's split.
+  [ "$TARGET" != hub ] || EXTRA_LABELS+=("needs-split")
+elif [ -n "$TARGET" ]; then
+  die "--target needs a hub config (one with members)" 64
 fi
-state() { python3 "$STATE" --repo "$REPO_NAME" --action "$1" --fingerprint "${FP:-adopt|$ADOPT}" --digest "${DIGEST:-}" --issue "${2:-}"; }
+
+# Router-owned duplicate/adopt writes share the same halt as the child filers; a hub
+# run also stops on any member's halt.
+python3 "$GITHUB_READ" "${CHECK[@]}" || exit $?
+
+load_target() { # CONFIG → OWNER NUMBER PTITLE REMOTE REPO_FLAG REPO_NAME
+  OWNER=$(jq -r '.project.owner // empty' "$CONFIG")
+  NUMBER=$(jq -r '.project.number // empty' "$CONFIG")
+  PTITLE=$(jq -r '.project.title // empty' "$CONFIG")
+  REMOTE=$(jq -r '.repo.remote // empty' "$CONFIG")
+  [ -n "$OWNER" ] && [ -n "$NUMBER" ] || die "config lacks project.owner / project.number" 66
+  REPO_FLAG=()
+  [ -z "$REMOTE" ] || REPO_FLAG=(-R "$(repo_of "$REMOTE")")
+  REPO_NAME="${REPO_FLAG[1]:-}"
+  if [ -z "$REPO_NAME" ]; then
+    REPO_NAME=$(python3 "$GITHUB_READ" --kind scalar -- repo view --json nameWithOwner --jq .nameWithOwner) || exit $?
+  fi
+  case "$REPO_NAME" in */*) ;; *) die "cannot resolve owner/name for collector" 70;; esac
+}
+
+# One lock per board: a hub's filings into the hub and every member serialize together.
+if [ "$HUB_MODE" -eq 1 ]; then LOCK_REPO="$HUB_REPO"; else load_target; LOCK_REPO="$REPO_NAME"; fi
+LOCK_KEY=$(printf '%s' "$LOCK_REPO" | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().lower().encode()).hexdigest())')
+if [ "${SB_COLLECT_LOCK_HELD:-}" != "$LOCK_KEY" ]; then
+  exec python3 "$STATE" --repo "$LOCK_REPO" --lock -- "$0" "${ORIGINAL_ARGS[@]}"
+fi
+if [ "$HUB_MODE" -eq 1 ]; then
+  # The target as one repo's config, from the resolver (paths never from cwd).
+  RESOLVED=$(mktemp); TMPS+=("$RESOLVED")
+  if [ "$TARGET" = hub ]; then python3 "$RESOLVER" hub --config "$HUB_CONFIG" --out "$RESOLVED" || exit 66
+  else python3 "$RESOLVER" member "$TARGET" --config "$HUB_CONFIG" --out "$RESOLVED" || exit 66; fi
+  CONFIG="$RESOLVED"
+  load_target
+fi
+# ref N REPO: how an issue is named in plan lines and bodies; id_out: on stdout.
+ref()    { if [ "$HUB_MODE" -eq 1 ]; then printf '%s#%s' "$2" "$1"; else printf '#%s' "$1"; fi; }
+id_out() { if [ "$HUB_MODE" -eq 1 ]; then echo "$2#$1"; else echo "$1"; fi; }
+TAIL=""; [ "$HUB_MODE" -eq 0 ] || TAIL="|${REPO_NAME}"
+state() { python3 "$STATE" --repo "$LOCK_REPO" --action "$1" --fingerprint "${FP:-adopt|$ADOPT}" --digest "${DIGEST:-}" --issue "${2:-}"; }
 DIGEST=""
 if [ -n "$BODY_FILE" ]; then
   DIGEST=$(python3 -c 'import hashlib,sys; print(hashlib.sha256((sys.argv[1]+"\0").encode()+open(sys.argv[2],"rb").read()).hexdigest())' "$SOURCE" "$BODY_FILE") || exit 70
@@ -177,21 +239,23 @@ fi
 # --- holding column ---------------------------------------------------------
 FIELDS=$(python3 "$GITHUB_READ" --kind fields -- project field-list "$NUMBER" --owner "$OWNER" --format json) || exit $?
 HOLD=""
-for c in Backlog Todo "To do" Triage Inbox; do
+HOLDS=(Backlog Todo "To do" Triage Inbox)
+[ "$TARGET" != hub ] || HOLDS=(Backlog)   # hub parents wait for the split in Backlog
+for c in "${HOLDS[@]}"; do
   hit=$(echo "$FIELDS" | jq -r --arg c "$c" '.fields[] | select(.name=="Status") | .options[]? | select(.name==$c) | .name' | head -1)
   if [ -n "$hit" ]; then HOLD="$hit"; break; fi
 done
-[ -n "$HOLD" ] || die "project ${OWNER}/${NUMBER} has no holding column (Backlog, Todo, To do, Triage, Inbox) — refusing: the filers would fall back to Ready" 65
+[ -n "$HOLD" ] || die "project ${OWNER}/${NUMBER} has no holding column (${HOLDS[*]}) — refusing: the filers would fall back to Ready" 65
 
 place() { # $1 = issue url
   local item_id project_id field_id option_id
-  python3 "$GITHUB_READ" --check || return $?
+  python3 "$GITHUB_READ" "${CHECK[@]}" || return $?
   item_id=$(gh project item-add "$NUMBER" --owner "$OWNER" --url "$1" --format json --jq '.id') || return 1
-  python3 "$GITHUB_READ" --check || return $?
+  python3 "$GITHUB_READ" "${CHECK[@]}" || return $?
   project_id=$(gh project view "$NUMBER" --owner "$OWNER" --format json --jq '.id') || return 1
   field_id=$(echo "$FIELDS" | jq -r '.fields[] | select(.name=="Status") | .id')
   option_id=$(echo "$FIELDS" | jq -r --arg c "$HOLD" '.fields[] | select(.name=="Status") | .options[] | select(.name==$c) | .id')
-  python3 "$GITHUB_READ" --check || return $?
+  python3 "$GITHUB_READ" "${CHECK[@]}" || return $?
   gh project item-edit --id "$item_id" --project-id "$project_id" \
     --field-id "$field_id" --single-select-option-id "$option_id" >/dev/null
 }
@@ -199,11 +263,11 @@ place() { # $1 = issue url
 tag() { # $1 = issue number, rest = labels; best-effort
   local n="$1"; shift
   for l in "$@"; do
-    python3 "$GITHUB_READ" --check || return $?
+    python3 "$GITHUB_READ" "${CHECK[@]}" || return $?
     gh label create "$l" ${REPO_FLAG[@]+"${REPO_FLAG[@]}"} --color 5319E7 --force >/dev/null 2>&1 || true
   done
   for l in "$@"; do
-    python3 "$GITHUB_READ" --check || return $?
+    python3 "$GITHUB_READ" "${CHECK[@]}" || return $?
     gh issue edit "$n" ${REPO_FLAG[@]+"${REPO_FLAG[@]}"} --add-label "$l" >/dev/null 2>&1 || echo "warn: could not label #${n} ${l}" >&2
   done
   return 0
@@ -211,7 +275,7 @@ tag() { # $1 = issue number, rest = labels; best-effort
 
 # --- adopt ------------------------------------------------------------------
 if [ -n "$ADOPT" ]; then
-  if [ "$YES" -ne 1 ]; then echo "would-adopt|#${ADOPT}|${TYPE}|${HOLD}"; exit 0; fi
+  if [ "$YES" -ne 1 ]; then echo "would-adopt|$(ref "$ADOPT" "$REPO_NAME")|${TYPE}|${HOLD}"; exit 0; fi
   URL=$(python3 "$GITHUB_READ" --kind scalar -- issue view "$ADOPT" ${REPO_FLAG[@]+"${REPO_FLAG[@]}"} --json url --jq .url) || exit $?
   BOARD=$(python3 "$GITHUB_READ" --kind items -- project item-list "$NUMBER" --owner "$OWNER" --format json --limit 500) || exit $?
   # A matching issue number without its repository URL cannot prove whether
@@ -223,51 +287,57 @@ if [ -n "$ADOPT" ]; then
   fi
   # Never reset a card already on the board to Backlog, especially live work.
   ON_BOARD=$(printf '%s' "$BOARD" | jq -r --arg u "$URL" '[.items[] | select(.content.url == $u)] | length') || exit 70
-  if [ "$ON_BOARD" != 0 ]; then echo "$ADOPT"; exit 0; fi
+  if [ "$ON_BOARD" != 0 ]; then id_out "$ADOPT" "$REPO_NAME"; exit 0; fi
   state begin "$ADOPT" || exit $?
-  tag "$ADOPT" "$TYPE" "source:collect" ${EXTRA_LABELS[@]+"${EXTRA_LABELS[@]}"} || { RC=$?; echo "$ADOPT"; exit "$RC"; }
-  place "$URL" || { RC=$?; echo "$ADOPT"; [ "$RC" -eq 79 ] && exit 79; echo "warn: #${ADOPT} not placed in '${HOLD}'" >&2; exit 71; }
+  tag "$ADOPT" "$TYPE" "source:collect" ${EXTRA_LABELS[@]+"${EXTRA_LABELS[@]}"} || { RC=$?; id_out "$ADOPT" "$REPO_NAME"; exit "$RC"; }
+  place "$URL" || { RC=$?; id_out "$ADOPT" "$REPO_NAME"; [ "$RC" -eq 79 ] && exit 79; echo "warn: #${ADOPT} not placed in '${HOLD}'" >&2; exit 71; }
   state success "$ADOPT" || exit $?
-  echo "$ADOPT"; exit 0
+  id_out "$ADOPT" "$REPO_NAME"; exit 0
 fi
 
 # --- dedupe -----------------------------------------------------------------
-# Repo-wide, any label, any state. An open hit is a duplicate; a closed-only hit
-# is a recurrence — file again, but name the issue that claimed the fix.
+# Repo-wide (a hub board: the hub and every member), any label, any state. An open hit
+# is a duplicate; a closed-only hit is a recurrence — file again, but name the issue
+# that claimed the fix.
 # Exact match on a whitespace-delimited token: `err|sentry|441` must not hit `err|sentry|4411`.
-ISSUES_JSON=$(python3 "$GITHUB_READ" --issue-history "$REPO_NAME") || exit $?
-HITS=$(printf '%s' "$ISSUES_JSON" | jq -r --arg fp "$FP" '[.[] | select(any(.body | splits("\\s+"); . == $fp))] | sort_by(.state != "OPEN") | map("\(.number) \(.state)") | .[]') || exit 70
+ISSUES_JSON=$(python3 "$GITHUB_READ" --issue-history "${BOARD_REPOS:-$REPO_NAME}") || exit $?
+# Lines `<number> <state> <repo>`, open first.
+HITS=$(printf '%s' "$ISSUES_JSON" | jq -r --arg fp "$FP" --arg r "$REPO_NAME" '[.[] | select(any(.body | splits("\\s+"); . == $fp))] | sort_by(.state != "OPEN") | map("\(.number) \(.state) \(.repo // $r)") | .[]') || exit 70
 
 OPEN_HIT=$(echo "$HITS" | awk '$2=="OPEN"{print $1; exit}')
+OPEN_REPO=$(echo "$HITS" | awk '$2=="OPEN"{print $3; exit}')
 CLOSED_HIT=$(echo "$HITS" | awk '$2!="OPEN" && $1!=""{print $1; exit}')
+CLOSED_REPO=$(echo "$HITS" | awk '$2!="OPEN" && $1!=""{print $3; exit}')
 
 # Cross-source signature (header § 5), from the same history read: no extra GitHub call.
-SIG_OPEN=""; SIG_CLOSED=""; SEEN_BEFORE=""
+SIG_OPEN=""; SIG_OPEN_REPO=""; SIG_CLOSED=""; SIG_CLOSED_REPO=""; SEEN_BEFORE=""; SEEN_REPO=""
 if [ -n "$SIG" ]; then
-  SIG_HITS=$(printf '%s' "$ISSUES_JSON" | jq -r --arg m "sb-signature: ${SIG} -->" '[.[] | select(.body | contains($m))] | sort_by(.state != "OPEN") | map("\(.number) \(.state)") | .[]') || exit 70
+  SIG_HITS=$(printf '%s' "$ISSUES_JSON" | jq -r --arg m "sb-signature: ${SIG} -->" --arg r "$REPO_NAME" '[.[] | select(.body | contains($m))] | sort_by(.state != "OPEN") | map("\(.number) \(.state) \(.repo // $r)") | .[]') || exit 70
   SIG_OPEN=$(echo "$SIG_HITS" | awk '$2=="OPEN"{print $1; exit}')
+  SIG_OPEN_REPO=$(echo "$SIG_HITS" | awk '$2=="OPEN"{print $3; exit}')
   SIG_CLOSED=$(echo "$SIG_HITS" | awk '$2!="OPEN" && $1!=""{print $1; exit}')
+  SIG_CLOSED_REPO=$(echo "$SIG_HITS" | awk '$2!="OPEN" && $1!=""{print $3; exit}')
 fi
 
 if [ -n "$OPEN_HIT" ]; then
-  if [ "$YES" -ne 1 ]; then echo "duplicate|#${OPEN_HIT}|${TYPE}|${TITLE}"; exit 0; fi
-  python3 "$GITHUB_READ" --check || { RC=$?; echo "$OPEN_HIT"; exit "$RC"; }
+  if [ "$YES" -ne 1 ]; then echo "duplicate|$(ref "$OPEN_HIT" "$OPEN_REPO")|${TYPE}|${TITLE}"; exit 0; fi
+  python3 "$GITHUB_READ" "${CHECK[@]}" || { RC=$?; id_out "$OPEN_HIT" "$OPEN_REPO"; exit "$RC"; }
   SEEN=$(state seen "$OPEN_HIT") || exit $?
-  if [ "$SEEN" = unchanged ]; then echo "$OPEN_HIT"; exit 0; fi
+  if [ "$SEEN" = unchanged ]; then id_out "$OPEN_HIT" "$OPEN_REPO"; exit 0; fi
   state begin "$OPEN_HIT" || exit $?
-  gh issue comment "$OPEN_HIT" ${REPO_FLAG[@]+"${REPO_FLAG[@]}"} --body "Seen again by super-collect (${SOURCE}).
+  gh issue comment "$OPEN_HIT" -R "$OPEN_REPO" --body "Seen again by super-collect (${SOURCE}).
 
-$(cat "$BODY_FILE")" >/dev/null 2>&1 || { python3 "$GITHUB_READ" --halt "Collector comment outcome unknown for #${OPEN_HIT}; reconcile before retrying"; echo "$OPEN_HIT"; exit 79; }
+$(cat "$BODY_FILE")" >/dev/null 2>&1 || { python3 "$GITHUB_READ" --halt "Collector comment outcome unknown for ${OPEN_REPO}#${OPEN_HIT}; reconcile before retrying"; id_out "$OPEN_HIT" "$OPEN_REPO"; exit 79; }
   state success "$OPEN_HIT" || exit $?
-  echo "$OPEN_HIT"; exit 0
+  id_out "$OPEN_HIT" "$OPEN_REPO"; exit 0
 fi
 
 # Another source already filed this problem: evidence on that card, never a second card.
 if [ -n "$SIG_OPEN" ]; then
-  if [ "$YES" -ne 1 ]; then echo "evidence|#${SIG_OPEN}|${SOURCE}|${TITLE}"; exit 0; fi
-  python3 "$GITHUB_READ" --check || { RC=$?; echo "$SIG_OPEN"; exit "$RC"; }
-  COMMENTS=$(python3 "$GITHUB_READ" --kind comments -- api "repos/${REPO_NAME}/issues/${SIG_OPEN}/comments" --paginate --slurp) \
-    || { RC=$?; echo "$SIG_OPEN"; exit "$RC"; }
+  if [ "$YES" -ne 1 ]; then echo "evidence|$(ref "$SIG_OPEN" "$SIG_OPEN_REPO")|${SOURCE}|${TITLE}"; exit 0; fi
+  python3 "$GITHUB_READ" "${CHECK[@]}" || { RC=$?; id_out "$SIG_OPEN" "$SIG_OPEN_REPO"; exit "$RC"; }
+  COMMENTS=$(python3 "$GITHUB_READ" --kind comments -- api "repos/${SIG_OPEN_REPO}/issues/${SIG_OPEN}/comments" --paginate --slurp) \
+    || { RC=$?; id_out "$SIG_OPEN" "$SIG_OPEN_REPO"; exit "$RC"; }
   # One evidence comment per source per issue per 24h. Unreadable dates count as recent:
   # a skipped comment costs nothing, a comment storm costs the issue's readability.
   RECENT=$(printf '%s' "$COMMENTS" | python3 -c '
@@ -279,7 +349,7 @@ hit = any(mark in (c.get("body") or "") and
           (now - d.datetime.fromisoformat(str(c["created_at"]).replace("Z", "+00:00"))).total_seconds() < 86400
           for c in cs)
 print("yes" if hit else "no")' "$SOURCE") || RECENT=yes
-  if [ "$RECENT" != no ]; then echo "$SIG_OPEN"; exit 0; fi
+  if [ "$RECENT" != no ]; then id_out "$SIG_OPEN" "$SIG_OPEN_REPO"; exit 0; fi
   state begin "$SIG_OPEN" || exit $?
   EV_BODY="[collect] [evidence] 🔁 seen again · ${SOURCE}
 Did: matched sb-signature \`${SIG}\` from ${SOURCE} (\`${FP}\`)
@@ -289,21 +359,21 @@ Sample: \`$(printf '%s' "$EV_SAMPLE" | tr '\r\n`' '  '"'" | cut -c1-200)\`}${TRA
 Trace: \`${TRACE_ID}\`}
 Next: none
 <!-- sb-evidence: ${SOURCE}:${FP} -->"
-  gh issue comment "$SIG_OPEN" ${REPO_FLAG[@]+"${REPO_FLAG[@]}"} --body "$EV_BODY" >/dev/null 2>&1 \
-    || { python3 "$GITHUB_READ" --halt "Collector evidence comment outcome unknown for #${SIG_OPEN}; reconcile before retrying"; echo "$SIG_OPEN"; exit 79; }
+  gh issue comment "$SIG_OPEN" -R "$SIG_OPEN_REPO" --body "$EV_BODY" >/dev/null 2>&1 \
+    || { python3 "$GITHUB_READ" --halt "Collector evidence comment outcome unknown for ${SIG_OPEN_REPO}#${SIG_OPEN}; reconcile before retrying"; id_out "$SIG_OPEN" "$SIG_OPEN_REPO"; exit 79; }
   state success "$SIG_OPEN" || exit $?
-  echo "$SIG_OPEN"; exit 0
+  id_out "$SIG_OPEN" "$SIG_OPEN_REPO"; exit 0
 fi
 # A closed issue with the same signature: file new, naming it (recurrence across sources).
-[ -n "$CLOSED_HIT" ] || [ -z "$SIG_CLOSED" ] || SEEN_BEFORE="$SIG_CLOSED"
+[ -n "$CLOSED_HIT" ] || [ -z "$SIG_CLOSED" ] || { SEEN_BEFORE="$SIG_CLOSED"; SEEN_REPO="$SIG_CLOSED_REPO"; }
 
 if [ "$YES" -ne 1 ]; then
   # A bug's full shape is the QA filer's check; run it now so the plan never says
   # would-file for a body --yes would refuse with 66.
   if [ "$TYPE" = bug ]; then "$BIN/super-qa-file-bug.sh" --title "$TITLE" --body-file "$BODY_FILE" --check-body || exit $?; fi
-  if [ -n "$CLOSED_HIT" ]; then echo "recurrence|#${CLOSED_HIT}|${TYPE}|${TITLE}|${HOLD}"
-  elif [ -n "${SEEN_BEFORE:-}" ]; then echo "recurrence|#${SEEN_BEFORE}|${TYPE}|${TITLE}|${HOLD}"
-  else echo "would-file|${TYPE}|${TITLE}|${HOLD}"; fi
+  if [ -n "$CLOSED_HIT" ]; then echo "recurrence|$(ref "$CLOSED_HIT" "$CLOSED_REPO")|${TYPE}|${TITLE}|${HOLD}${TAIL}"
+  elif [ -n "${SEEN_BEFORE:-}" ]; then echo "recurrence|$(ref "$SEEN_BEFORE" "$SEEN_REPO")|${TYPE}|${TITLE}|${HOLD}${TAIL}"
+  else echo "would-file|${TYPE}|${TITLE}|${HOLD}${TAIL}"; fi
   exit 0
 fi
 
@@ -311,7 +381,7 @@ state begin || exit $?
 
 # --- compose + dispatch -----------------------------------------------------
 BODY_TMP=$(mktemp); TRACE_TMP=$(mktemp); CR_TMP=$(mktemp)
-trap 'rm -f "$BODY_TMP" "$TRACE_TMP" "$CR_TMP"' EXIT
+TMPS+=("$BODY_TMP" "$TRACE_TMP" "$CR_TMP")
 HERE_SC=$(cd "$(dirname "$0")" && pwd)
 SRC_BODY="$BODY_FILE"
 if [ -n "$TRACE_ID" ]; then
@@ -338,9 +408,9 @@ fi
 {
   cat "$SRC_BODY"
   if [ -n "$CLOSED_HIT" ]; then
-    echo; echo "> Recurrence: this fingerprint was last filed as #${CLOSED_HIT}, which is closed."
+    echo; echo "> Recurrence: this fingerprint was last filed as $(ref "$CLOSED_HIT" "$CLOSED_REPO"), which is closed."
   elif [ -n "$SEEN_BEFORE" ]; then
-    echo; echo "> Seen before in #${SEEN_BEFORE} (closed), reported by another source with the same signature."
+    echo; echo "> Seen before in $(ref "$SEEN_BEFORE" "$SEEN_REPO") (closed), reported by another source with the same signature."
   fi
   echo; echo "<!-- super-collect-fingerprint: ${FP} -->"
   echo "<!-- super-collect-source: ${SOURCE} -->"
@@ -382,14 +452,14 @@ cat "$ERR" >&2; rm -f "$ERR"
 N=$(echo "$OUT" | tail -1)
 # A child may have created the issue before a required placement read failed.
 # Preserve its identity without tagging or making further writes after the halt.
-if [ "$RC" -eq 79 ]; then [ -z "$N" ] || echo "$N"; exit 79; fi
+if [ "$RC" -eq 79 ]; then [ -z "$N" ] || id_out "$N" "$REPO_NAME"; exit 79; fi
 if [ "$RC" -eq 64 ] || [ "$RC" -eq 66 ]; then state known-failure || true; fi
 case "$N" in ''|*[!0-9]*) die "filer failed (exit ${RC})" "$([ "$RC" -ne 0 ] && echo "$RC" || echo 70)" ;; esac
 if [ "$RC" -ne 0 ]; then
-  python3 "$GITHUB_READ" --halt "Collector filing/placement incomplete for #${N}; reconcile before retrying"
-  echo "$N"; exit 79
+  python3 "$GITHUB_READ" --halt "Collector filing/placement incomplete for ${REPO_NAME}#${N}; reconcile before retrying"
+  id_out "$N" "$REPO_NAME"; exit 79
 fi
-tag "$N" "source:collect" "collect:${SOURCE}" ${EXTRA_LABELS[@]+"${EXTRA_LABELS[@]}"} || { RC=$?; echo "$N"; exit "$RC"; }
+tag "$N" "source:collect" "collect:${SOURCE}" ${EXTRA_LABELS[@]+"${EXTRA_LABELS[@]}"} || { RC=$?; id_out "$N" "$REPO_NAME"; exit "$RC"; }
 if [ "$RC" -eq 0 ]; then state success "$N" || exit $?; fi
-echo "$N"
+id_out "$N" "$REPO_NAME"
 exit "$RC"
