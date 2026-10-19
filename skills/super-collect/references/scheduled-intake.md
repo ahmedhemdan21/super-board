@@ -11,7 +11,10 @@ authenticated GitHub CLI, Python, jq, and access to the configured sources.
 Credentials remain in the owning project's environment/secret store. Never put
 secrets or private ticket bodies in scheduler notifications or command arguments.
 A `loki` / `prometheus` source on the ssh transport also needs a non-interactive
-SSH key for its host (`BatchMode=yes` never prompts).
+SSH key for its host (`BatchMode=yes` never prompts). The `slack` source is built in
+and needs only `SLACK_BOT_TOKEN` in that environment: it calls the Slack Web API
+itself, so it runs headless (a Slack MCP server would not). It is the one source
+that writes outside GitHub: one thread reply per filed report, only with `--yes`.
 Confirm the active config matches the intended repo/board, then test a dry run.
 
 ## Copyable agent-job prompt

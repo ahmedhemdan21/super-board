@@ -79,6 +79,9 @@ class Classify(Base):
 
     def test_builtin_and_unknown(self):
         self.assertEqual(cu.classify("sentry")["kind"], "builtin")
+        # Slack is a built-in source now (collect_slack.py); a Slack MCP server stays typable.
+        self.assertEqual(cu.classify("slack")["kind"], "builtin")
+        self.assertEqual(cu.classify("mcp:slack")["kind"], "mcp")
         code, r = run(["classify", "no such thing here"])
         self.assertEqual(code, 2)
         self.assertIn("couldn't read", r["error"])

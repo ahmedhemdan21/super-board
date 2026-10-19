@@ -145,7 +145,8 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    │    db/migrate, alembic/versions, EF Core **/Migrations/**/*.cs) and migrate scripts in the manifest (db:migrate, …)
    ├─ collect signals: Sentry (@sentry/* / sentry-sdk in manifests, Sentry.init(, .sentryclirc),
    │    PostHog (posthog-js / posthog-node / posthog, posthog.init(, NEXT_PUBLIC_POSTHOG_* names);
-   │    key names: bash $SB/super-board-env-check.sh SENTRY_AUTH_TOKEN POSTHOG_PERSONAL_API_KEY
+   │    Slack (a #bugs / #bug-reports / #qa channel named in the README or docs, or the user names it);
+   │    key names: bash $SB/super-board-env-check.sh SENTRY_AUTH_TOKEN POSTHOG_PERSONAL_API_KEY SLACK_BOT_TOKEN
    ├─ verification commands: preserve valid `verify_commands`; otherwise inspect the owning
    │    project's documented checks (start from `stack` → verify_commands, each with its
    │    source file) and stage those commands. Unresolved checks are a setup
@@ -346,9 +347,11 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
 7. 📥 BUG SOURCES — tick sources; "Add another source" is the free-text box
    ├─ AskUserQuestion multiSelect "Where should I look for problems?" (header "Bug sources"):
    │    Sentry — app errors (Recommended when detected) · PostHog — rage clicks, errors, slow pages
-   │    (Recommended when detected) · GitHub issues — bugs filed but not on the board · Past PRs —
+   │    (Recommended when detected) · Slack — bug-channel posts and 🐛-tagged messages, replies with
+   │    the issue link · GitHub issues — bugs filed but not on the board · Past PRs —
    │    review comments that keep repeating · Architecture — tangled or duplicated code.
-   │    Undetected Sentry / PostHog are left out. More than 4 options → split into two questions
+   │    Undetected Sentry / PostHog are left out; Slack is always offered (no code signal).
+   │    Typing "slack" in ➕ points here: it is built in now (a Slack MCP server is "mcp:slack"). More than 4 options → split into two questions
    │    in the same call ("Error sources", "Code sources") — the tool takes 4 per question.
    │    "Other" = ➕ Add another source (link, app, API URL, MCP or command).
    ├─ Built-ins: ask only what detection missed (Sentry org/project/host, PostHog host/project_id).
@@ -360,6 +363,11 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    │    Missing key → the exact line to add (name only) to the file `python3 .claude/skills/super-collect/scripts/collect_common.py secret-file` prints (a tracked .env → ALWAYS .env.local; confirm `git check-ignore .env.local` before writing) + scopes: Sentry `event:read
    │    project:read`; PostHog personal key `query:read error_tracking:read`. PostHog failure
    │    events: grep capture() calls for *_failed / *_error, propose them, user confirms.
+   │    Slack, short guide from .claude/skills/super-collect/references/slack-app.md: create the app
+   │    from its manifest at api.slack.com/apps → Install to Workspace → copy the Bot User OAuth
+   │    Token (xoxb-…) into the secret-file as SLACK_BOT_TOKEN (the user does it; never in chat) →
+   │    /invite @<app> in each bug channel. Ask the channels (IDs or #names) → collect.slack.channels,
+   │    and the reaction only when the user wants another than bug → collect.slack.reaction.
    ├─ ➕ typed text → C=.claude/skills/super-collect/scripts/collect_custom.py
    │    python3 $C classify "<text>" → kind mcp | http | cli (an app name resolves to one)
    │    python3 $C ping --kind <k> --target <t> [--auth-env <E>] --name <n>   (read-only)
@@ -371,6 +379,7 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    ├─ Ping each built-in, read-only, before step 8:
    │      python3 .claude/skills/super-collect/scripts/collect_sentry.py  --config <staged> ping
    │      python3 .claude/skills/super-collect/scripts/collect_posthog.py --config <staged> ping
+   │      python3 .claude/skills/super-collect/scripts/collect_slack.py   --config <staged> ping   (auth.test + reads each channel)
    │      python3 .claude/skills/super-collect/scripts/collect_loki.py       --config <staged> ping
    │      python3 .claude/skills/super-collect/scripts/collect_prometheus.py --config <staged> ping
    │      gh api graphql -f query='{viewer{login}}'          (github, prs)
@@ -378,6 +387,7 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
           ✅ linear — can read issues (12 open bugs); saved in this project's config
           ✅ sentry · github · prs · architecture
           ❌ posthog — key missing: add POSTHOG_PERSONAL_API_KEY to .env.local (left out)
+          ❌ slack — the Slack bot is not in channel #bugs: type /invite @<app> there (left out)
 
 8. ✅ REVIEW — compact table, then write once
    ├─ Two columns, no borders:

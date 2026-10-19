@@ -42,12 +42,15 @@ from collections import OrderedDict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import collect_common as cc  # noqa: E402
 
-BUILTIN = {"sentry", "posthog", "github", "prs", "architecture"}
+# Built-in sources: typing one of these points the user at the built-in instead of a custom
+# source. `slack` is built in (collect_slack.py, runs headless); a project that wants its own
+# Slack MCP server instead types "mcp:slack".
+BUILTIN = {"sentry", "posthog", "loki", "prometheus", "slack", "github", "prs", "architecture"}
 # Known apps → how to read them. MCP names are the usual server names; a project whose
 # server is called something else types it as "mcp:<name>".
 APPS = {
     "linear": ("mcp", "linear", None), "jira": ("mcp", "atlassian", None), "atlassian": ("mcp", "atlassian", None),
-    "notion": ("mcp", "notion", None), "asana": ("mcp", "asana", None), "slack": ("mcp", "slack", None),
+    "notion": ("mcp", "notion", None), "asana": ("mcp", "asana", None),
     "vercel": ("cli", "vercel logs --output json", None), "fly": ("cli", "fly logs --no-tail --json", None),
     "datadog": ("http", "https://api.datadoghq.com/api/v2/logs/events?filter[query]=status:error", "DD_API_KEY"),
     "betterstack": ("http", "https://uptime.betterstack.com/api/v2/incidents", "BETTERSTACK_API_TOKEN"),

@@ -16,7 +16,8 @@
 #      (tracking gaps: `gap|<workflow>`),
 #      github `github|<issue#>`, prs `prs|<boundary>|<cause>`,
 #      architecture `arch|<module>|<problem>`, loki `loki|<group>|<signature>`,
-#      prometheus `prom|alert|<name>|<labels>` or `prom|target|<job>|<instance>`.
+#      prometheus `prom|alert|<name>|<labels>` or `prom|target|<job>|<instance>`,
+#      slack `slack|<channel id>|<message ts>` (the whole key is checked, not just the prefix).
 #   5. one card per real problem ACROSS sources: `--signature <crossSignature>` is stamped as
 #      `<!-- sb-signature: <hash> -->`. When no issue holds this fingerprint but an OPEN one
 #      holds the signature (Sentry, Loki and PostHog saw the same crash), it appends ONE
@@ -30,7 +31,7 @@
 #
 # Usage:
 #   super-collect-file.sh --config <cfg.json> --type bug|feature|refactor|fix \
-#     --source sentry|posthog|loki|prometheus|github|prs|architecture|custom --title "<one line>" --body-file <md> \
+#     --source sentry|posthog|loki|prometheus|slack|github|prs|architecture|custom --title "<one line>" --body-file <md> \
 #     --fingerprint "<stable key>" [--priority high|medium|low] [--area <a>] \
 #     [--label <l>]... [--yes]          # e.g. --label needs-triage --label ux
 #     [--signature <12 hex>] [--trace-id <32 hex>]
@@ -85,8 +86,9 @@ if [ -z "$ADOPT" ]; then
     sentry) FP_PREFIX="err|sentry|" ;; posthog) FP_PREFIX="posthog|" ;; github) FP_PREFIX="github|" ;;
     prs) FP_PREFIX="prs|" ;; architecture) FP_PREFIX="arch|" ;;
     loki) FP_PREFIX="loki|" ;; prometheus) FP_PREFIX="prom|" ;;
+    slack) FP_PREFIX="slack|" ;;     # collect_slack.py: slack|<channel id>|<message ts>
     custom) FP_PREFIX="custom|" ;;   # onboard's "➕ Add another source": custom|<name>|<key>
-    *) die "--source must be sentry|posthog|loki|prometheus|github|prs|architecture|custom (got: ${SOURCE:-<unset>})" 64 ;;
+    *) die "--source must be sentry|posthog|loki|prometheus|slack|github|prs|architecture|custom (got: ${SOURCE:-<unset>})" 64 ;;
   esac
   [ -n "$TITLE" ] || die "--title is required" 64
   [ -n "$FP" ]    || die "--fingerprint is required (dedupe key)" 64
@@ -94,6 +96,10 @@ if [ -z "$ADOPT" ]; then
   case "$FP" in *'"'*|*'\\'*) die "--fingerprint may not contain quotes or backslashes" 64 ;; esac
   case "$SOURCE|$FP" in "posthog|gap|"?*) FP_PREFIX="gap|" ;; esac
   case "$FP" in "$FP_PREFIX"?*) ;; *) die "--fingerprint for source ${SOURCE} must start with '${FP_PREFIX}' (got: $FP)" 64 ;; esac
+  SLACK_FP='^slack\|[CG][A-Z0-9]+\|[0-9]+\.[0-9]+$'
+  if [ "$SOURCE" = slack ] && ! [[ "$FP" =~ $SLACK_FP ]]; then
+    die "--fingerprint for source slack must be slack|<channel id>|<message ts> (got: $FP)" 64
+  fi
   [ -n "$BODY_FILE" ] && [ -r "$BODY_FILE" ] || die "--body-file missing or unreadable: ${BODY_FILE:-<unset>}" 66
   case "$SIG" in ""|[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
     *) die "--signature must be the 12-hex crossSignature (got: $SIG)" 64 ;; esac

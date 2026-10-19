@@ -39,8 +39,8 @@
       "id": "super-collect",
       "label": "/super-collect",
       "kind": "public",
-      "what": "Finds problems in one project and files them as verified tickets into its super-board Backlog: five built-in sources plus any custom source added in onboard. It never builds, edits app code, or moves a card to Ready.",
-      "when": "Eric runs /super-collect (all enabled sources) or /super-collect <source…> with sentry, posthog, github, prs, architecture or a custom source's name; optional --since and --yes.",
+      "what": "Finds problems in one project and files them as verified tickets into its super-board Backlog: six built-in sources plus any custom source added in onboard. It never builds, edits app code, or moves a card to Ready.",
+      "when": "Eric runs /super-collect (all enabled sources) or /super-collect <source…> with sentry, posthog, slack, github, prs, architecture or a custom source's name; optional --since and --yes.",
       "how": "Fetches each source for the window (default 14 days), sends every candidate to one fresh verifier sub-agent, then files through super-collect-file.sh. Dry-run by default: it shows a plan table and files on confirm.",
       "source": [
         "_skills/vendor/super-board/skills/super-collect/SKILL.md"
@@ -48,12 +48,13 @@
       "verbs": [
         "sentry",
         "posthog",
+        "slack",
         "github",
         "prs",
         "architecture",
         "custom"
       ],
-      "sublabel": "sentry · posthog · github · prs · architecture · custom",
+      "sublabel": "sentry · posthog · slack · github · prs · architecture · custom",
       "opensView": "super-collect",
       "author": "EricTechPro"
     },
@@ -523,6 +524,17 @@
       "how": "`collect_posthog.py list|events|funnel|check` runs HogQL queries with POSTHOG_PERSONAL_API_KEY; signal groups over the thresholds become bugs, and missing workflow events become `analytics` feature tickets.",
       "source": [
         "_skills/vendor/super-board/skills/super-collect/scripts/collect_posthog.py"
+      ]
+    },
+    {
+      "id": "collect-slack",
+      "label": "slack fetcher",
+      "kind": "script",
+      "what": "The slack source: top-level posts in the configured bug channels and any message tagged with the bug reaction, with thread replies and a permalink; one thread reply links the filed issue.",
+      "when": "Run when /super-collect includes slack; `reply` runs after a --yes filing only.",
+      "how": "`collect_slack.py list|reply|ping` calls the Slack Web API with SLACK_BOT_TOKEN; text is quoted as untrusted evidence with mentions made inert. One report becomes one bug, fp `slack|<channel>|<ts>`.",
+      "source": [
+        "_skills/vendor/super-board/skills/super-collect/scripts/collect_slack.py"
       ]
     },
     {
@@ -1979,6 +1991,13 @@
       "to": "collect-posthog",
       "label": "fetches posthog",
       "when": "posthog is requested or enabled"
+    },
+    {
+      "id": "c-slack",
+      "from": "super-collect",
+      "to": "collect-slack",
+      "label": "fetches slack",
+      "when": "slack is requested or enabled"
     },
     {
       "id": "c-github",
@@ -5005,6 +5024,7 @@
         "collect-fetch",
         "collect-sentry",
         "collect-posthog",
+        "collect-slack",
         "gh-issues",
         "collect-prs",
         "improve-codebase-architecture",
@@ -5020,6 +5040,11 @@
           "from": "collect-fetch",
           "to": "collect-posthog",
           "label": "posthog"
+        },
+        {
+          "from": "collect-fetch",
+          "to": "collect-slack",
+          "label": "slack"
         },
         {
           "from": "collect-fetch",
