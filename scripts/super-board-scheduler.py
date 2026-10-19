@@ -52,7 +52,8 @@ Triggers:
 A run is `skipped: board busy` while the repo has a board running (inflight/
 workflow-wave.lock, codex-wave.pid, a legacy inflight/<N> lane lock, or another
 scheduler run on that repo) and `skipped: github halted` while the repo's GitHub halt
-file exists. Lock files are trusted as present: a stale one keeps skipping, visibly.
+file exists. A hub config's job (run from the hub checkout) checks the hub and every
+member checkout the config names; it may only `collect` until hub boards run (P4). Lock files are trusted as present: a stale one keeps skipping, visibly.
 
 Records: <state>/runs/<job>/<UTC stamp>/ run.json · log.txt (stream-json flattened,
 secrets redacted) · stream.jsonl · summary.json (board snapshots before/after through
@@ -454,8 +455,38 @@ def board_root(repo):
     return common.parent if common is not None and common.name == ".git" else Path(repo).resolve()
 
 
-def board_busy(repo):
-    """A reason string when a board is running in (or halted for) this repo, else None."""
+def board_places(repo, slug=None):
+    """[(member key, checkout)] a job's board covers: the repo itself ("" key), plus every
+    member checkout of a hub config, resolved by super-board-config.py (never from cwd)."""
+    places = [("", Path(repo))]
+    cfg = board_config(repo, slug) if slug else None
+    if isinstance(cfg, dict) and "members" in cfg:
+        path = Path(repo) / ".claude" / "super-board" / "configs" / f"{slug}.json"
+        try:
+            res = _load("sb_config", "super-board-config.py")
+            places += [(m["key"], Path(m["path"])) for m in res.members_of(res.checked(str(path)), str(path))]
+        except (Exception, SystemExit):  # an invalid hub config: its own run refuses it
+            pass
+    return places
+
+
+def board_busy(repo, slug=None):
+    """A reason string when a board is running in (or halted for) this repo, or for any
+    member of its hub config, else None."""
+    for key, place in board_places(repo, slug):
+        why = _busy_one(place)
+        if why:
+            return f"{why} in member {key}" if key else why
+    if os.name != "nt" and shutil.which("pgrep"):
+        r = subprocess.run(["pgrep", "-f", "super-board-run.sh"], capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip():
+            return "board busy (super-board-run.sh is running)"
+    return None
+
+
+def _busy_one(repo):
+    if not Path(repo).is_dir():
+        return None
     sb = board_root(repo) / ".claude" / "super-board"
     if (sb / "github-halt.json").exists():
         return "github halted (.claude/super-board/github-halt.json)"
@@ -466,10 +497,6 @@ def board_busy(repo):
     inflight = sb / "inflight"
     if inflight.is_dir() and any(p.name.isdigit() for p in inflight.iterdir()):
         return "board busy (legacy lane lock in inflight/)"
-    if os.name != "nt" and shutil.which("pgrep"):
-        r = subprocess.run(["pgrep", "-f", "super-board-run.sh"], capture_output=True, text=True)
-        if r.returncode == 0 and r.stdout.strip():
-            return "board busy (super-board-run.sh is running)"
     return None
 
 
@@ -516,8 +543,10 @@ def board_config(repo, slug):
 
 
 def board_repo_name(cfg):
-    m = re.search(r"github\.com[:/]+([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$",
-                  ((cfg or {}).get("repo") or {}).get("remote") or "")
+    """The repo the runs issue lives in: `repo.remote`, or a hub config's `hub.remote`."""
+    cfg = cfg or {}
+    remote = (cfg.get("repo") or {}).get("remote") or (cfg.get("hub") or {}).get("remote") or ""
+    m = re.search(r"github\.com[:/]+([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$", remote)
     return f"{m.group(1)}/{m.group(2)}" if m else None
 
 
@@ -958,13 +987,18 @@ class Scheduler:
         if job is None:
             raise ValueError(f"no job named {name}")
         bc = board_config(job["repo"], job["config"])
-        busy = board_busy(job["repo"])
+        busy = board_busy(job["repo"], job["config"])
         if busy:
             d, run = self.record_simple(job, trigger, "skipped", busy)
             self.finish(job, run, None)
             return d, run
         if bc is None:
             d, run = self.record_simple(job, trigger, "failed", f"no board config .claude/super-board/configs/{job['config']}.json")
+            self.finish(job, run, None)
+            return d, run
+        if "run" in job["steps"] and "members" in bc:
+            d, run = self.record_simple(job, trigger, "failed", "a hub (members) config collects but cannot "
+                                        "run yet (P4); schedule steps [\"collect\"] for it")
             self.finish(job, run, None)
             return d, run
         if "run" in job["steps"] and (bc.get("worker_backend") or "workflow") != "workflow":

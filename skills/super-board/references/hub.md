@@ -163,3 +163,45 @@ planner never plans. TODO at integration (P2/P4): `super-board-wave-plan.sh` mus
 every child closed `COMPLETED` → comment listing them and close the parent as completed; any
 child closed `NOT_PLANNED` → leave it open and comment once (`<!-- sb-parent-needs-human -->`)
 that a human must decide. Run it once a wave, or after a merge.
+
+## Intake (P5)
+
+Reports are filed once. `/super-collect` runs from the hub checkout with the hub config
+(super-collect SKILL.md → Hub boards):
+
+- Top-level `collect.sources` (one Slack bug channel for every repo) file into the **hub** repo:
+  Backlog, label `needs-split`. Triage's split (triage.md → Hub: split) then maps each to
+  backend, frontend or both.
+- A member's own `members.<key>.collect.sources` (loki for the backend, sentry for the
+  frontend) file straight into that member, with that member's resolved settings.
+- `super-collect-file.sh --target hub|<member key>` names the repo; unset, the source decides.
+  A source listed in none or several places needs it (exit 64).
+- Dedupe (fingerprint and `sb-signature`) reads the hub's and every member's issue history in
+  one `super-board-github-read.py --issue-history hub,api,web` call, so a rerun never files
+  twice: an open hit anywhere — the parent, or the parent after a one-sided transfer (the
+  fingerprint stamp is in its body) — gets the comment. Receipts lock on the hub repo.
+- The Slack thread reply links the hub issue (or the dedupe hit); a later transfer keeps the
+  link working (GitHub redirects).
+- Scheduled intake: a job whose `repo` is the hub checkout and `config` the hub config, steps
+  `["collect"]`. "Board busy" and halt checks cover every member checkout; a `run` step on a hub
+  config is refused until P4.
+- Install: `install.sh <hub checkout>` installs the full pack into the hub's `.claude/`; member
+  submodules keep their own `.claude/` untouched. Scripts resolve member paths through
+  `super-board-config.py`, never cwd. Collector keys (`SLACK_BOT_TOKEN`, …) go in the hub's
+  `.env.local`.
+
+`super-board-config.py hub --config C [--out F]` gives the hub repo as a single-repo config
+(`repo` = `hub.remote` at the hub path, every member in `linked_repos`). The member key `hub`
+is reserved.
+
+PrimeCore (`.claude/super-board/configs/primecore.json` in primecore-docs):
+
+```json
+{ "project": {"owner":"PrimeCoreDev","title":"PrimeCore","number":3},
+  "hub": {"remote":"https://github.com/PrimeCoreDev/primecore-docs","path":"."},
+  "members": {
+    "backend": {"repo":{"path":"backend","remote":"https://github.com/PrimeCoreDev/primecore-platform"},"base_branch":"dev"},
+    "frontend": {"repo":{"path":"frontend","remote":"https://github.com/PrimeCoreDev/primecore-frontend"},"base_branch":"dev"} },
+  "split": {"default_order":["backend","frontend"],"confirm":true},
+  "collect": {"sources":["slack"], "slack":{"channels":["#bugs-reporting"],"reaction":"bug"}} }
+```

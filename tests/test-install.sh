@@ -314,4 +314,40 @@ LEFT=$(find "$T/.claude" \( -name __pycache__ -o -name '*.pyc' \) | head -3)
 [ -f "$P/skills/super-board/stray.pyc" ] || fail "the pack's own files must be left alone"
 rm -rf "$P" "$T"
 
-echo "PASS: test-install.sh (18 scenarios)"
+# 19 — a hub checkout (P5): backend/ and frontend/ are submodule-like member checkouts with
+#      their own .claude/. The pack lands in the hub's .claude/ only; the members' trees are
+#      untouched; the installed resolver and halt check find the members from any cwd.
+H=$(mktemp -d)
+git -C "$H" init -q
+for m in backend frontend; do
+  mkdir -p "$H/$m/.claude/skills/own-skill" "$H/$m/.claude/super-board"
+  echo "member" > "$H/$m/.claude/skills/own-skill/SKILL.md"
+  echo "gitdir: ../.git/modules/$m" > "$H/$m/.git"
+done
+"$INSTALL" --no-hooks "$H" >/dev/null 2>&1 || fail "hub install failed"
+[ -x "$H/.claude/bin/super-board-config.py" ] && [ -f "$H/.claude/skills/super-collect/SKILL.md" ] \
+  || fail "hub install: the pack is missing from the hub's .claude/"
+for m in backend frontend; do
+  [ "$(cat "$H/$m/.claude/skills/own-skill/SKILL.md")" = member ] || fail "hub install touched $m's skills"
+  [ ! -e "$H/$m/.claude/bin" ] && [ ! -e "$H/$m/.claude/skills/super-board" ] || fail "hub install wrote into $m/.claude"
+done
+mkdir -p "$H/.claude/super-board/configs"
+cat > "$H/.claude/super-board/configs/primecore.json" <<'JSON'
+{"project":{"owner":"acme","title":"Acme","number":3},
+ "hub":{"remote":"https://github.com/acme/docs","path":"."},
+ "members":{"backend":{"repo":{"path":"backend","remote":"https://github.com/acme/api"},"base_branch":"dev"},
+            "frontend":{"repo":{"path":"frontend","remote":"https://github.com/acme/web"},"base_branch":"dev"}},
+ "collect":{"sources":["slack"]}}
+JSON
+MEMBERS=$(cd / && python3 "$H/.claude/bin/super-board-config.py" members --config "$H/.claude/super-board/configs/primecore.json") \
+  || fail "hub install: the resolver cannot read the hub config"
+for m in backend frontend; do
+  echo "$MEMBERS" | jq -e --arg m "$m" '.[] | select(.key == $m) | .path | test("[\\\\/]" + $m + "$")' >/dev/null \
+    || fail "hub install: $m path not resolved against the hub checkout: $MEMBERS"
+done
+echo '{"reason":"backend paused"}' > "$H/backend/.claude/super-board/github-halt.json"
+RC=0; (cd / && python3 "$H/.claude/bin/super-board-github-read.py" --check --config "$H/.claude/super-board/configs/primecore.json") >/dev/null 2>&1 || RC=$?
+[ "$RC" -eq 79 ] || fail "hub install: a member's halt must stop the hub check (got $RC)"
+rm -rf "$H"
+
+echo "PASS: test-install.sh (19 scenarios)"

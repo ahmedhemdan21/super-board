@@ -3,7 +3,8 @@
 # network: `gh` is a stub on PATH, and the real super-qa / super-review filers
 # run underneath it. Covers dry-run default, per-source fingerprint shapes,
 # repo-wide dedupe, recurrence, holding-column resolution (never Ready), routing,
-# extra labels (needs-triage), and --adopt.
+# extra labels (needs-triage), --adopt, and hub boards (target repo, needs-split,
+# dedupe across the hub and every member).
 #
 #   bash tests/test-collect-file.sh
 
@@ -99,6 +100,11 @@ case "$1 ${2:-}" in
     if [ "${STUB_ROUTER_OUTAGE:-}" = 1 ]; then echo "HTTP 503" >&2; exit 1; fi
     if [ "${STUB_PAUSE_AFTER:-}" = "issue list" ]; then printf '{"reason":"paused during history"}\n' > "$SB_GITHUB_HALT_FILE"; fi
     hits="${STUB_HITS:-[]}"
+    if [ -n "${STUB_HITS_BY_REPO:-}" ]; then  # {"owner/name": [issues]}: one history per repo
+      o=""; r=""
+      for a in "$@"; do case "$a" in owner=*) o="${a#owner=}";; repo=*) r="${a#repo=}";; esac; done
+      hits=$(echo "$STUB_HITS_BY_REPO" | jq -c --arg k "$o/$r" '.[$k] // []')
+    fi
     echo "$hits" | jq '[{data:{repository:{issues:{totalCount:length,pageInfo:{hasNextPage:false,endCursor:null},nodes:.}}}}]' ;;
   "issue view")    echo "https://github.com/acme/app/issues/55" ;;
   "api repos/"*)   echo "${STUB_COMMENTS:-[[]]}" ;;
@@ -323,6 +329,74 @@ is "all-state duplicate outage halts collector" 79 "$RC"
 WRITES=$(awk '/^(issue (create|comment|edit)|label create|project (item-add|item-edit)) /' "$GH_LOG")
 is "duplicate outage makes no mutations" "" "$WRITES"
 rm -f "$SB_GITHUB_HALT_FILE"
+
+echo "── hub board: one intake for every repo (hub.md → Intake)"
+mkdir -p "$WORK/hub/backend" "$WORK/hub/frontend" "$WORK/hub/.claude/super-board/configs"
+HUBCFG="$WORK/hub/.claude/super-board/configs/primecore.json"
+cat > "$HUBCFG" <<'JSON'
+{"project":{"owner":"acme","title":"Board","number":7},
+ "hub":{"remote":"https://github.com/acme/docs","path":"."},
+ "members":{
+   "backend":{"repo":{"path":"backend","remote":"https://github.com/acme/api"},"base_branch":"dev",
+              "collect":{"sources":["loki"]}},
+   "frontend":{"repo":{"path":"frontend","remote":"https://github.com/acme/web"},"base_branch":"dev",
+               "collect":{"sources":["sentry"]}}},
+ "split":{"default_order":["backend","frontend"],"confirm":true},
+ "collect":{"sources":["slack"],"slack":{"channels":["#bugs-reporting"]}}}
+JSON
+hub() { rm -rf "$SB_COLLECT_STATE_DIR"; : > "$GH_LOG"; : > "$BODY_LOG"; "$SCRIPT" --config "$HUBCFG" "$@" 2>"$WORK/err"; }
+SLACK=(--type bug --source slack --title "Upload fails" --body-file "$WORK/bug.md" --fingerprint "slack|C0BUGS01|1790000000.123456")
+LOKI=(--type bug --source loki --title "Gateway 500" --body-file "$WORK/bug.md" --fingerprint "loki|gw|aa11bb22cc33")
+is  "slack plans into the hub, Backlog" "would-file|bug|Upload fails|Backlog|acme/docs" "$(hub "${SLACK[@]}")"
+has "dedupe reads the hub's history"      "$(cat "$GH_LOG")" "repo=docs"
+has "dedupe reads the backend's history"  "$(cat "$GH_LOG")" "repo=api"
+has "dedupe reads the frontend's history" "$(cat "$GH_LOG")" "repo=web"
+OUT=$(hub "${SLACK[@]}" --yes)
+is  "files the hub issue as owner/repo#N" "acme/docs#412" "$OUT"
+has "created in the hub repo"   "$(grep '^issue create' "$GH_LOG")" "-R acme/docs"
+has "hub issue gets needs-split" "$(cat "$GH_LOG")" "issue edit 412 -R acme/docs --add-label needs-split"
+has "hub issue lands in Backlog" "$(cat "$GH_LOG")" "opt_Backlog"
+lacks "never Ready"              "$(cat "$GH_LOG")" "opt_Ready"
+has "stamps the fingerprint (it survives a transfer)" "$(cat "$BODY_LOG")" "super-collect-fingerprint: slack|C0BUGS01|1790000000.123456"
+is  "hub parents need Backlog itself" 65 "$(STATUS_OPTS="Todo Ready Done" hub "${SLACK[@]}" >/dev/null; echo $?)"
+is  "a member's own source files into that member" "would-file|bug|Gateway 500|Backlog|acme/api" "$(hub "${LOKI[@]}")"
+OUT=$(hub "${LOKI[@]}" --yes)
+is  "member filing returns its card key" "acme/api#412" "$OUT"
+has "created in the member repo" "$(grep '^issue create' "$GH_LOG")" "-R acme/api"
+lacks "member issues get no needs-split" "$(cat "$GH_LOG")" "needs-split"
+is  "--target overrides the source"  "would-file|bug|Upload fails|Backlog|acme/web" "$(hub "${SLACK[@]}" --target frontend)"
+is  "unlisted source needs --target" 64 "$(hub --type fix --source prs --title T --body-file "$WORK/fix.md" --fingerprint "prs|x|y" >/dev/null; echo $?)"
+has "and says so" "$(cat "$WORK/err")" "pass --target hub|<member key>"
+is  "--target hub for an unlisted source" "would-file|fix|T|Backlog|acme/docs" "$(hub --type fix --source prs --title T --body-file "$WORK/fix.md" --fingerprint "prs|x|y" --target hub)"
+is  "unknown member refused" 64 "$(hub "${SLACK[@]}" --target mobile >/dev/null; echo $?)"
+is  "--target needs a hub config" 64 "$(run "${BUG[@]}" --target hub >/dev/null; echo $?)"
+
+echo "── hub board: dedupe across the hub and every member"
+MOVED=$(jq -cn '{"acme/api":[{number:9,state:"OPEN",body:"moved by split\n<!-- super-collect-fingerprint: slack|C0BUGS01|1790000000.123456 -->"}]}')
+is  "fingerprint open in a member (transferred parent) → duplicate there" "duplicate|acme/api#9|bug|Upload fails" "$(STUB_HITS_BY_REPO="$MOVED" hub "${SLACK[@]}")"
+OUT=$(STUB_HITS_BY_REPO="$MOVED" hub "${SLACK[@]}" --yes)
+is  "--yes returns the member issue" "acme/api#9" "$OUT"
+has "comments on the member issue" "$(cat "$GH_LOG")" "issue comment 9 -R acme/api"
+lacks "no new hub issue" "$(cat "$GH_LOG")" "issue create"
+HUBSIG=$(jq -cn --arg b "parent
+<!-- sb-signature: ${SIG} -->" '{"acme/docs":[{number:41,state:"OPEN",body:$b}]}')
+is  "same signature open in the hub → evidence there" "evidence|acme/docs#41|loki|Gateway 500" "$(STUB_HITS_BY_REPO="$HUBSIG" hub "${LOKI[@]}" --signature "$SIG")"
+OUT=$(STUB_HITS_BY_REPO="$HUBSIG" hub "${LOKI[@]}" --signature "$SIG" --yes)
+is  "evidence returns the hub issue" "acme/docs#41" "$OUT"
+has "reads the hub issue's comments" "$(cat "$GH_LOG")" "api repos/acme/docs/issues/41/comments"
+has "evidence comment on the hub issue" "$(cat "$GH_LOG")" "issue comment 41 -R acme/docs"
+lacks "no member issue" "$(cat "$GH_LOG")" "issue create"
+CLOSED=$(jq -cn '{"acme/web":[{number:5,state:"CLOSED",body:"slack|C0BUGS01|1790000000.123456"}]}')
+is  "closed in a member → recurrence named by repo" "recurrence|acme/web#5|bug|Upload fails|Backlog|acme/docs" "$(STUB_HITS_BY_REPO="$CLOSED" hub "${SLACK[@]}")"
+
+echo "── hub board: a member's halt stops the hub's writes"
+mkdir -p "$WORK/hub/backend/.claude/super-board"
+printf '{"reason":"backend run paused"}\n' > "$WORK/hub/backend/.claude/super-board/github-halt.json"
+RC=0; hub "${SLACK[@]}" --yes >/dev/null || RC=$?
+is "member halt → 79" 79 "$RC"
+WRITES=$(awk '/^(issue (create|comment|edit)|label create|project (item-add|item-edit)) /' "$GH_LOG")
+is "no writes while a member is halted" "" "$WRITES"
+rm -f "$WORK/hub/backend/.claude/super-board/github-halt.json"
 
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]
