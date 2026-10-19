@@ -32,6 +32,10 @@ settings:
   token_rotation_enabled: false
 ```
 
+Keep it an internal app: do not turn on public distribution. Slack throttles
+`conversations.history` and `conversations.replies` for distributed apps that are not in the
+Marketplace (1 call a minute, 15 messages), which would make every scan `truncated`.
+
 ## 2. Install it and keep the token out of git
 
 1. **Install to Workspace** (Install App page) and allow.
