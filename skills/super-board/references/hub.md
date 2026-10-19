@@ -99,3 +99,67 @@ as home over one board read: every card carries `member`, `foreign` lists only r
 are no member (the hub's own parents too, until P3), `max_workers` caps the merged wave.
 `super-board-github-read.py --check --config C` checks the hub's and every member's halt
 file. Every `gh issue|pr|run` call names `--repo`.
+
+## Split
+
+`super-board-split.py` carries out triage's decision on a hub issue. It decides nothing itself;
+triage (triage.md → Hub: split) decides the sides.
+
+| Verb | What it does |
+|---|---|
+| `plan --config C --issue <hub#N>` | Read-only. Prints the issue (title, body, labels, column, sub-issues by member), the members and `split`. |
+| `apply --config C --issue <hub#N> --decision D [--approved] [--dry-run]` | Carries out the decision below. |
+| `close-parents --config C [--dry-run]` | Closes parents whose children are all done. |
+
+Decision file (`body_file` relative to the decision file's folder):
+
+```json
+{ "sides": ["backend", "frontend"],
+  "why": "needs a new endpoint and a button on the invoices page",
+  "children": { "backend":  { "title": "✨ [feat] invoices: CSV endpoint", "body_file": "backend.md" },
+                "frontend": { "title": "✨ [feat] invoices: export button", "body_file": "frontend.md" } } }
+```
+
+- **One side** (`"sides": ["backend"]`, no `children`): `gh issue transfer` to that member. The
+  transfer drops labels, so the parent's labels are re-applied; a label the member repo lacks is
+  reported, never created. The Project item survives a transfer; if it did not, the issue is
+  added back in its old column. One `[triage] [report] ✅ split → backend` comment says why.
+- **Several sides**: one issue per side in its member repo, in `split.default_order`. Each body
+  must pass `super-board-card-ready.py`'s ticket check (writing-standard.md § 3), or apply exits 3
+  before writing anything. Each later side's `## Blocked by` gets `- owner/repo#N — the <side>
+  side lands first` naming the side before it (`- None.` gives way). Children get the parent's
+  labels except `parent` and `needs-triage`, only those that exist in the member repo. Each child
+  goes on the Project in the parent's column (Backlog when `split.confirm` is true) and is
+  attached with `addSubIssue`. The parent gets the label `parent` and moves to Backlog; one
+  comment lists the children.
+- **Idempotent.** A child is found by repository in the parent's `subIssues.nodes`, else in the
+  marker `<!-- sb-split: {…} -->` on the parent's split comment. The marker is written right
+  after each child is created and the comment is edited in place, so a rerun after a failure
+  continues and files nothing twice. A rerun on a finished split writes nothing
+  (`already-split`). A one-sided split writes its marker before the transfer; the comment moves
+  with the issue, so a rerun with either ref finishes the labels and the card.
+- **Confirm.** With `split.confirm: true`, `apply` without `--approved` posts the proposal as one
+  `[triage] [question] 🙋 approve split → …` comment and exits 0 with `awaiting-approval`. The
+  proposal carries a hash of the decision; it is approved by a reply `done <first 8 hex>` from a
+  human with write/maintain/admin on the hub AND every member repo the split writes to. A bare
+  `done`, or a changed decision, needs a new approval. `--approved` is a human saying yes on the
+  command line. The approval is recorded in the marker, so a resumed split does not ask again.
+- **Trust.** Anyone can comment on a hub issue, so no comment steers the split. The `sb-split`,
+  `sb-split-proposal` and `sb-parent-needs-human` markers count only when written by the run's
+  own identity (`gh api user`); others are ignored and reported. A child named in a marker is
+  used only when it sits in that side's member repo, carries the backlink
+  `<!-- sb-split-child: <hub ref> <side> -->` and was opened by the same identity; otherwise
+  apply exits 3 and writes nothing. Labels and column come from the live parent; only a
+  one-sided resume after the transfer (which dropped the labels) reads them from its own marker.
+- `--dry-run` reads, then prints every write it would make (`writes` in the JSON) and makes none.
+- Writes check the halt file and `sb_gh_guard_check 200` first and are never retried: a failed
+  write exits 69 and prints what was written. Rerun the same `apply`.
+
+**Parents stay off the lanes.** A parent is labelled `parent` and sits in Backlog, which the
+planner never plans. TODO at integration (P2/P4): `super-board-wave-plan.sh` must also skip a
+`parent`-labelled card in Ready, and the status reader should show it as a parent.
+
+**close-parents.** GitHub never closes a parent. For every open hub issue with sub-issues:
+every child closed `COMPLETED` → comment listing them and close the parent as completed; any
+child closed `NOT_PLANNED` → leave it open and comment once (`<!-- sb-parent-needs-human -->`)
+that a human must decide. Run it once a wave, or after a merge.
