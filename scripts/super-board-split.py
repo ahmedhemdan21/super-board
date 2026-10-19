@@ -22,8 +22,15 @@ Verbs:
                 the parent, each child on the Project (the parent's column, Backlog when
                 split.confirm is true) and attached with addSubIssue. The parent gets the label
                 `parent`, goes to Backlog, and one comment lists the children.
-                split.confirm true: without --approved (or a trusted `done` reply to the
-                proposal), apply only posts the proposal as a 🙋 comment: awaiting-approval.
+                split.confirm true: without --approved (or a `done <digest8>` reply to the
+                proposal from a human with write on the hub and every member written to),
+                apply only posts the proposal as a 🙋 comment: awaiting-approval.
+
+Trust. Markers (sb-split, sb-split-proposal, sb-parent-needs-human) count only when this run's
+own identity (`gh api user`) wrote them. A child recorded in a marker is used only when it is
+in the side's member repo, carries `<!-- sb-split-child: <hub ref> <side> -->` and was opened by
+the same identity. Labels and column come from the live parent, except a one-sided resume after
+the transfer, which can only read the labels the run's own marker saved before it.
   close-parents --config C [--dry-run]
                 Every open hub issue with sub-issues: all children closed COMPLETED → close it
                 as completed with a comment; any child NOT_PLANNED → comment once that it
@@ -71,7 +78,9 @@ card_ready = _load("card_ready", "super-board-card-ready.py")
 MARKER = re.compile(r"<!--\s*sb-split:\s*(\{.*?\})\s*-->", re.S)
 PROPOSAL = re.compile(r"<!--\s*sb-split-proposal:\s*([0-9a-f]{64})\s*-->")
 NEEDS_HUMAN = "<!-- sb-parent-needs-human -->"
-APPROVE = re.compile(r"\s*(done|approved?)[.!]?\s*\Z", re.I)  # super-board-approval.py's `done`
+# Approval reply: `done <first 8 hex of the proposal digest>`; a bare `done` never approves.
+APPROVE = re.compile(r"\s*done\s+([0-9a-f]{8})[.!]?\s*\Z", re.I)
+CHILD_LINK = "<!-- sb-split-child: {hub} {side} -->"  # backlink written into every child body
 TRUSTED = ("write", "maintain", "admin")
 NOT_COPIED = {"parent", "needs-triage"}  # labels a child never inherits
 REPO_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
@@ -136,7 +145,7 @@ def same(a, b):
 
 ISSUE_QUERY = """query SplitIssue($owner:String!,$name:String!,$n:Int!){
   repository(owner:$owner,name:$name){ issue(number:$n){
-    id number title body state stateReason url repository{ nameWithOwner }
+    id number title body state stateReason url repository{ nameWithOwner } author{ login }
     labels(first:50){ nodes{ name } }
     subIssues(first:100){ nodes{ id number title state stateReason url repository{ nameWithOwner } } }
     projectItems(first:20){ nodes{ id project{ number owner{ ... on User{ login } ... on Organization{ login } } }
@@ -148,7 +157,7 @@ PARENTS_QUERY = """query SplitParents($owner:String!,$name:String!,$endCursor:St
     pageInfo{ hasNextPage endCursor }
     nodes{ number title
       subIssues(first:100){ nodes{ number state stateReason repository{ nameWithOwner } } }
-      comments(last:100){ nodes{ body } } } } } }"""
+      comments(last:100){ nodes{ body author{ login } } } } } } }"""
 
 ADD_SUB = ("mutation($p:ID!,$c:ID!){ addSubIssue(input:{issueId:$p, subIssueId:$c})"
            "{ subIssue{ number repository{ nameWithOwner } } } }")
@@ -163,10 +172,24 @@ class GitHub:
         self.perms = {}
         self.tmp = []
         self.dry_n = 0
+        self._me = None
 
     # reads
     def read(self, args, kind="object"):
         return github_read.read(list(args), kind)[1]
+
+    def me(self):
+        """The login this run writes as. Only its own comments count as markers."""
+        if self._me is None:
+            value = self.read(["api", "user"], "object")
+            login = value.get("login") if isinstance(value, dict) else None
+            if not isinstance(login, str) or not login:
+                raise WriteFailed("cannot tell who is running: `gh api user` has no login")
+            self._me = login
+        return self._me
+
+    def mine(self, comment):
+        return same((comment.get("author") or {}).get("login"), self.me())
 
     def issue(self, repo, n):
         owner, name = repo.split("/")
@@ -312,10 +335,15 @@ def comments_of(node):
     return [c for c in ((node.get("comments") or {}).get("nodes") or []) if isinstance(c, dict)]
 
 
-def marker_of(node):
-    """(state, comment databaseId) of the newest sb-split marker, or (None, None)."""
+def marker_of(node, gh):
+    """(state, comment databaseId) of the newest sb-split marker this run's identity wrote, or
+    (None, None). A marker anyone else wrote is ignored and reported."""
     for c in reversed(comments_of(node)):
         m = MARKER.search(c.get("body") or "")
+        if m and not gh.mine(c):
+            print(f"split: ignored an sb-split marker written by {(c.get('author') or {}).get('login')!r}",
+                  file=sys.stderr)
+            continue
         if m:
             try:
                 state = json.loads(m.group(1))
@@ -403,12 +431,33 @@ def add_blocker(body, blocker, why):
     return "\n".join(lines)
 
 
-def child_body(decision, side, prev):
-    """The body filed for `side`; prev = (member key, ref) of the side before it, or None."""
+def child_body(decision, side, prev, hub_ref):
+    """The body filed for `side`; prev = (member key, ref) of the side before it, or None.
+    Ends with the backlink that later proves this child belongs to this split."""
     body = decision["children"][side]["body"]
     if prev:
         body = add_blocker(body, prev[1], f"the {prev[0]} side lands first")
-    return body
+    return body.rstrip("\n") + "\n\n" + CHILD_LINK.format(hub=hub_ref.lower(), side=side) + "\n"
+
+
+def verify_child(gh, hc, hub_ref, side, recorded):
+    """A child named in the marker is a hint: it counts only when it is in the side's member
+    repo, carries this split's backlink and was opened by this run's identity."""
+    repo = hc["members"][side]["repo"]
+    try:
+        crepo, num = parse_ref(recorded, repo)
+    except ValueError:
+        raise Refused(f"recorded {side} child {recorded!r} is not an issue ref")
+    if not same(crepo, repo):
+        raise Refused(f"recorded {side} child {recorded} is not in {repo}")
+    node = gh.issue(repo, num)
+    link = CHILD_LINK.format(hub=hub_ref.lower(), side=side)
+    author = (node.get("author") or {}).get("login")
+    has_link = link in (node.get("body") or "")
+    if not has_link or not same(author, gh.me()):
+        raise Refused(f"recorded {side} child {ref(repo, num)} was not filed by this split "
+                      f"(author {author!r}, backlink {'present' if has_link else 'missing'})")
+    return num
 
 
 def validate_children(decision, hc, labels, cfg, skip=()):
@@ -421,7 +470,8 @@ def validate_children(decision, hc, labels, cfg, skip=()):
             continue
         repo = hc["members"][side]["repo"]
         prev = (sides[i - 1], ref(hc["members"][sides[i - 1]]["repo"], 1)) if i else None
-        issue = {"number": 1, "title": decision["children"][side]["title"], "body": child_body(decision, side, prev),
+        issue = {"number": 1, "title": decision["children"][side]["title"],
+                 "body": child_body(decision, side, prev, ref(hc["hub"], 1)),
                  "labels": sorted({l.lower() for l in labels}), "state": "OPEN", "comments": None, "repository": repo}
         others = [m["repo"] for k, m in hc["members"].items() if k != side] + [hc["hub"]]
         verdict = None
@@ -475,8 +525,9 @@ def split_comment(state, hc, why, final):
 
 def proposal_comment(decision, hc, digest):
     sides = decision["sides"]
+    repos = ", ".join([hc["hub"]] + [hc["members"][s]["repo"] for s in sides])
     lines = [f"[triage] [question] 🙋 approve split → {', '.join(sides)}", f"Did: {decision['why']}",
-             "Next: Eric — reply `done` to split as below"]
+             f"Next: Eric — reply exactly `done {digest[:8]}` to split as below (needs write on {repos})"]
     if len(sides) == 1:
         lines.append(f"- move this issue to {hc['members'][sides[0]]['repo']}")
     for i, side in enumerate(sides if len(sides) > 1 else []):
@@ -485,20 +536,28 @@ def proposal_comment(decision, hc, digest):
     return "\n".join(lines + [f"<!-- sb-split-proposal: {digest} -->"])
 
 
-def approved_reply(gh, node, digest, repo):
-    """A trusted human (write+) replied `done` after the proposal for THIS decision."""
+def approved_reply(gh, node, decision, hc):
+    """(approver, proposal posted?). Approved = after this run's own proposal for THIS decision,
+    a human replied `done <digest[:8]>` and has write+ on the hub AND every member repo the
+    decision writes to. Proposals written by anyone else are ignored."""
+    digest = decision["hash"]
     comments = comments_of(node)
     at = None
     for i, c in enumerate(comments):
         m = PROPOSAL.search(c.get("body") or "")
-        if m:
+        if m and gh.mine(c):
             at = i if m.group(1) == digest else None
     if at is None:
         return None, False
+    repos = [hc["hub"]] + [hc["members"][s]["repo"] for s in decision["sides"]]
     for c in comments[at + 1:]:
+        m = APPROVE.match(c.get("body") or "")
         login = (c.get("author") or {}).get("login")
-        if APPROVE.match(c.get("body") or "") and gh.permission(repo, login) in TRUSTED:
+        if not m or m.group(1).lower() != digest[:8]:
+            continue
+        if all(gh.permission(r, login) in TRUSTED for r in repos):
             return login, True
+        print(f"split: approval by {login!r} ignored: needs write on {', '.join(repos)}", file=sys.stderr)
     return None, True
 
 
@@ -507,7 +566,7 @@ def approved_reply(gh, node, digest, repo):
 def plan(gh, hc, repo, n):
     node = gh.issue(repo, n)
     item = project_item(node, hc)
-    state, _ = marker_of(node)
+    state, _ = marker_of(node, gh)
     subs = subs_by_member(node, hc)
     return {"issue": {"ref": ref((node.get("repository") or {}).get("nameWithOwner") or repo, n),
                       "title": node.get("title"), "body": node.get("body"), "state": node.get("state"),
@@ -525,7 +584,7 @@ def plan(gh, hc, repo, n):
 def apply(gh, hc, cfg, repo, n, decision, approved):
     node = gh.issue(repo, n)
     here = (node.get("repository") or {}).get("nameWithOwner") or repo
-    state, comment_id = marker_of(node)
+    state, comment_id = marker_of(node, gh)
     sides = decision["sides"]
     if state and state.get("sides") != sides:
         raise Refused(f"a split with sides {state.get('sides')} is already recorded on {ref(here, n)}; "
@@ -539,11 +598,15 @@ def apply(gh, hc, cfg, repo, n, decision, approved):
     elif not same(here, hc["hub"]):
         raise Refused(f"{ref(here, n)} is not a hub issue ({hc['hub']})")
 
-    # Children not yet filed must pass the ticket check before anything is written.
+    # Recorded children are hints: verified (repo, backlink, author) or refused. Children not
+    # yet filed must pass the ticket check. Both before anything is written.
     existing = subs_by_member(node, hc)
-    recorded = (state or {}).get("children") or {}
+    verified = {}
     if len(sides) > 1:
-        validate_children(decision, hc, labels_of(node), cfg, skip=set(existing) | set(recorded))
+        for side, recorded in ((state or {}).get("children") or {}).items():
+            if side in sides and side not in existing:
+                verified[side] = verify_child(gh, hc, ref(here, n), side, recorded)
+        validate_children(decision, hc, labels_of(node), cfg, skip=set(existing) | set(verified))
 
     if state and state.get("done"):
         if len(sides) == 1 or all(s in existing for s in sides):
@@ -551,27 +614,38 @@ def apply(gh, hc, cfg, repo, n, decision, approved):
                     "children": {k: ref((existing[k].get("repository") or {}).get("nameWithOwner"), existing[k]["number"])
                                  for k in existing} if len(sides) > 1 else {}}
 
-    if hc["confirm"] and not approved and not state:
-        approver, posted = approved_reply(gh, node, decision["hash"], here)
-        if not approver:
+    # The confirm gate. A marker passes it only when it recorded an approval (and markers are
+    # already limited to this run's own identity).
+    if not hc["confirm"]:
+        approved_by = "confirm-off"
+    elif approved:
+        approved_by = "--approved"
+    elif state and state.get("approved_by") not in (None, "", "confirm-off"):
+        approved_by = state["approved_by"]
+    else:
+        approved_by, posted = approved_reply(gh, node, decision, hc)
+        if not approved_by:
             if not posted:
                 gh.comment(here, n, proposal_comment(decision, hc, decision["hash"]))
             return {"status": "awaiting-approval", "issue": ref(here, n), "sides": sides,
                     "proposal": "posted" if not posted else "already posted"}
 
     if len(sides) == 1:
-        return apply_one(gh, hc, node, here, n, decision, state, comment_id)
-    return apply_many(gh, hc, node, here, n, decision, state or {}, comment_id, existing)
+        return apply_one(gh, hc, node, here, n, decision, state, comment_id, approved_by)
+    return apply_many(gh, hc, node, here, n, decision, comment_id, existing, verified, approved_by)
 
 
-def apply_one(gh, hc, node, here, n, decision, state, comment_id):
+def apply_one(gh, hc, node, here, n, decision, state, comment_id, approved_by):
     side = decision["sides"][0]
     target = hc["members"][side]["repo"]
     item = project_item(node, hc)
+    # Labels and column come from the live issue. The transfer drops the labels, so after it
+    # the only record left is this run's own marker, read back only when resuming.
     if not state:
         state = {"v": 1, "sides": [side], "from": ref(here, n), "labels": labels_of(node),
-                 "column": item["status"] if item else "", "done": False}
+                 "column": item["status"] if item else "", "done": False, "approved_by": approved_by}
         comment_id = gh.comment(here, n, split_comment(state, hc, decision["why"], False))
+    state["approved_by"] = approved_by
     moved_n = n
     if same(here, hc["hub"]):
         out = gh.write(f"transfer {ref(here, n)} to {target}", ["issue", "transfer", str(n), target, "--repo", here],
@@ -585,7 +659,7 @@ def apply_one(gh, hc, node, here, n, decision, state, comment_id):
     moved = gh.issue(target, moved_n) if not gh.dry else {"labels": {"nodes": []}, "projectItems": {"nodes": []},
                                                            "comments": {"nodes": []}}
     if not gh.dry:
-        found, cid = marker_of(moved)
+        found, cid = marker_of(moved, gh)
         comment_id = cid if cid is not None else comment_id
     have = {l.lower() for l in labels_of(moved)}
     want = [l for l in state.get("labels") or [] if l.lower() not in have]
@@ -606,11 +680,12 @@ def apply_one(gh, hc, node, here, n, decision, state, comment_id):
             "sides": [side], "labelsApplied": applied, "labelsSkipped": skipped}
 
 
-def apply_many(gh, hc, node, here, n, decision, state, comment_id, existing):
+def apply_many(gh, hc, node, here, n, decision, comment_id, existing, verified, approved_by):
     sides = decision["sides"]
-    item = project_item(node, hc)
+    item = project_item(node, hc)  # the live parent: labels and column never come from a marker
     column = "Backlog" if hc["confirm"] or not item or not item["status"] else item["status"]
-    state = {"v": 1, "sides": sides, "children": dict(state.get("children") or {}), "done": False}
+    state = {"v": 1, "sides": sides, "done": False, "approved_by": approved_by,
+             "children": {k: ref(hc["members"][k]["repo"], v) for k, v in verified.items()}}
     parent_labels = [l for l in labels_of(node) if l.lower() not in NOT_COPIED]
     subs = {s.get("id") for s in (node.get("subIssues") or {}).get("nodes") or []}
     out = {}
@@ -619,12 +694,12 @@ def apply_many(gh, hc, node, here, n, decision, state, comment_id, existing):
         repo = hc["members"][side]["repo"]
         if side in existing:
             num = existing[side]["number"]
-        elif side in state["children"]:
-            num = parse_ref(state["children"][side], repo)[1]
+        elif side in verified:
+            num = verified[side]
         else:
             exist = gh.repo_labels(repo)
             labels = [exist[l.lower()] for l in parent_labels if l.lower() in exist]
-            num = gh.create(repo, decision["children"][side]["title"], child_body(decision, side, prev), labels)
+            num = gh.create(repo, decision["children"][side]["title"], child_body(decision, side, prev, ref(here, n)), labels)
             state["children"][side] = ref(repo, num)
             body = split_comment(state, hc, decision["why"], False)
             if comment_id is not None:
@@ -690,7 +765,7 @@ def close_parents(gh, hc):
                          ["issue", "close", str(n), "--repo", hc["hub"], "--reason", "completed"])
                 closed.append(ref(hc["hub"], n))
             elif dropped:
-                if not any(NEEDS_HUMAN in (c.get("body") or "") for c in comments_of(issue)):
+                if not any(NEEDS_HUMAN in (c.get("body") or "") and gh.mine(c) for c in comments_of(issue)):
                     gh.comment(hc["hub"], n, "\n".join([
                         f"[orchestrator] [question] 🙋 {len(dropped)} sub-issue(s) closed as not planned",
                         f"Did: left this parent open; not planned: {' · '.join(dropped)}",

@@ -139,10 +139,18 @@ Decision file (`body_file` relative to the decision file's folder):
   (`already-split`). A one-sided split writes its marker before the transfer; the comment moves
   with the issue, so a rerun with either ref finishes the labels and the card.
 - **Confirm.** With `split.confirm: true`, `apply` without `--approved` posts the proposal as one
-  `[triage] [question] 🙋 approve split → …` comment and exits 0 with `awaiting-approval`. A
-  write/maintain/admin collaborator replying `done` after it approves it, the same rule as
-  `super-board-approval.py`; the proposal carries a hash of the decision, so a changed decision
-  needs a new `done`. `--approved` is a human saying yes on the command line.
+  `[triage] [question] 🙋 approve split → …` comment and exits 0 with `awaiting-approval`. The
+  proposal carries a hash of the decision; it is approved by a reply `done <first 8 hex>` from a
+  human with write/maintain/admin on the hub AND every member repo the split writes to. A bare
+  `done`, or a changed decision, needs a new approval. `--approved` is a human saying yes on the
+  command line. The approval is recorded in the marker, so a resumed split does not ask again.
+- **Trust.** Anyone can comment on a hub issue, so no comment steers the split. The `sb-split`,
+  `sb-split-proposal` and `sb-parent-needs-human` markers count only when written by the run's
+  own identity (`gh api user`); others are ignored and reported. A child named in a marker is
+  used only when it sits in that side's member repo, carries the backlink
+  `<!-- sb-split-child: <hub ref> <side> -->` and was opened by the same identity; otherwise
+  apply exits 3 and writes nothing. Labels and column come from the live parent; only a
+  one-sided resume after the transfer (which dropped the labels) reads them from its own marker.
 - `--dry-run` reads, then prints every write it would make (`writes` in the JSON) and makes none.
 - Writes check the halt file and `sb_gh_guard_check 200` first and are never retried: a failed
   write exits 69 and prints what was written. Rerun the same `apply`.

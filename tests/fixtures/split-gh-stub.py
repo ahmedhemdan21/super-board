@@ -57,6 +57,7 @@ def node(i):
                                             "fieldValueByName": ({"name": i["item"]["status"]} if i["item"].get("status") else None)}]
     subs = [get(*s.split("#")) for s in i.get("subIssues", [])]
     return {"id": i["id"], "number": i["number"], "title": i["title"], "body": i["body"], "state": i["state"],
+            "author": {"login": i.get("author", "bot")},
             "stateReason": i.get("stateReason"), "url": f"https://github.com/{i['repo']}/issues/{i['number']}",
             "repository": {"nameWithOwner": i["repo"]},
             "labels": {"nodes": [{"name": l} for l in i["labels"]]},
@@ -83,7 +84,9 @@ def out(value):
 
 
 a2 = " ".join(args[:2])
-if args[:2] == ["api", "rate_limit"]:
+if args[:2] == ["api", "user"]:
+    log("R"); out({"login": "bot"})
+elif args[:2] == ["api", "rate_limit"]:
     log("R"); out({"resources": {"graphql": {"remaining": 5000, "reset": 0, "limit": 5000}, "core": {"remaining": 5000, "reset": 0, "limit": 5000}}})
 elif args[:2] == ["api", "graphql"]:
     q = var("query") or ""
@@ -137,8 +140,11 @@ elif args[0] == "api" and any("/labels" in a for a in args):
     out([[{"name": l} for l in st["labels"].get(repo, [])]])
 elif args[0] == "api" and args[-1].endswith("/permission"):
     log("R")
-    login = args[-1].split("/")[-2]
-    out({"permission": st["perms"].get(login, "read")})
+    parts = args[-1].split("/")  # repos/<owner>/<name>/collaborators/<login>/permission
+    perm = st["perms"].get(parts[-2], "read")  # a string, or {repo: permission}
+    if isinstance(perm, dict):
+        perm = perm.get(f"{parts[1]}/{parts[2]}".lower(), "read")
+    out({"permission": perm})
 elif a2 == "issue transfer":
     log("W")
     i, dest = get(flag("--repo"), args[2]), args[3]
