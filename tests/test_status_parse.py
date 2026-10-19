@@ -375,6 +375,40 @@ def test_snapshot_json_shape() -> None:
     assert snap["truncated"] is False and snap["generated"].endswith("Z")
 
 
+def _node(n: int, repo: str, status: str, title: str = "t") -> dict:
+    return {"content": {"number": n, "title": title, "repository": {"nameWithOwner": repo},
+                        "labels": {"nodes": []}},
+            "fieldValues": {"nodes": [{"name": status, "field": {"name": "Status"}}]}}
+
+
+def test_card_keys_keep_two_repos_apart() -> None:
+    """Home acme/api#7 and acme/web#7 on one Project: two cards, two keys."""
+    cfg = {"project": {"owner": "acme", "number": 3}, "repo": {"remote": "https://github.com/Acme/API.git"}}
+    home = sbs.home_repo(cfg)
+    assert home == "Acme/API"
+    a = sbs.card_item(_node(7, "acme/api", "Ready", "api seven"), home)
+    w = sbs.card_item(_node(7, "acme/web", "Blocked", "web seven"), home)
+    assert a["key"] == "acme/api#7" and w["key"] == "acme/web#7"
+    assert a["ref"] == "#7" and w["ref"] == "acme/web#7", "home prints #N, another repo owner/repo#N"
+    assert sbs.card_item({"content": {"title": "draft"}}, home) is None
+    snap = sbs.snapshot_json("app", cfg, [w, a], False)
+    assert [(i["repository"], i["number"]) for i in snap["items"]] == [("acme/api", 7), ("acme/web", 7)]
+    assert all("ref" not in i for i in snap["items"])
+    by_status = {s: [] for s in sbs.BOARD_ORDER}
+    by_status["Ready"], by_status["Blocked"] = [a], [w]
+    seen: list = []
+    out = sbs.render_kanban(by_status, lambda k: seen.append(k) or "  ", lambda k: seen.append(k) or "🛡")
+    assert "#7  api seven" in out and "🛡 acme/web#7  web seven" in out
+    assert seen == ["acme/api#7", "acme/web#7"], "lookups go by card key, never bare number"
+    # No repo known anywhere: every card is home, keyed `#N`.
+    bare = sbs.card_item({"content": {"number": 4, "title": "x"}, "fieldValues": {"nodes": []}}, "")
+    assert bare["key"] == "#4" and bare["ref"] == "#4" and "repository" not in bare
+
+
+def test_items_query_reads_repository() -> None:
+    assert "repository { nameWithOwner }" in sbs.ITEMS_QUERY
+
+
 def _run() -> int:
     tests = [
         (name, fn) for name, fn in globals().items()

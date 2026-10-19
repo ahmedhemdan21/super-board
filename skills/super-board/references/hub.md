@@ -30,3 +30,22 @@ query($o:String!,$n:Int!){ rateLimit{ cost }
 ```
 
 (An organization Project reads the same way under `organization(login:)`.)
+
+## Card identity
+
+A card is `owner/repo#N`; two repos' `#7` are two cards. Keys compare lower-cased and print as
+GitHub spells them.
+
+- **Home repo** = config `repo.remote`. A home card prints and is passed as plain `#N`, as
+  before: worktrees `.claude/worktrees/issue-<N>-build|qa|review/`, branch `issue-<N>-<slug>`.
+- `super-board-card.sh` takes `N`, `#N` or `owner/repo#N` (plain `N` = home). Its cache keys
+  `.items` by card key; an older cache keyed by bare number is dropped and re-read.
+- The planner plans home cards only. Another repo's card on the Project goes in `foreign`, even
+  when that repo is in `linked_repos` (linking lends blocker state, not cards). Graph and triage
+  verdicts are matched by card key, never by number alone.
+- `super-board-status.py` and `super-board-card-ready.py` carry `repository` on every card and
+  read each issue with `--repo <its repo>`.
+- A submodule keeps its own `.claude/super-board/` (halt file, card cache) in its own checkout.
+
+Later: member cards (P4) get worktree and branch names with a member prefix, so `issue-7` of
+two members never share a folder.

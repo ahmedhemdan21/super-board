@@ -12,8 +12,11 @@ the layout as a single Python pass.
 
 What it does:
   1. Resolve config slug: arg | `.claude/super-board/active` | sole config.
-  2. ONE GraphQL call for project items (number, title, labels, Status).
-  3. ONE `gh issue view` per Blocked card for reason-tag extraction.
+  2. ONE GraphQL call for project items (number, repository, title, labels, Status).
+     A card is `owner/repo#N`: the home repo (config repo.remote) prints `#N`, another
+     repo's card on the same Project prints `owner/repo#N`, and nothing is keyed by
+     bare number, so two repos' #7 never merge.
+  3. ONE `gh issue view <N> --repo <its repo>` per Blocked card for reason-tag extraction.
   4. Read today's manifest and pipe everything to the locked-template
      renderer that prints the 80-col snapshot matching the spec in
      references/status.md.
@@ -29,7 +32,7 @@ Windows (PowerShell / CMD / Git Bash / WSL). No bash, no jq.
 Usage:
   python .claude/bin/super-board-status.py [<config-slug>] [--json]
 
-  --json  print {"config","project","generated","items":[{number,title,labels,status}],
+  --json  print {"config","project","generated","items":[{number,repository,key,title,labels,status}],
           "counts":{<Status>: n}} after step 2 and stop (no comments, no manifest).
           The scheduler snapshots the board with it before and after a run.
 
@@ -396,7 +399,7 @@ query($owner:String!, $number:Int!, $after:String) {
         items(first:100, after:$after) {
           pageInfo { endCursor hasNextPage }
           nodes {
-            content { ... on Issue { number title labels(first:20){nodes{name}} } }
+            content { ... on Issue { number title repository { nameWithOwner } labels(first:20){nodes{name}} } }
             fieldValues(first:8) {
               nodes { ... on ProjectV2ItemFieldSingleSelectValue {
                 name field { ... on ProjectV2SingleSelectField { name } } } }
@@ -446,6 +449,49 @@ def paginate_items(
     return all_nodes, True
 
 
+# ───────────────────────────── card keys ─────────────────────────────
+# A Project can hold issues of several repos, each with its own #7. A card is
+# `owner/repo#N`; `key` is that, lower-cased, and every lookup here goes by it.
+# The home repo (config repo.remote) prints as `#N`, any other as `owner/repo#N`.
+
+
+def home_repo(cfg: dict[str, Any]) -> str:
+    """config repo.remote as owner/name, or '' when it names none."""
+    remote = str((cfg.get("repo") or {}).get("remote") or "")
+    repo = re.sub(r"^(https?://github\.com/|git@github\.com:)", "", remote)
+    repo = re.sub(r"\.git$", "", repo)
+    return repo if re.fullmatch(r"[\w.-]+/[\w.-]+", repo) else ""
+
+
+def card_key(repo: str, number: int) -> str:
+    return f"{(repo or '').lower()}#{number}"
+
+
+def card_item(node: dict[str, Any], home: str) -> dict[str, Any] | None:
+    """One board item → {number, repository, key, ref, title, labels, status}, or None
+    for a draft / PR. Pure."""
+    c = node.get("content") or {}
+    if not c.get("number"):
+        return None
+    repo = ((c.get("repository") or {}).get("nameWithOwner") or "") or home
+    is_home = not repo or not home or repo.lower() == home.lower()
+    item: dict[str, Any] = {"number": c["number"]}
+    if repo:
+        item["repository"] = repo
+    item.update({
+        "key": card_key(repo if home else "", c["number"]),
+        "ref": f"#{c['number']}" if is_home else f"{repo}#{c['number']}",
+        "title": sanitize_title(c.get("title") or ""),
+        "labels": [l["name"] for l in ((c.get("labels") or {}).get("nodes") or []) if l.get("name")],
+        "status": field_status(node),
+    })
+    return item
+
+
+def ref_of(item: dict[str, Any]) -> str:
+    return item.get("ref") or f"#{item['number']}"
+
+
 # ───────────────────────────── main ─────────────────────────────
 
 
@@ -455,7 +501,7 @@ def render_collapsed(label: str, lane_items: list[dict[str, Any]]) -> str:
     if not lane_items:
         out.append(box_line("(empty)"))
     else:
-        nums = [f"#{x['number']}" for x in lane_items]
+        nums = [ref_of(x) for x in lane_items]
         tail = "   " + COLLAPSED_TAIL[label]
         accum: list[str] = []
         for i, x in enumerate(nums):
@@ -473,10 +519,11 @@ def render_collapsed(label: str, lane_items: list[dict[str, Any]]) -> str:
 
 def render_kanban(
     by_status: dict[str, list[dict[str, Any]]],
-    glyph_for: Callable[[int], str],
-    reason_glyph_for: Callable[[int], str],
+    glyph_for: Callable[[Any], str],
+    reason_glyph_for: Callable[[Any], str],
 ) -> str:
-    """The kanban boxes in BOARD_ORDER. Pure: lookups come in as callables."""
+    """The kanban boxes in BOARD_ORDER. Pure: lookups come in as callables, called with
+    the item's card key (its number when it carries none)."""
     boxes: list[str] = []
     for label in BOARD_ORDER:
         lane_items = by_status.get(label, [])
@@ -487,11 +534,11 @@ def render_kanban(
         if not lane_items:
             out.append(box_line("(empty)"))
         for it in lane_items:
-            n = it["number"]
+            n = it.get("key", it["number"])
             if label == "Blocked":
-                out.append(box_line(f"{reason_glyph_for(n)} #{n}  {it['title']}"))
+                out.append(box_line(f"{reason_glyph_for(n)} {ref_of(it)}  {it['title']}"))
                 continue
-            left = f"{glyph_for(n)} #{n}  {it['title']}"
+            left = f"{glyph_for(n)} {ref_of(it)}  {it['title']}"
             suffix = rebuild_suffix(it)
             if suffix:
                 budget = 76 - visual_width(suffix) - 1
@@ -516,7 +563,9 @@ def snapshot_json(slug: str, cfg: dict[str, Any], items: list[dict[str, Any]], t
         "project": {"owner": cfg["project"]["owner"], "number": int(cfg["project"]["number"])},
         "generated": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "truncated": truncated,
-        "items": sorted(items, key=lambda x: x["number"]),
+        # `ref` is display only; `repository` + `key` keep two repos' #7 apart.
+        "items": [{k: v for k, v in i.items() if k != "ref"}
+                  for i in sorted(items, key=lambda x: (x["number"], x.get("key", "")))],
         "counts": counts,
     }
 
@@ -572,21 +621,8 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    items: list[dict[str, Any]] = []
-    for n in items_raw:
-        c = n.get("content") or {}
-        if not c.get("number"):
-            continue
-        items.append({
-            "number": c["number"],
-            "title": sanitize_title(c.get("title") or ""),
-            "labels": [
-                l["name"]
-                for l in (c.get("labels", {}).get("nodes") or [])
-                if l.get("name")
-            ],
-            "status": field_status(n),
-        })
+    home = home_repo(cfg)
+    items = [i for i in (card_item(n, home) for n in items_raw) if i is not None]
 
     by_status: dict[str, list[dict[str, Any]]] = {
         s: sorted([i for i in items if i["status"] == s], key=lambda x: -x["number"])
@@ -601,10 +637,11 @@ def main() -> int:
     # Skip silently on error so a stale token doesn't break the rest of the
     # snapshot. The body is capped at 4000 chars; emojis in the locked
     # vocabulary land at the top of any well-formed reason-tag comment.
-    reasons: dict[int, str] = {}
+    reasons: dict[str, str] = {}
     for it in by_status["Blocked"]:
-        n = it["number"]
-        out = gh("issue", "view", str(n), "--json", "comments", check=False)
+        n = it["key"]
+        repo_args = ["--repo", it["repository"]] if it.get("repository") else []
+        out = gh("issue", "view", str(it["number"]), *repo_args, "--json", "comments", check=False)
         if not out:
             continue
         try:
@@ -627,12 +664,18 @@ def main() -> int:
     reaped_count = state["reaped_count"]
 
     # ── tiny closures over items / inflight / now_epoch ──
-    def item_by_number(n: int) -> dict[str, Any] | None:
-        return next((i for i in items if i["number"] == n), None)
+    # The manifest names home-repo issues by number; everything else is by card key.
+    items_by_key = {i["key"]: i for i in items}
 
-    def glyph_for_issue(n: int) -> str:
+    def home_key(n: Any) -> str:
+        return card_key(home, int(str(n).lstrip("#")))
+
+    def item_by_number(n: int) -> dict[str, Any] | None:
+        return items_by_key.get(home_key(n))
+
+    def glyph_for_issue(k: str) -> str:
         for lane, v in inflight.items():
-            if v["issue"] == str(n):
+            if str(v["issue"]).lstrip("#").isdigit() and home_key(v["issue"]) == k:
                 return LANE_GLYPH[lane]
         return "  "
 
@@ -666,9 +709,9 @@ def main() -> int:
             return f"T-{d // 3600}h"
         return f"T-{d // 86400}d"
 
-    def reason_for_issue(n: int) -> tuple[str, str]:
-        item = item_by_number(n)
-        return block_reason(item["labels"] if item else [], reasons.get(n, ""))
+    def reason_for_issue(k: str) -> tuple[str, str]:
+        item = items_by_key.get(k)
+        return block_reason(item["labels"] if item else [], reasons.get(k, ""))
 
     # ── header ──
     proj = cfg["project"]
@@ -731,9 +774,9 @@ def main() -> int:
     else:
         groups: dict[str, dict[str, Any]] = {}
         for it in blockers:
-            em, txt = reason_for_issue(it["number"])
+            em, txt = reason_for_issue(it["key"])
             g = groups.setdefault(em, {"text": txt, "issues": []})
-            g["issues"].append(f"#{it['number']}")
+            g["issues"].append(ref_of(it))
         for em, g in sorted(groups.items(), key=lambda kv: -len(kv[1]["issues"])):
             issues_str = ", ".join(g["issues"])
             print(f"   {em} ×{len(g['issues'])}  {g['text']:<18}  {issues_str}")

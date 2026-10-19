@@ -67,14 +67,23 @@
 # Pass --deps in tests to keep the script offline. `clearedBy` holds numbers for
 # this repo's blockers and "owner/repo#N" strings for a linked repo's.
 #
+# CARD IDENTITY. A Project may hold issues of several repos, each with its own #7.
+# A card is `owner/repo#N` (compared lower-cased). Only home cards — the repo in
+# config.repo.remote, or a card that names no repo — are planned, and every lookup
+# (graph, triage) is by card key, so another repo's #7 never borrows this repo's
+# verdict. Another repo's card in a working column is reported in `foreign` and
+# nothing else, linked repo or not (linked_repos lends blocker state, not cards).
+# Every reported card carries `repository` (nameWithOwner) when one is known.
+#
 # Stdout:
-#   { "cards": [ {"number":10,"status":"Review","title":"…","lane":"review","labels":[]} ],
-#     "sweep": [ {"number":37,"title":"…","clearedBy":[32]} ],
-#     "resume": [ {"number":51,"title":"…"} ],
-#     "refreshApproval": [ {"number":52,"title":"…","why":"PR head changed after review"} ],
-#     "flag":  [ {"number":82,"title":"…","why":"…"} ],
-#     "stranded": [ {"number":44,"title":"…"} ],
-#     "triage": [ {"number":45,"title":"…","missing":["Fix","checkable acceptance criterion"],"hints":["…"]} ] }
+#   { "cards": [ {"number":10,"repository":"acme/api","status":"Review","title":"…","lane":"review","labels":[]} ],
+#     "sweep": [ {"number":37,"repository":"acme/api","title":"…","clearedBy":[32]} ],
+#     "resume": [ {"number":51,"repository":"acme/api","title":"…"} ],
+#     "refreshApproval": [ {"number":52,"repository":"acme/api","title":"…","why":"PR head changed after review"} ],
+#     "flag":  [ {"number":82,"repository":"acme/api","title":"…","why":"…"} ],
+#     "foreign": [ {"number":7,"repository":"acme/web","status":"Ready","title":"…","why":"card from acme/web: not a member of this board"} ],
+#     "stranded": [ {"number":44,"repository":"acme/api","title":"…"} ],
+#     "triage": [ {"number":45,"repository":"acme/api","title":"…","missing":["Fix","checkable acceptance criterion"],"hints":["…"]} ] }
 set -euo pipefail
 
 CONFIG=""; ITEMS_FILE=""; DEPS_FILE=""
@@ -100,6 +109,11 @@ VARIANT=$(echo "$CONFIG_JSON" | jq -r '.variant // ""')
 MAX_WORKERS=$(echo "$CONFIG_JSON" | jq -r '.max_workers // 0')
 OWNER=$(echo "$CONFIG_JSON" | jq -r '.project.owner')
 NUMBER=$(echo "$CONFIG_JSON" | jq -r '.project.number')
+# The home repo (config repo.remote): its cards are this board's. Empty only in
+# offline tests with no remote, and then every card counts as home.
+HOME_REPO=$(echo "$CONFIG_JSON" | jq -r '.repo.remote // ""' | tr -d '\r' \
+              | sed -E 's#^(https?://github\.com/|git@github\.com:)##; s#\.git$##')
+LINKED_JSON=$(echo "$CONFIG_JSON" | jq -c '[(.linked_repos // [])[] | strings]')
 
 if [ -n "$ITEMS_FILE" ]; then
   ITEMS=$(cat "$ITEMS_FILE")
@@ -121,8 +135,7 @@ esac
 if [ -n "$DEPS_FILE" ]; then
   DEPS=$(cat "$DEPS_FILE")
 else
-  REPO=$(echo "$CONFIG_JSON" | jq -r '.repo.remote // ""' \
-           | sed -E 's#^https?://github\.com/##; s#\.git$##')
+  REPO="$HOME_REPO"
   [ -n "$REPO" ] || { echo "config.repo.remote is required to derive dependencies" >&2; exit 66; }
   HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
   # A graph we cannot fetch is not a graph of zero blockers. Fail rather than
@@ -143,11 +156,14 @@ fi
 # `triage.enabled: false` in the config skips the check.
 TRIAGE='[]'
 if [ "$(echo "$CONFIG_JSON" | jq -r 'if .triage.enabled == false then "off" else "on" end')" = on ]; then
-  CANDIDATES=$(echo "$ITEMS" | jq -c '[ .items[]
+  CANDIDATES=$(echo "$ITEMS" | jq -c --arg home "$HOME_REPO" '[ .items[]
       | select(.content.type == "Issue" and .status == "Ready")
       | select((.content.assignees // []) | length == 0)
+      | (.content.repository // "") as $r
+      | select($home == "" or $r == "" or ($r | ascii_downcase) == ($home | ascii_downcase))
       | { number: .content.number, title: .content.title, body: (.content.body // null),
-          labels: ((.labels // []) + (.content.labels // [])) } ]')
+          labels: ((.labels // []) + (.content.labels // [])) }
+        + (if $r != "" then { repository: $r } elif $home != "" then { repository: $home } else {} end) ]')
   if [ "$CANDIDATES" != "[]" ]; then
     TMPD=$(mktemp -d)
     trap 'rm -rf "$TMPD"' EXIT
@@ -158,8 +174,9 @@ if [ "$(echo "$CONFIG_JSON" | jq -r 'if .triage.enabled == false then "off" else
                --deps "$TMPD/deps.json" --config "$TMPD/config.json" 2>"$TMPD/err") || RC=$?
     if { [ "$RC" -ne 0 ] && [ "$RC" -ne 3 ]; } || ! printf '%s' "$TRIAGE" | jq -e 'type == "array"' >/dev/null 2>&1; then
       echo "card-ready failed (exit $RC): $(head -c 300 "$TMPD/err") — no Ready card dispatched" >&2
-      TRIAGE=$(echo "$CANDIDATES" | jq -c '[ .[] | { number, ready: false, missing: ["card-ready failed"],
-                 hints: ["super-board-card-ready.py crashed; rerun it on this card"] } ]')
+      TRIAGE=$(echo "$CANDIDATES" | jq -c '[ .[] | { number } + (if .repository then { repository } else {} end)
+                 + { ready: false, missing: ["card-ready failed"],
+                     hints: ["super-board-card-ready.py crashed; rerun it on this card"] } ]')
     fi
   fi
 fi
@@ -169,10 +186,21 @@ fi
 # actually is — the merge step takes a lock inside the wave workflow and the
 # freshness gate re-verifies under it — so reviews may run in parallel here.
 echo "$ITEMS" | jq --argjson cols "$COLUMNS" --argjson cap "$MAX_WORKERS" --argjson deps "$DEPS" \
-                   --argjson triage "$TRIAGE" '
-  def dep($n): $deps[($n | tostring)];
-  ([ $triage[] | select(.ready | not) | { key: (.number | tostring), value: . } ] | from_entries) as $notReady
-  | def unready($n): $notReady[($n | tostring)] != null;
+                   --argjson triage "$TRIAGE" --arg home "$HOME_REPO" --argjson linked "$LINKED_JSON" '
+  # CARD KEYS. A Project can hold issues of several repos, and two repos both have
+  # a #7. A card is `owner/repo#N`, compared lower-cased. Only home-repo cards
+  # (repo.remote; a card naming no repo is home) are planned. Everything below is
+  # keyed by card key, so another repo'"'"'s #7 never meets this repo'"'"'s graph entry.
+  def ckey($repo; $n): (if $home == "" then "" else (($repo // $home) | ascii_downcase) end) + "#" + ($n | tostring);
+  def is_home: (.content.repository // "") as $r
+    | $home == "" or $r == "" or ($r | ascii_downcase) == ($home | ascii_downcase);
+  def ident: { number } + (if .repository then { repository } else {} end);
+  # deps.sh output is keyed by number for its own --repo; re-key it by card key.
+  ([ $deps | to_entries[] | select(.key | test("^[0-9]+$")) | select(.value | type == "object")
+     | { key: ckey(.value.repository; (.key | tonumber)), value: .value } ] | from_entries) as $dk
+  | def dep($c): $dk[ckey($c.repository; $c.number)];
+  ([ $triage[] | select(.ready | not) | { key: ckey(.repository; .number), value: . } ] | from_entries) as $notReady
+  | def unready($c): $notReady[ckey($c.repository; $c.number)] != null;
   # gh project item-list puts label names on the item (`labels`); some shapes put
   # them on the content, as strings or {name}. Lower-cased, names only.
   def labels_of: [ ((.labels // []) + (.content.labels // []))[]
@@ -183,14 +211,33 @@ echo "$ITEMS" | jq --argjson cols "$COLUMNS" --argjson cap "$MAX_WORKERS" --argj
     elif ($labels | index("qa")) then "qa"
     else "build" end;
   # Unknown to the graph (closed, or beyond the fetch limit) is not "free".
-  def free($n): (dep($n) | if . == null then false else .runnable end);
+  def free($c): (dep($c) | if . == null then false else .runnable end);
 
   [ .items[]
     | select(.content.type == "Issue")
+    | select(is_home)
     | select((.content.assignees // []) | length == 0)
     | labels_of as $l
-    | { number: .content.number, status: .status, title: .content.title,
-        lane: lane_of(.status; $l), labels: $l } ] as $all
+    | { number: .content.number }
+      + (if (.content.repository // "") != "" then { repository: .content.repository }
+         elif $home != "" then { repository: $home } else {} end)
+      + { status: .status, title: .content.title, lane: lane_of(.status; $l), labels: $l } ] as $all
+
+  # Cards of another repo on this Project: never planned, never matched to a
+  # same-numbered home issue. Reported while they sit in a working column. A
+  # linked repo'"'"'s card is still not this board'"'"'s (its own board plans it);
+  # linked_repos only lends its issues'"'"' state to `## Blocked by` lines.
+  | ($linked | map(ascii_downcase)) as $lk
+  | [ .items[]
+      | select(.content.type == "Issue")
+      | select(is_home | not)
+      | select(.status as $s | ["Ready","Building","QA","Review","Blocked"] | index($s))
+      | .content.repository as $r
+      | { number: .content.number, repository: $r, status: .status, title: .content.title,
+          why: ("card from " + $r + ": not a member of this board"
+                + (if ($lk | index($r | ascii_downcase)) then
+                     " (a linked repo: its own board plans it; linked_repos only lends blocker state)"
+                   else "" end)) } ] as $foreign
 
   # In flight: already past preflight, so the graph does not gate them. Iterated
   # in $cols order (Review, then QA) rather than board order, so a throttled wave
@@ -199,7 +246,7 @@ echo "$ITEMS" | jq --argjson cols "$COLUMNS" --argjson cap "$MAX_WORKERS" --argj
 
   # Ready: only the ones the graph says are actually free.
   # Ready: only the ones the graph says are actually free, and written well enough.
-  | [ $all[] | select(.status == "Ready") | select(free(.number)) | select(unready(.number) | not) ] as $ready
+  | [ $all[] | select(.status == "Ready") | select(free(.)) | select(unready(.) | not) ] as $ready
 
   # Downstream-first, so work already begun finishes before new work starts.
   | ($flight + $ready) as $picked
@@ -209,37 +256,40 @@ echo "$ITEMS" | jq --argjson cols "$COLUMNS" --argjson cap "$MAX_WORKERS" --argj
       # these to Ready before launching, so they join this very wave.
       sweep: [ $all[]
                | select(.status == "Blocked")
-               | select(free(.number))
-               | { number, title,
-                   clearedBy: (dep(.number) | .blockers) } ],
+               | select(free(.))
+               | ident + { title, clearedBy: (dep(.) | .blockers) } ],
 
       # Verified current-head human approval from the dependency helper. The
       # Reviewer independently rechecks it; labels are only UI state.
       resume: [ $all[]
                 | select(.status == "Blocked")
-                | select(dep(.number) != null and (dep(.number).needsYouDone // false))
-                | { number, title } ],
+                | select(dep(.) != null and (dep(.).needsYouDone // false))
+                | ident + { title } ],
 
       # Changed code while Blocked needs a new review/request, never approval.
       refreshApproval: [ $all[]
                          | select(.status == "Blocked")
-                         | select(dep(.number).approvalRefresh // false)
-                         | { number, title, why: dep(.number).approvalWhy } ],
+                         | select(dep(.).approvalRefresh // false)
+                         | ident + { title, why: dep(.).approvalWhy } ],
 
       # Cards the graph could not read. Left where they are, reported so the
       # orchestrator can ask for the line to be fixed.
       flag:  [ $all[]
                | select(.status as $s | ["Ready","Blocked"] | index($s))
-               | select(dep(.number) != null and (dep(.number).parseable | not))
-               | { number, title, why: (dep(.number) | .why) } ],
+               | select(dep(.) != null and (dep(.).parseable | not))
+               | ident + { title, why: (dep(.) | .why) } ],
+
+      # Another repo'"'"'s cards on this Project (see $foreign above). Report only:
+      # no comment, no move — the issue is not this repo'"'"'s.
+      foreign: $foreign,
 
       # Building with no claim between waves = no live worker. Back to Ready.
-      stranded: [ $all[] | select(.status == "Building") | { number, title } ],
+      stranded: [ $all[] | select(.status == "Building") | ident + { title } ],
 
       # Ready cards card-ready says are too vague to dispatch. Left in Ready, labelled
       # needs-triage by the orchestrator. A card already in `flag` is reported there only.
       triage: [ $all[]
-                | select(.status == "Ready" and unready(.number))
-                | select((dep(.number) != null and (dep(.number).parseable | not)) | not)
-                | { number, title, missing: $notReady[(.number | tostring)].missing,
-                    hints: $notReady[(.number | tostring)].hints } ] }'
+                | select(.status == "Ready" and unready(.))
+                | select((dep(.) != null and (dep(.).parseable | not)) | not)
+                | $notReady[ckey(.repository; .number)] as $t
+                | ident + { title, missing: $t.missing, hints: $t.hints } ] }'

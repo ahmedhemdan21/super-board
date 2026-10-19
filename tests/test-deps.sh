@@ -186,4 +186,18 @@ grep issueOrPullRequest "$LT/log" | grep -q 'i9: issueOrPullRequest(number:9)' |
 echo "$LIVE" | jq -e '.["101"].runnable == true and .["102"].runnable == false and .["105"].openBlockers == ["acme/api#9"]' >/dev/null \
   || fail "live verdicts wrong: $LIVE"
 
-echo "PASS: test-deps.sh (30 scenarios)"
+# 31 — card keys. Two repos' #7 are two cards: entries carry repository + key, a
+#      blocker acme/web#7 is judged by acme/web's state (closed) and never by this
+#      repo's open #7; `- #7` still means this repo's #7.
+jq -n '{issues: [
+  {number: 7, title: "api 7", state: "OPEN", body: "## Blocked by\n- None."},
+  {number: 8, title: "waits on web 7", state: "OPEN", body: "## Blocked by\n- acme/web#7"},
+  {number: 9, title: "waits on api 7", state: "OPEN", body: "## Blocked by\n- #7"}],
+  foreign: {"acme/web#7": {__typename: "Issue", state: "CLOSED", stateReason: "COMPLETED"}}}' > "$LT/keys.json"
+KEYS=$("$DEPS" --from "$LT/keys.json" --repo Acme/API --linked acme/web)
+echo "$KEYS" | jq -e '.["7"].repository == "Acme/API" and .["7"].key == "acme/api#7"' >/dev/null || fail "entries must carry repository and key: $KEYS"
+echo "$KEYS" | jq -e '.["8"].runnable == true and .["8"].openBlockers == []' >/dev/null || fail "acme/web#7 (closed) must not collide with open #7: $KEYS"
+echo "$KEYS" | jq -e '.["9"].openBlockers == [7] and .["9"].runnable == false' >/dev/null || fail "- #7 is this repo's open #7: $KEYS"
+"$DEPS" --from "$LT/keys.json" | jq -e '.["7"] | has("repository") or has("key") | not' >/dev/null || fail "no --repo, no repository/key"
+
+echo "PASS: test-deps.sh (31 scenarios)"

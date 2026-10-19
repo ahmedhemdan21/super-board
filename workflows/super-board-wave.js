@@ -14,7 +14,7 @@ export const meta = {
 
 // args = {
 //   configPath: '.claude/super-board/configs/<slug>.json',
-//   cards: [{ number, status, title, lane, labels }],  // output of super-board-wave-plan.sh
+//   cards: [{ number, repository, status, title, lane, labels }],  // output of super-board-wave-plan.sh (home-repo cards only)
 //     lane: 'build' | 'qa' | 'review' — a Ready card labelled `qa` has lane 'qa'
 //     and skips the Builder; every other Ready card is built first (v3.0.0).
 //   tier: 'low' | 'medium' | 'high' (optional, default 'medium'),  // run model ladder

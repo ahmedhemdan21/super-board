@@ -367,15 +367,17 @@ the script is missing.
 - **Project items (column counts + in-flight workers, both from ONE call):**
   the script issues a single targeted `gh api graphql` query (`ITEMS_QUERY`
   near the top of `super-board-status.py`) that fetches each item's `number`,
-  `title`, `labels{nodes{name}}`, and the `Status` single-select field —
-  ≈3 KB total. Group locally by Status for column counts; filter the same
+  `repository{nameWithOwner}`, `title`, `labels{nodes{name}}`, and the `Status`
+  single-select field — ≈3 KB total. A card is `owner/repo#N`: the home repo
+  (`repo.remote`) prints `#N`, another repo's card on the Project prints
+  `owner/repo#N`, and `--json` items carry `repository` and `key`. Group locally by Status for column counts; filter the same
   `labels` array for `loop:in-{builder,tester,reviewer}` to identify
   in-flight workers per lane; `loop:rebuild-N` feeds the `↻ N/3` suffix.
   Deliberately avoids `gh project item-list --format json` (≈100 KB — it
   slurps every issue body) and any separate `gh issue list --assignee` call.
   Do **not** call `gh project item-edit` or any mutation in this verb.
 - **Block-reason parsing:** for each issue in `Blocked`, read the
-  latest §4 reason-tag comment via `gh issue view <N> --json comments` and
+  latest §4 reason-tag comment via `gh issue view <N> --repo <its repo> --json comments` and
   match the leading emoji against §I. Cache results during the snapshot — do
   not re-read mid-render.
 - **Recent events:** tail the most recent run manifest at

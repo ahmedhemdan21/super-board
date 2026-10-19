@@ -715,15 +715,25 @@ def summarize(before, after, prs, receipts, quota, errors):
          "bugs_filed_per_source": receipts, "flaky_opened": None, "regression_opened": None,
          "quota": quota, "errors": list(errors), "counts_before": None, "counts_after": None}
     if before and after:
-        b = {i["number"]: i for i in before.get("items") or []}
-        a = {i["number"]: i for i in after.get("items") or []}
+        # By card key (repo, number): a Project may hold two repos' #7. A snapshot
+        # from before card keys (no `repository`) falls back to numbers on both sides.
+        keyed = all(i.get("repository") for snap in (before, after) for i in snap.get("items") or [])
+
+        def ck(i):
+            return (str(i["repository"]).lower() if keyed else "", i["number"])
+
+        def ident(i):
+            return {"number": i["number"], **({"repository": i["repository"]} if i.get("repository") else {})}
+
+        b = {ck(i): i for i in before.get("items") or []}
+        a = {ck(i): i for i in after.get("items") or []}
         for n, it in sorted(a.items()):
             if n in b and b[n]["status"] != it["status"]:
-                s["moved"].append({"number": n, "from": b[n]["status"], "to": it["status"]})
+                s["moved"].append({**ident(it), "from": b[n]["status"], "to": it["status"]})
                 k = f"{b[n]['status']}→{it['status']}"
                 s["moved_per_lane"][k] = s["moved_per_lane"].get(k, 0) + 1
         new = [a[n] for n in sorted(set(a) - set(b))]
-        s["new_cards"] = [{"number": i["number"], "status": i["status"], "labels": i["labels"]} for i in new]
+        s["new_cards"] = [{**ident(i), "status": i["status"], "labels": i["labels"]} for i in new]
         s["flaky_opened"] = sum(1 for i in new if any("flaky" in l for l in i["labels"]))
         s["regression_opened"] = sum(1 for i in new if "regression" in i["labels"])
         s["counts_before"], s["counts_after"] = before.get("counts"), after.get("counts")

@@ -18,13 +18,15 @@
 #
 # Usage:
 #   super-board-card.sh [--config <cfg.json>] [--owner O --number N] [--repo owner/name] <verb>
-#     move <issue> <Status>   set the card's Status column (Ready, QA, Review, Blocked, Done, …)
-#     status <issue>          print the card's current Status name (1 point, never cached)
-#     item-id <issue>         print the card's project item id (cached)
+#     move <card> <Status>    set the card's Status column (Ready, QA, Review, Blocked, Done, …)
+#     status <card>           print the card's current Status name (1 point, never cached)
+#     item-id <card>          print the card's project item id (cached)
 #     ids                     print {projectId, fieldId, options:{name:id}} (cached)
 #     items                   the whole board in `gh project item-list --format json` shape
 #                             ({items:[{id,status,labels,title,content:{type,number,title,url,repository,body}}],totalCount})
 #                             body: the issue body, for super-board-card-ready.py (no extra points)
+#   <card> is `N` / `#N` (an issue of the home repo, repo.remote) or `owner/repo#N`
+#   (any repo whose issues sit on this Project). Two repos' #7 are two cards.
 #     link <issue> --to <owner/name> --project <owner/number> --new blocks|waits
 #          --title <title> [--body-file <md>] [--why <text>]
 #                             create the counterpart of <issue> on a linked repo's board
@@ -49,9 +51,13 @@
 # repo.remote), else $BUILD_LOOP_OWNER / $BUILD_LOOP_PROJECT and the origin remote.
 #
 # Cache: <main checkout>/.claude/super-board/cache/board-<owner>-<number>.json,
-# shared by every worktree. Option ids are reminted whenever someone edits the
-# column list, so a failed move drops the cache, re-reads it once, and retries
-# once — a stale id costs one extra point, never a wrong move.
+# shared by every worktree (a submodule keeps its own, in its own checkout).
+# `.items` is keyed by the lower-cased card key `owner/repo#N`; a cache from
+# before card keys (`.items` by bare number, no `.v`) is dropped and re-read,
+# never trusted: its "7" could be any repo's #7. Option ids are reminted
+# whenever someone edits the column list, so a failed move drops the cache,
+# re-reads it once, and retries once — a stale id costs one extra point, never
+# a wrong move.
 #
 # Exit: 0 ok · 64 usage · 66 config · 69 GitHub read/mutation failed (link: the
 #       message lists what was already written and what is left) ·
@@ -69,7 +75,7 @@ while [ $# -gt 0 ]; do
     --owner)  OWNER="$2"; shift 2 ;;
     --number) NUMBER="$2"; shift 2 ;;
     --repo)   REPO="$2"; shift 2 ;;
-    -h|--help) sed -n '2,61p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d'; exit 0 ;;
     --) shift; break ;;
     -*) echo "unknown flag: $1" >&2; exit 64 ;;
     *) break ;;
@@ -101,26 +107,63 @@ gh_read() {
 no_errors() { jq -e 'if type == "array" then all(.[]; (.errors // null) == null) else (.errors // null) == null end' >/dev/null; }
 
 # ── cache ───────────────────────────────────────────────────────────────
+# The checkout that owns .claude/super-board: the main checkout for a linked
+# worktree (common dir <main>/.git), the submodule's own checkout for a submodule
+# (common dir <super>/.git/modules/<name>, whose parent is NOT a checkout).
+board_root() {
+  local common wt
+  common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+  if [ -z "$common" ]; then echo "$PWD"; return; fi
+  if [ "$(basename "$common")" = .git ]; then dirname "$common"; return; fi
+  wt=$(git config --file "$common/config" --get core.worktree 2>/dev/null || true)
+  if [ -n "$wt" ]; then
+    case "$wt" in /*|[A-Za-z]:*) ;; *) wt="$common/$wt" ;; esac
+    if [ -d "$wt" ]; then (cd "$wt" && pwd); return; fi
+  fi
+  git rev-parse --show-toplevel 2>/dev/null || echo "$PWD"
+}
 cache_dir() {
   if [ -n "${SB_CARD_CACHE_DIR:-}" ]; then echo "$SB_CARD_CACHE_DIR"; return; fi
-  local common
-  common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
-  if [ -n "$common" ]; then echo "$(dirname "$common")/.claude/super-board/cache"
-  else echo "$PWD/.claude/super-board/cache"; fi
+  echo "$(board_root)/.claude/super-board/cache"
 }
 CACHE_DIR=$(cache_dir)
 CACHE="$CACHE_DIR/board-${OWNER}-${NUMBER}.json"
+CACHE_V=2  # 2 = .items keyed by card key; any other cache is re-read
 cache_get() { [ -s "$CACHE" ] && jq -r "($1) // empty" "$CACHE" 2>/dev/null || true; }
+cache_check() {  # a cache from before card keys is stale, never misread
+  [ -s "$CACHE" ] || return 0
+  jq -e --argjson v "$CACHE_V" '.v == $v' "$CACHE" >/dev/null 2>&1 || rm -f "$CACHE"
+}
 cache_put() {  # $1 = jq filter applied to the current cache, with --arg/--argjson in "$@"
   local filter="$1"; shift
   mkdir -p "$CACHE_DIR"
   [ -f "$CACHE_DIR/.gitignore" ] || echo '*' > "$CACHE_DIR/.gitignore"
   local cur tmp
-  cur=$(cat "$CACHE" 2>/dev/null || echo '{}'); echo "$cur" | jq -e . >/dev/null 2>&1 || cur='{}'
+  cur=$(cat "$CACHE" 2>/dev/null || echo '{}')
+  echo "$cur" | jq -e --argjson v "$CACHE_V" '.v == $v' >/dev/null 2>&1 || cur='{}'
   tmp=$(mktemp "$CACHE_DIR/.board.XXXXXX")
-  echo "$cur" | jq "$@" "$filter" > "$tmp" && mv "$tmp" "$CACHE" || rm -f "$tmp"
+  echo "$cur" | jq "$@" "($filter) | .v = $CACHE_V" > "$tmp" && mv "$tmp" "$CACHE" || rm -f "$tmp"
 }
 cache_drop() { rm -f "$CACHE"; }
+
+# ── card keys ───────────────────────────────────────────────────────────
+# parse_card <arg> sets CARD_REPO (owner/name as written), CARD_N, CARD_KEY
+# (lower-cased `owner/repo#N`, the cache key) and CARD_REF (what messages print:
+# `#N` for a home card, `owner/repo#N` for any other repo).
+lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+parse_card() {
+  local a="$1"
+  if [[ "$a" =~ ^#?([0-9]+)$ ]]; then
+    CARD_N="${BASH_REMATCH[1]}"; CARD_REPO="$REPO"
+  elif [[ "$a" =~ ^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([0-9]+)$ ]]; then
+    CARD_REPO="${BASH_REMATCH[1]}"; CARD_N="${BASH_REMATCH[2]}"
+  else
+    echo "card must be N, #N or owner/repo#N: $a" >&2; return 64
+  fi
+  [ -n "$CARD_REPO" ] || { echo "repo unknown: pass --repo or a config with repo.remote" >&2; return 66; }
+  CARD_KEY="$(lc "$CARD_REPO")#$CARD_N"
+  if [ "$(lc "$CARD_REPO")" = "$(lc "$REPO")" ]; then CARD_REF="#$CARD_N"; else CARD_REF="$CARD_REPO#$CARD_N"; fi
+}
 
 # ── reads ───────────────────────────────────────────────────────────────
 load_ids() {  # fills PROJECT_ID FIELD_ID OPTIONS_JSON — 0 points when cached, else 1
@@ -141,8 +184,8 @@ load_ids() {  # fills PROJECT_ID FIELD_ID OPTIONS_JSON — 0 points when cached,
 }
 
 # One targeted query (1 point): this issue's item on this board, and its Status.
-read_card() {  # $1 = issue; sets ITEM_ID STATUS_NAME
-  [ -n "$REPO" ] || { echo "repo unknown: pass --repo or a config with repo.remote" >&2; return 66; }
+read_card() {  # $1 = card (N | #N | owner/repo#N); sets ITEM_ID STATUS_NAME
+  parse_card "$1" || return $?
   local out
   out=$(gh_read api graphql -f query='query($owner:String!,$name:String!,$issue:Int!){
       repository(owner:$owner,name:$name){ issueOrPullRequest(number:$issue){
@@ -150,20 +193,21 @@ read_card() {  # $1 = issue; sets ITEM_ID STATUS_NAME
           fieldValueByName(name:"Status"){ ... on ProjectV2ItemFieldSingleSelectValue{ name } } } } }
         ... on PullRequest { projectItems(first:20){ nodes{ id project{ number owner{ ... on User{login} ... on Organization{login} } }
           fieldValueByName(name:"Status"){ ... on ProjectV2ItemFieldSingleSelectValue{ name } } } } } } } }' \
-      -F owner="${REPO%%/*}" -F name="${REPO##*/}" -F issue="$1") || return $?
-  echo "$out" | no_errors || { echo "card read for #$1 returned errors" >&2; return 69; }
+      -F owner="${CARD_REPO%%/*}" -F name="${CARD_REPO##*/}" -F issue="$CARD_N") || return $?
+  echo "$out" | no_errors || { echo "card read for $CARD_REF returned errors" >&2; return 69; }
   local node
   node=$(echo "$out" | jq -c --argjson n "$NUMBER" --arg o "$OWNER" '
     [.data.repository.issueOrPullRequest.projectItems.nodes[]?
      | select(.project.number == $n and ((.project.owner.login // "") | ascii_downcase) == ($o | ascii_downcase))][0] // empty')
-  [ -n "$node" ] || { echo "#$1 is not on project $OWNER/$NUMBER" >&2; return 3; }
+  [ -n "$node" ] || { echo "$CARD_REF is not on project $OWNER/$NUMBER" >&2; return 3; }
   ITEM_ID=$(echo "$node" | jq -r .id)
   STATUS_NAME=$(echo "$node" | jq -r '.fieldValueByName.name // ""')
-  cache_put '.items[$k] = $v' --arg k "$1" --arg v "$ITEM_ID"
+  cache_put '.items[$k] = $v' --arg k "$CARD_KEY" --arg v "$ITEM_ID"
 }
 
-item_id() {  # $1 = issue
-  ITEM_ID=$(cache_get ".items[\"$1\"]")
+item_id() {  # $1 = card
+  parse_card "$1" || return $?
+  ITEM_ID=$( { [ -s "$CACHE" ] && jq -r --arg k "$CARD_KEY" '.items[$k] // empty' "$CACHE" 2>/dev/null; } || true)
   [ -n "$ITEM_ID" ] || read_card "$1"
 }
 
@@ -185,7 +229,7 @@ move() {  # $1 = issue, $2 = Status name
       echo "Status option '$name' is not on project $OWNER/$NUMBER" >&2; return 3
     fi
     item_id "$issue" || return $?
-    if set_status "$ITEM_ID" "$opt"; then echo "moved #$issue → $name"; return 0; fi
+    if set_status "$ITEM_ID" "$opt"; then echo "moved $CARD_REF → $name"; return 0; fi
     [ "$attempt" = 1 ] && { echo "move failed; re-reading board ids once" >&2; cache_drop; }
   done
   return 69
@@ -374,12 +418,13 @@ link() {  # $1 = issue in this repo; flags as in the header
       dependent: (if $new == "blocks" then $here else $created end)}'
 }
 
+cache_check
 case "$VERB" in
   link)    [ $# -ge 1 ] || { echo "usage: link <issue> --to <owner/name> --project <owner/number> --new blocks|waits --title <t> [--body-file <md>] [--why <text>]" >&2; exit 64; }
            link "$@" ;;
-  move)    [ $# -eq 2 ] || { echo "usage: move <issue> <Status>" >&2; exit 64; }; move "$1" "$2" ;;
-  status)  [ $# -eq 1 ] || { echo "usage: status <issue>" >&2; exit 64; }; read_card "$1"; echo "$STATUS_NAME" ;;
-  item-id) [ $# -eq 1 ] || { echo "usage: item-id <issue>" >&2; exit 64; }; item_id "$1"; echo "$ITEM_ID" ;;
+  move)    [ $# -eq 2 ] || { echo "usage: move <card> <Status>" >&2; exit 64; }; move "$1" "$2" ;;
+  status)  [ $# -eq 1 ] || { echo "usage: status <card>" >&2; exit 64; }; read_card "$1"; echo "$STATUS_NAME" ;;
+  item-id) [ $# -eq 1 ] || { echo "usage: item-id <card>" >&2; exit 64; }; item_id "$1"; echo "$ITEM_ID" ;;
   ids)     load_ids; jq -n --arg p "$PROJECT_ID" --arg f "$FIELD_ID" --argjson o "$OPTIONS_JSON" '{projectId:$p, fieldId:$f, options:$o}' ;;
   items)   items ;;
   *) echo "unknown verb: $VERB" >&2; exit 64 ;;

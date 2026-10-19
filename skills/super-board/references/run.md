@@ -787,6 +787,9 @@ Before planning any wave, `super-board-wave-plan.sh` reports six lists the orche
 - **`flag`** — cards whose `## Blocked by` section could not be parsed. Leave them where they are
   and comment asking for the line to be fixed, quoting the `why`. Never guess: a card treated as
   free on an unreadable line gets built against a base that does not have what it needs.
+- **`foreign`** — cards of another repo on this Project (a card is `owner/repo#N`; only the
+  home repo, `repo.remote`, is planned), in a working column. Report them in the wave line; do
+  not comment, label or move them, linked repo or not. Their `#N` is not this repo's `#N`.
 - **`triage`** — free `Ready` cards `super-board-card-ready.py` judged too vague (a required
   section missing or empty, no checkable criterion, a bug without Evidence). They are not in
   `cards`. Label each `needs-triage`, leave it in Ready, and comment once with its `missing` list;
