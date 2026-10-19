@@ -118,4 +118,12 @@ echo "$OUT10" | jq -e '.["61"].verdict == "sequence" and .["61"].tag == "overlap
 echo "$OUT10" | jq -e '.["62"].verdict == "proceed" and (.["60"] | has("_files") | not)' >/dev/null \
   || fail "#62 is clean and no internal _files leaks: $OUT10"
 
-echo "PASS: test-preflight.sh (10 scenarios)"
+# 11 — a full page of long open PRs (PrimeCore, 2026-10-19). Passing it to jq as an
+#      argument died with "Argument list too long" on Windows; ~300 KB here is over the
+#      Linux per-argument limit too, so the old code fails on every platform.
+jq -n '[range(100) | {number: (500 + .), title: "Unrelated change \(.)", body: ("x" * 3000),
+         url: "u", headRefName: "feat/x-\(.)", files: [{path: "src/other/\(.).ts"}]}]' > "$FX/open.json"
+OUT11=$(run --issues 23)
+echo "$OUT11" | jq -e '.["23"].verdict == "proceed"' >/dev/null || fail "a large open-PR list must still be read: $OUT11"
+
+echo "PASS: test-preflight.sh (11 scenarios)"
