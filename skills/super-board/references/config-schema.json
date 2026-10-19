@@ -475,12 +475,12 @@
   // Optional. super-collect sources for THIS project (skills/super-collect/SKILL.md).
   // Written by `super-board onboard` (collect step). IDs and hosts only: secrets
   // live in a gitignored env file (.env.local when .env is tracked by git) —
-  // SENTRY_AUTH_TOKEN, POSTHOG_PERSONAL_API_KEY — never here.
+  // SENTRY_AUTH_TOKEN, POSTHOG_PERSONAL_API_KEY, SLACK_BOT_TOKEN — never here.
   "collect": {
     // Sources `/super-collect` runs with no argument. Any of:
-    // "sentry", "posthog", "loki", "prometheus", "github", "prs", "architecture", plus the `name` of
+    // "sentry", "posthog", "loki", "prometheus", "slack", "github", "prs", "architecture", plus the `name` of
     // any entry in `custom` below.
-    "sources": ["sentry", "posthog", "github", "prs", "architecture", "linear"],
+    "sources": ["sentry", "posthog", "slack", "github", "prs", "architecture", "linear"],
     // Default window in days when no --since is given. Default 14.
     "window_days": 14,
     "sentry": {
@@ -550,6 +550,23 @@
       "version_property": "app_version",
       // Optional funnel steps for the drop-off REPORT (never tickets).
       "funnel": ["$pageview", "signup_started", "setup_completed"]
+    },
+    // Bug reports people post in Slack (skills/super-collect/scripts/collect_slack.py; app
+    // manifest and setup: skills/super-collect/references/slack-app.md). Bot token in
+    // SLACK_BOT_TOKEN. A report = every top-level human message in `channels`, plus any
+    // top-level message carrying `reaction` in a channel the bot was invited to.
+    // Fingerprint slack|<channel id>|<ts>.
+    "slack": {
+      // Channel IDs or #names (names resolved through conversations.list).
+      "channels": ["#bugs", "C0123ABCD"],
+      // Reaction name without colons. Default "bug".
+      "reaction": "bug",
+      // Caps on the walk; hitting one reports the source `truncated`. Defaults 50 / 5 / 50.
+      "max_channels": 50,
+      "max_pages": 5,
+      "max_candidates": 50,
+      // One thread reply with the issue link after filing. Default true.
+      "reply": true
     },
     "prs": {
       // Cap on merged PRs read per run. Default 200.

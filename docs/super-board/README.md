@@ -22,7 +22,7 @@ column each card is in.
 
 ```mermaid
 flowchart LR
-  collect["/super-collect<br/>sentry · posthog · issues · PRs · architecture"] --> backlog["Backlog"]
+  collect["/super-collect<br/>sentry · posthog · slack · issues · PRs · architecture"] --> backlog["Backlog"]
   backlog -->|"/super-board lint, then you"| ready["Ready"]
   ready --> build["Building<br/>super-build: worktree + draft PR"]
   build --> qa["QA<br/>super-qa: tests, evidence"]
@@ -54,7 +54,7 @@ merge with a hand-off; a card labelled `qa` skips Building.
 | 4 | 🌿 Branch | Finds branches and the deploy source; no staging → "Create staging from main" (Recommended). |
 | 5 | 📜 AGENTS.md | "Move your N CLAUDE.md rules into AGENTS.md?" — one short question per conflict, nothing lost (coverage-checked). |
 | 6 | 🛡️ Policies | Two questions: safe defaults (merge rule, push guard, migrations), and the permission lines. |
-| 7 | 📥 Bug sources | Sentry, PostHog, GitHub issues, past PRs, architecture, plus "➕ Add another source": a link, app, API URL, MCP server or command, pinged read-only before it is saved. |
+| 7 | 📥 Bug sources | Sentry, PostHog, Slack (bot token, bug channels and 🐛 reactions), GitHub issues, past PRs, architecture, plus "➕ Add another source": a link, app, API URL, MCP server or command, pinged read-only before it is saved. |
 | 8 | ✅ Review | One compact table, then "Write everything?" — files change once, here. |
 
 Stop at any step: the answers are saved, and the next run shows them and continues. Testing a
@@ -92,7 +92,7 @@ card dropped on purpose is closed as not planned and moved to Done with a 🤷 c
 | `/super-build` | `Ready` → `QA`. Worktree, smallest safe change, draft PR. |
 | `/super-qa` | `QA` → `Review`. Tests per AC, test-gap check, screenshots/logs/HARs on the PR, or a bounce with a rebuild label. Off-ticket findings file as `source:qa` cards. |
 | `/super-review` | `Review` → `Done`. Re-runs the Tester's tests, adversarial truth-check, merges through the gate or hands to a human. On a re-review it first checks every finding from its last report. Shape problems are filed to `Backlog`, never blocked on. |
-| `/super-collect` | Filling `Backlog` from Sentry, PostHog, unboarded issues, recurring PR problems and architecture findings, each checked by one verifier first. |
+| `/super-collect` | Filling `Backlog` from Sentry, PostHog, Slack bug reports, unboarded issues, recurring PR problems and architecture findings, each checked by one verifier first. |
 | `/ui-refine-loop` | Polishing one page or component, standalone: Impeccable check → fix rounds ending in a draft PR. The board never runs it. |
 | `/git-sync` | Secondary helper: commit per logical change, merge-pull, push without force. |
 | `/visual` | Secondary helper: a visual recap or plan. Merged-worktree cleanup is a hook (`hooks/cleanup-wt.py`): the merge gate runs it after each merge and SessionStart runs it when a base moved. |

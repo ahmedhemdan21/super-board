@@ -64,7 +64,7 @@ def collect_block(cfg, source=None):
 
 # Collector token names. scripts/super-board-setup.py keeps a copy (it ships to .claude/bin
 # and cannot import this file); tests/test_collect_telemetry.py checks the two agree.
-SECRET_KEYS = ("SENTRY_AUTH_TOKEN", "POSTHOG_PERSONAL_API_KEY")
+SECRET_KEYS = ("SENTRY_AUTH_TOKEN", "POSTHOG_PERSONAL_API_KEY", "SLACK_BOT_TOKEN")
 SECRET_PATTERN = re.compile(r"(?:LOKI|PROMETHEUS)_\w*(?:TOKEN|KEY|PASSWORD|SECRET)\w*")
 
 

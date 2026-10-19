@@ -137,8 +137,10 @@ is "old intake source gone" 64 "$(run --type bug --source intake --title T --bod
 is "fp must match source"   64 "$(run --type bug --source posthog --title T --body-file "$WORK/bug.md" --fingerprint "err|sentry|1" >/dev/null; echo $?)"
 is "gap only for posthog"  64 "$(run --type feature --source sentry --title T --body-file "$WORK/fix.md" --fingerprint "gap|checkout" >/dev/null; echo $?)"
 is "custom fp must start custom|" 64 "$(run --type bug --source custom --title T --body-file "$WORK/bug.md" --fingerprint "linear|ENG-1" >/dev/null; echo $?)"
+is "slack fp needs channel and ts" 64 "$(run --type bug --source slack --title T --body-file "$WORK/bug.md" --fingerprint "slack|bugs|yesterday" >/dev/null; echo $?)"
+is "slack fp has no extra parts" 64 "$(run --type bug --source slack --title T --body-file "$WORK/bug.md" --fingerprint "slack|C0BUGS01|1790000000.1|x" >/dev/null; echo $?)"
 is "fp prefix needs a key"  64 "$(run --type bug --source sentry --title T --body-file "$WORK/bug.md" --fingerprint "err|sentry|" >/dev/null; echo $?)"
-for pair in "sentry err|sentry|9" "posthog posthog|exception|abc123" "posthog gap|checkout" "github github|55" "prs prs|merge-gate|drift" "architecture arch|order-intake|shallow" "custom custom|linear|ENG-42"; do
+for pair in "sentry err|sentry|9" "posthog posthog|exception|abc123" "posthog gap|checkout" "github github|55" "prs prs|merge-gate|drift" "architecture arch|order-intake|shallow" "custom custom|linear|ENG-42" "slack slack|C0BUGS01|1790000000.123456"; do
   src=${pair%% *}; fp=${pair#* }
   OUT=$(run --type bug --source "$src" --title T --body-file "$WORK/bug.md" --fingerprint "$fp")
   has "fingerprint shape accepted for $src" "$OUT" "would-file|bug|T|Backlog"

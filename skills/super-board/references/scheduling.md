@@ -67,14 +67,14 @@ What it guarantees:
 ## (b) A cloud routine (`/schedule`)
 
 The cloud has no ssh and no Docker, so it can only run sources that call public APIs:
-`sentry`, `posthog`, `github`, `prs`, `architecture`. Never `loki`, `prometheus`, Tempo or
+`sentry`, `posthog`, `slack`, `github`, `prs`, `architecture`. Never `loki`, `prometheus`, Tempo or
 `run`. Secrets come from the routine's environment variables (`SENTRY_AUTH_TOKEN`,
-`POSTHOG_PERSONAL_API_KEY`), never from a `.env` file, and are never echoed.
+`POSTHOG_PERSONAL_API_KEY`, `SLACK_BOT_TOKEN`), never from a `.env` file, and are never echoed.
 
 Routine prompt template (fill the `<…>`):
 
 > In the `<owner>/<repo>` repository, with super-board installed, run
-> `/super-collect --sources sentry,posthog,github,prs,architecture --yes` against config
+> `/super-collect --sources sentry,posthog,slack,github,prs,architecture --yes` against config
 > `<config slug>`. Use only those sources even if the config lists more; loki, prometheus
 > and tempo need ssh or Docker and are not available here. Secrets are in the environment;
 > never print them. Verify and dedupe before filing; file into Backlog only. Do not run the

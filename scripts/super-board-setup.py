@@ -375,7 +375,7 @@ def migrate_config(cfg):
 
 # Collector token names — a copy of collect_common.SECRET_KEYS / SECRET_PATTERN (this script
 # ships to .claude/bin and cannot import it); tests/test_collect_telemetry.py checks they agree.
-SECRET_KEYS = ("SENTRY_AUTH_TOKEN", "POSTHOG_PERSONAL_API_KEY")
+SECRET_KEYS = ("SENTRY_AUTH_TOKEN", "POSTHOG_PERSONAL_API_KEY", "SLACK_BOT_TOKEN")
 SECRET_PATTERN = re.compile(r"(?:LOKI|PROMETHEUS)_\w*(?:TOKEN|KEY|PASSWORD|SECRET)\w*")
 
 

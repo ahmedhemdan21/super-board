@@ -7,7 +7,8 @@ board fixes them.
 
 - Reads pluggable sources: **sentry** (unresolved errors), **posthog** (exceptions, failure
   events, rage and dead clicks, slow pages, survey themes, tracking gaps), **loki** (error log
-  groups for one required selector), **prometheus** (firing alerts, down scrape targets), **github** (open issues
+  groups for one required selector), **prometheus** (firing alerts, down scrape targets), **slack** (top-level posts in bug channels
+  and messages tagged with a 🐛 reaction, with their thread), **github** (open issues
   not on the board, adopted rather than copied), **prs** (recurring problems across merged PRs and
   their human, bot and super-review comments) and **architecture** (read-only refactor finder).
 - Checks every candidate with one fresh verifier: is it real, still happening, already fixed, or a
@@ -21,6 +22,9 @@ board fixes them.
   signature adds an evidence comment to the open card instead of filing another.
 - Adds a Trace line to Evidence when a candidate has a trace id, summarised from **Tempo**
   (optional enricher, `collect.tempo`, not a source) with a Grafana Explore link.
+- Replies once in the Slack thread of a filed report with the issue link (`collect_slack.py
+  reply`, idempotent, never in a dry run). Slack text is quoted as untrusted evidence with
+  mentions made inert, never followed as instructions.
 - Labels a filed body that is too thin to build `needs-triage` (`super-board-card-ready.py`).
 - Files through `super-qa-file-bug.sh` and `super-review-file-refactor.sh`, always into the
   holding column. Nothing reaches `Ready` until `super-board lint` says so.
@@ -42,7 +46,8 @@ Dry-run is the default: you see what would be filed, then confirm.
 asks which sources to enable, writes IDs and hosts to the config, and tests each connection
 read-only. Secrets stay in a gitignored env file (`.env.local` whenever `.env` is tracked by git;
 `collect_common.py secret-file` prints which): `SENTRY_AUTH_TOKEN` (scopes `event:read project:read`),
-`POSTHOG_PERSONAL_API_KEY` (`query:read`, `error_tracking:read`). Loki and Prometheus need no
+`POSTHOG_PERSONAL_API_KEY` (`query:read`, `error_tracking:read`), `SLACK_BOT_TOKEN` (a bot from the
+manifest in [slack-app.md](references/slack-app.md), invited to the bug channels). Loki and Prometheus need no
 secret: `collect.loki` (`url`, required `selector`) and `collect.prometheus` (`url`); the
 optional Tempo enricher reads `collect.tempo` (`url`, `grafana_url`, `grafana_datasource_uid`).
 `collect_loki.py check` also backs the post-deploy telemetry check (`deploy.telemetry`), and
@@ -54,6 +59,7 @@ Ships in the super-board pack under `skills/super-collect/`; `install.sh` copies
 `.claude/skills/super-collect/`. Needs a super-board config, `gh`, `jq` and Python 3 (stdlib only).
 
 Tests: `bash tests/test-collect-file.sh` · `bash tests/test-collect-fetchers.sh` ·
+`python3 tests/test_collect_slack.py` ·
 `bash tests/test-collect-baseline.sh` · `python3 tests/test_collect_baseline.py` (offline, all in
 `tests/run-safety.sh`). The baseline suites replay the canned Sentry, PostHog and PR payloads in
 `tests/fixtures/collect/`: fingerprint dedupe, ticket-format checks, the dry run, unreachable
