@@ -84,6 +84,11 @@
 #             "parseable": true, "humanGated": false, "runnable": false, "why": "",
 #             "needsYou": false, "needsYouDone": false } }
 # Same-repo blockers stay numbers; foreign ones are "owner/repo#N" strings.
+# Every issue here belongs to --repo, so the plain-number key is unambiguous; each
+# entry also carries `repository` (--repo as given) and `key` (lower-cased card
+# key `owner/repo#N`) so a caller holding cards from several repos (a Project can)
+# matches by card key and never hands --repo's #7 to another repo's #7. Both are
+# left out when --repo is not given (a --from run with no repo).
 #
 # `needsYou` — the newest Block comment carries the 🙋 reason tag, or the issue
 # has the `needs-you` label: a human-only command is waiting (block-template.md).
@@ -289,7 +294,7 @@ fi
 # ---- pass 2: verdicts ---------------------------------------------------------
 APPROVAL_REPO="$REPO"
 [ -z "$FROM" ] || APPROVAL_REPO=""
-echo "$PARSED" | jq --arg only "$ONLY" --argjson foreign "$FOREIGN" '
+echo "$PARSED" | jq --arg only "$ONLY" --argjson foreign "$FOREIGN" --arg repo "$REPO" '
   # done | open | abandoned. Anything unexpected — including no answer — is open.
   def foreign_state:
     if . == null then "open"
@@ -313,8 +318,10 @@ echo "$PARSED" | jq --arg only "$ONLY" --argjson foreign "$FOREIGN" '
       | ( [ $p.blockers[]
             | select(if type == "number" then (. as $b | $open | index($b)) != null
                      else ($foreign[.] | foreign_state) != "done" end) ] ) as $stillOpen
-      | { number: $c.number, title: $c.title, state: $c.state,
-          blockers: $p.blockers, openBlockers: $stillOpen,
+      | { number: $c.number, title: $c.title, state: $c.state }
+        + (if $repo == "" then {} else
+            { repository: $repo, key: (($repo | ascii_downcase) + "#" + ($c.number | tostring)) } end)
+        + { blockers: $p.blockers, openBlockers: $stillOpen,
           parseable: $p.parseable,
           humanGated: $p.human_gated,
           runnable: ($p.parseable and ($p.human_gated | not) and (($stillOpen | length) == 0)),

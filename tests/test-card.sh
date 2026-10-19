@@ -33,6 +33,7 @@ case "$kind" in
   ids) echo '{"data":{"repositoryOwner":{"projectV2":{"id":"PVT_1","field":{"id":"PVTSSF_1","options":[{"id":"opt_ready","name":"Ready"},{"id":"opt_qa","name":"QA"}]}}}}}' ;;
   card)
     case "$*" in
+      *name=web*) echo '{"data":{"repository":{"issueOrPullRequest":{"projectItems":{"nodes":[{"id":"PVTI_web232","project":{"number":15,"owner":{"login":"acme"}},"fieldValueByName":{"name":"Ready"}}]}}}}}' ;;
       *issue=999*) echo '{"data":{"repository":{"issueOrPullRequest":{"projectItems":{"nodes":[{"id":"PVTI_other","project":{"number":7,"owner":{"login":"acme"}},"fieldValueByName":null}]}}}}}' ;;
       *) echo '{"data":{"repository":{"issueOrPullRequest":{"projectItems":{"nodes":[{"id":"PVTI_other","project":{"number":7,"owner":{"login":"acme"}},"fieldValueByName":null},{"id":"PVTI_232","project":{"number":15,"owner":{"login":"Acme"}},"fieldValueByName":{"name":"Building"}}]}}}}}' ;;
     esac ;;
@@ -65,8 +66,8 @@ ok "warm move = 1 mutation"
 # 3 — the cache is shared state, kept out of git.
 [ -f "$TMP/cache/board-acme-15.json" ] || fail "cache file missing"
 [ "$(cat "$TMP/cache/.gitignore")" = '*' ] || fail "cache dir not self-ignored"
-jq -e '.items["232"] == "PVTI_232" and .options.QA == "opt_qa"' "$TMP/cache/board-acme-15.json" >/dev/null || fail "cache content wrong"
-ok "cache holds ids, ignores itself"
+jq -e '.items["acme/app#232"] == "PVTI_232" and .options.QA == "opt_qa" and .v == 2' "$TMP/cache/board-acme-15.json" >/dev/null || fail "cache content wrong"
+ok "cache holds ids keyed by card key, ignores itself"
 
 # 4 — a reminted option id: first mutation fails, ids re-read, retried once.
 jq '.options.QA = "opt_stale"' "$TMP/cache/board-acme-15.json" > "$TMP/c" && mv "$TMP/c" "$TMP/cache/board-acme-15.json"
@@ -90,6 +91,30 @@ ok "status = 1 live read"
 RC=0; card item-id 999 >/dev/null 2>&1 || RC=$?
 [ "$RC" = 3 ] || fail "issue off this board should exit 3 (rc=$RC)"
 ok "issue not on this board → 3"
+
+# 7b — card keys: acme/web#232 sits on the same Project as home #232. It is its
+#      own card: read from acme/web, cached under its own key, moved by its own
+#      item id, and home #232 keeps its id.
+reset_log
+OUT=$(card move acme/web#232 QA)
+[ "$OUT" = "moved acme/web#232 → QA" ] || fail "foreign move output: $OUT"
+grep '^card' "$FAKE_LOG" | grep -q 'owner=acme -F name=web -F issue=232' || fail "foreign card read the wrong repo: $(cat "$FAKE_LOG")"
+grep '^mutation' "$FAKE_LOG" | grep -q 'i=PVTI_web232' || fail "foreign move used the home item: $(cat "$FAKE_LOG")"
+jq -e '.items["acme/web#232"] == "PVTI_web232" and .items["acme/app#232"] == "PVTI_232"' "$TMP/cache/board-acme-15.json" >/dev/null   || fail "two repos' #232 must be two cache keys: $(cat "$TMP/cache/board-acme-15.json")"
+[ "$(card item-id 232)" = PVTI_232 ] && [ "$(card item-id '#232')" = PVTI_232 ] && [ "$(card item-id ACME/App#232)" = PVTI_232 ]   || fail "N, #N and owner/repo#N (any case) must name the same home card"
+RC=0; card item-id 'acme#232' >/dev/null 2>&1 || RC=$?
+[ "$RC" = 64 ] || fail "a malformed card ref must exit 64 (rc=$RC)"
+ok "owner/repo#N is its own card; N = home repo"
+
+# 7c — a cache from before card keys (items by bare number) is stale: dropped and
+#      re-read, never trusted — its "232" could be any repo's #232.
+jq -n '{projectId:"PVT_1", fieldId:"PVTSSF_1", options:{QA:"opt_qa", Ready:"opt_ready"}, items:{"232":"PVTI_web232"}}' > "$TMP/cache/board-acme-15.json"
+reset_log
+card move 232 QA >/dev/null
+[ "$(calls ids)" = 1 ] && [ "$(calls card)" = 1 ] || fail "an old number-keyed cache must be re-read: $(cat "$FAKE_LOG")"
+grep '^mutation' "$FAKE_LOG" | grep -q 'i=PVTI_232' || fail "old cache misread: $(cat "$FAKE_LOG")"
+jq -e '.v == 2 and (.items | has("232") | not) and .items["acme/app#232"] == "PVTI_232"' "$TMP/cache/board-acme-15.json" >/dev/null   || fail "re-read cache shape: $(cat "$TMP/cache/board-acme-15.json")"
+ok "old number-keyed cache → re-read, no misread"
 
 # 8 — items: gh item-list shape, the fields the wave planner reads.
 cat > "$TMP/items.json" <<'EOF'

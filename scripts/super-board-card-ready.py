@@ -19,10 +19,17 @@ Rules (writing-standard.md § 3, the ticket format):
 
 Usage:
   super-board-card-ready.py [--from <issue.json>] [--config <cfg.json>] [--deps <deps.json>]
-  Input (stdin or --from): one issue {number, title, body, labels, state?, comments?} or a
-  list of them. labels: ["bug"] / [{"name":"bug"}] / {"nodes":[…]}.
+  Input (stdin or --from): one issue {number, title, body, labels, state?, comments?,
+  repository?} or a list of them. labels: ["bug"] / [{"name":"bug"}] / {"nodes":[…]}.
 
-Stdout: {number, ready, missing: [...], hints: [...]} (a list for list input).
+Card identity: a card is `owner/repo#N`. `repository` (nameWithOwner, also read from
+`content.repository`) defaults to the home repo, config `repo.remote`. Verdicts match by
+card key, so two repos' #7 never share one: a --deps graph entry counts for its own
+`repository` (the home repo when it names none), and without --deps each repo's issues go
+through their own `super-board-deps.sh --from --repo <that repo>` run.
+
+Stdout: {number, repository?, ready, missing: [...], hints: [...]} (a list for list input).
+  `repository` is left out only when neither the card nor the config names one.
 Exit:   0 every card ready · 3 any card not ready · 64 usage / unreadable input.
 Fail safe: anything this cannot judge (deps.sh crashed, no body) is not ready.
 """
@@ -130,25 +137,56 @@ def bash():
     return "bash"
 
 
-def deps_scope(cfg):
-    """deps.sh's --repo / --linked from the config, so a foreign `owner/repo#N` blocker is
-    judged as the planner judges it (only `linked_repos` are trusted)."""
+def home_repo(cfg):
+    """config repo.remote as owner/name, or '' when it names none."""
     remote = str(((cfg or {}).get("repo") or {}).get("remote") or "")
     repo = re.sub(r"^(https?://github\.com/|git@github\.com:)", "", remote)
     repo = re.sub(r"\.git$", "", repo)
-    args = ["--repo", repo] if re.fullmatch(r"[\w.-]+/[\w.-]+", repo) else []
+    return repo if re.fullmatch(r"[\w.-]+/[\w.-]+", repo) else ""
+
+
+def card_key(repo, number):
+    """The card key, lower-cased for comparison: `owner/repo#N` (`#N` when no repo is known
+    at all, and then every card is the home repo's)."""
+    return f"{(repo or '').lower()}#{number}"
+
+
+def deps_scope(cfg, repo=None):
+    """deps.sh's --repo / --linked from the config, so a foreign `owner/repo#N` blocker is
+    judged as the planner judges it (only `linked_repos` are trusted). `repo` stands in for
+    the home repo when judging a card from another repo on the same Project."""
+    repo = repo or home_repo(cfg)
+    args = ["--repo", repo] if re.fullmatch(r"[\w.-]+/[\w.-]+", repo or "") else []
     linked = [str(x) for x in (cfg or {}).get("linked_repos") or [] if x]
     return args + (["--linked", ",".join(linked)] if linked else [])
 
 
 def deps_verdicts(issues, deps_file=None, cfg=None):
-    """{number: (parseable, why)}. From the planner's graph when given; else one
-    `super-board-deps.sh --from` run over these issues. A failure leaves numbers out."""
+    """{card key: (parseable, why)}. From the planner's graph when given (an entry counts for
+    its own `repository`, the home repo when it names none); else one
+    `super-board-deps.sh --from` run per repo over these issues. A failure leaves keys out."""
+    home = home_repo(cfg)
+    out = {}
     if deps_file:
         with open(deps_file, encoding="utf-8") as f:
             graph = json.load(f)
-        return {int(k): (bool(v.get("parseable")), v.get("why") or "") for k, v in graph.items()
-                if isinstance(v, dict) and str(k).isdigit()}
+        for k, v in graph.items():
+            if isinstance(v, dict) and str(k).isdigit():
+                out[card_key(v.get("repository") or home, int(k))] = (bool(v.get("parseable")), v.get("why") or "")
+        return out
+    groups = {}
+    for i in issues:
+        groups.setdefault((i.get("repository") or home).lower(), []).append(i)
+    for group in groups.values():
+        repo = group[0].get("repository") or home
+        for k, v in deps_run(group, deps_scope(cfg, repo)).items():
+            if isinstance(v, dict) and str(k).isdigit():
+                out[card_key(repo, int(k))] = (bool(v.get("parseable")), v.get("why") or "")
+    return out
+
+
+def deps_run(issues, scope):
+    """One `super-board-deps.sh --from` run over these issues; {} on any failure."""
     payload = [{"number": i["number"], "title": i.get("title") or "", "body": i.get("body") or "",
                 "state": i.get("state") or "OPEN", "labels": {"nodes": [{"name": n} for n in i["labels"]]},
                 "comments": i.get("comments") or {"nodes": []}} for i in issues]
@@ -157,11 +195,12 @@ def deps_verdicts(issues, deps_file=None, cfg=None):
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(payload, f)
-        r = subprocess.run([bash(), str(script), "--from", path, *deps_scope(cfg)], capture_output=True, text=True,
+        r = subprocess.run([bash(), str(script), "--from", path, *scope], capture_output=True, text=True,
                            encoding="utf-8", timeout=60)
         if r.returncode != 0:
             return {}
         graph = json.loads(r.stdout)
+        return graph if isinstance(graph, dict) else {}
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return {}
     finally:
@@ -169,7 +208,6 @@ def deps_verdicts(issues, deps_file=None, cfg=None):
             os.unlink(path)
         except OSError:
             pass
-    return {int(k): (bool(v.get("parseable")), v.get("why") or "") for k, v in graph.items()}
 
 
 # ── the check ──────────────────────────────────────────────────────────────
@@ -218,7 +256,7 @@ def judge(issue, verdict, ac_min=1):
     return missing, hints
 
 
-def normalize(raw):
+def normalize(raw, home=""):
     if not isinstance(raw, dict):
         raise ValueError("each issue must be an object")
     content = raw.get("content") if isinstance(raw.get("content"), dict) else {}
@@ -227,8 +265,12 @@ def normalize(raw):
         raise ValueError("each issue needs an integer number")
     labels = label_names(raw.get("labels") or content.get("labels") or [])
     body = raw["body"] if "body" in raw else content.get("body")
+    repo = raw.get("repository") or content.get("repository") or ""
+    if isinstance(repo, dict):
+        repo = repo.get("nameWithOwner") or ""
     return {"number": number, "title": raw.get("title") or content.get("title") or "", "body": body,
-            "labels": labels, "state": raw.get("state") or "OPEN", "comments": raw.get("comments")}
+            "labels": labels, "state": raw.get("state") or "OPEN", "comments": raw.get("comments"),
+            "repository": str(repo) or home}
 
 
 def main(argv=None):
@@ -241,11 +283,11 @@ def main(argv=None):
         text = open(a.src, encoding="utf-8").read() if a.src else sys.stdin.read()
         raw = json.loads(text)
         single = isinstance(raw, dict)
-        issues = [normalize(x) for x in ([raw] if single else raw)]
         cfg = {}
         if a.config:
             with open(a.config, encoding="utf-8") as f:
                 cfg = json.load(f)
+        issues = [normalize(x, home_repo(cfg)) for x in ([raw] if single else raw)]
         ac_min = int(((cfg.get("triage") or {}).get("checkable_ac_min")) or 1)
     except (OSError, ValueError, TypeError) as e:
         print(f"card-ready: {e}", file=sys.stderr)
@@ -254,8 +296,9 @@ def main(argv=None):
     verdicts = deps_verdicts(build, a.deps, cfg) if build else {}
     out = []
     for i in issues:
-        missing, hints = judge(i, verdicts.get(i["number"]), max(1, ac_min))
-        out.append({"number": i["number"], "ready": not missing, "missing": missing, "hints": hints})
+        missing, hints = judge(i, verdicts.get(card_key(i["repository"], i["number"])), max(1, ac_min))
+        out.append({"number": i["number"], **({"repository": i["repository"]} if i["repository"] else {}),
+                    "ready": not missing, "missing": missing, "hints": hints})
     print(json.dumps(out[0] if single else out, ensure_ascii=False))
     return 0 if all(o["ready"] for o in out) else 3
 

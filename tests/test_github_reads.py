@@ -261,6 +261,53 @@ top_card_in_column Review
         self.assertEqual(len(list(marker.parent.glob('github-halt-*.json'))), 1)
         self.assertEqual(self.read([{'out': '{}'}]).returncode, 0)
 
+    def test_submodules_keep_their_own_halt_file_and_card_cache(self):
+        # A standard submodule's common dir is <super>/.git/modules/<name>; its parent is
+        # no checkout. State must land in the submodule checkout, one per submodule.
+        self.env.pop('SB_GITHUB_HALT_FILE')
+        self.env.pop('SB_CARD_CACHE_DIR', None)
+        git_env = dict(self.env, GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@t',
+                       GIT_COMMITTER_NAME='t', GIT_COMMITTER_EMAIL='t@t')
+
+        def git(*args, cwd):
+            subprocess.run(['git', *args], cwd=str(cwd), env=git_env, check=True, capture_output=True)
+
+        for name in ('backend-src', 'frontend-src', 'super'):
+            (self.root / name).mkdir()
+            git('init', '-q', cwd=self.root / name)
+            git('commit', '--allow-empty', '-qm', 'initial', cwd=self.root / name)
+        sup = self.root / 'super'
+        for name in ('backend', 'frontend'):
+            git('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q',
+                str(self.root / f'{name}-src'), name, cwd=sup)
+        common = subprocess.run(['git', 'rev-parse', '--git-common-dir'], cwd=str(sup / 'backend'),
+                                capture_output=True, text=True).stdout
+        self.assertIn('modules', common, 'not a standard submodule; the test would prove nothing')
+
+        # Halt file: a failed read in backend halts backend, in backend's checkout only.
+        self.env['SB_REPO_PATH'] = str(sup / 'backend')
+        self.assertEqual(self.read([{'rc': 1}]).returncode, 79)
+        self.assertTrue((sup / 'backend/.claude/super-board/github-halt.json').exists())
+        self.assertFalse((sup / '.git/modules/.claude').exists())
+        self.assertFalse((sup / '.claude').exists())
+        self.env['SB_REPO_PATH'] = str(sup / 'frontend')
+        self.assertEqual(self.read([{'out': '{}'}]).returncode, 0, 'two submodules must not share a halt file')
+        (sup / 'backend/src').mkdir()
+        self.env['SB_REPO_PATH'] = str(sup / 'backend/src')
+        self.assertEqual(self.read([{'out': '{}'}]).returncode, 79, 'a subfolder resolves to its submodule')
+
+        # Card cache: super-board-card.sh run in frontend caches in frontend's checkout.
+        self.env.pop('SB_REPO_PATH')
+        self.env['READ_RESPONSES'] = json.dumps([{'out': json.dumps({'data': {'repositoryOwner': {'projectV2': {
+            'id': 'PVT_1', 'field': {'id': 'F_1', 'options': [{'id': 'o_r', 'name': 'Ready'}]}}}}})}])
+        r = subprocess.run([BASH, str(ROOT / 'scripts/super-board-card.sh'), '--owner', 'acme', '--number', '1',
+                            '--repo', 'acme/web', 'ids'], env=self.env, cwd=str(sup / 'frontend'),
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((sup / 'frontend/.claude/super-board/cache/board-acme-1.json').exists())
+        self.assertFalse((sup / '.git/modules/.claude').exists())
+        self.assertFalse((sup / 'backend/.claude/super-board/cache').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

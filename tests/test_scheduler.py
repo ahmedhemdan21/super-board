@@ -323,6 +323,16 @@ class Comment(unittest.TestCase):
     HEADER = re.compile(r"^\[(builder|qa|reviewer|collect|orchestrator|scheduler)\] "
                         r"\[(blocker|issue|suggestion|nit|question|praise|report)\] \S")
 
+    def test_summary_keys_cards_by_repo_and_number(self):
+        two = s.summarize({"items": [{"number": 7, "repository": "acme/api", "status": "Ready", "labels": []},
+                                     {"number": 7, "repository": "acme/web", "status": "Ready", "labels": []}]},
+                          {"items": [{"number": 7, "repository": "acme/api", "status": "QA", "labels": []},
+                                     {"number": 7, "repository": "acme/web", "status": "Ready", "labels": []}]},
+                          None, {}, None, [])
+        self.assertEqual(two["moved"], [{"number": 7, "repository": "acme/api", "from": "Ready", "to": "QA"}],
+                         "two repos' #7 are two cards")
+        self.assertEqual(two["new_cards"], [])
+
     def test_format_matches_the_writing_standard(self):
         self.assertIn("`scheduler`", STANDARD.split("### Lane status and findings", 1)[1])
         run = {"job": "nightly", "trigger": "cron", "status": "failed", "duration_s": 3725, "error": None,

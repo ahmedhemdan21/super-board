@@ -194,8 +194,10 @@ Repeat until a done condition or halt gate fires:
    classification. Existing docs/ux/tests/refactor rows keep their chain; check
    any proposed new label chain before writing that label.
 
-   The planner returns `cards`, `sweep`, `resume`, `refreshApproval`, `flag`, `stranded` and `triage`
-   (Ready cards `super-board-card-ready.py` holds back as too vague). **Act on
+   The planner returns `cards`, `sweep`, `resume`, `refreshApproval`, `flag`, `foreign`, `stranded` and `triage`
+   (Ready cards `super-board-card-ready.py` holds back as too vague; `foreign` lists another
+   repo's cards on this Project, which are never planned: name them in the wave line and touch
+   nothing on them). **Act on
    `sweep`, `resume`, `refreshApproval`, `flag`, `stranded` and `triage` BEFORE launching** (run.md → "The wave-start
    sweep"): move every swept card to `Ready` with a comment naming what cleared
    it, move every `resume` card (verified human approval of the current pinned

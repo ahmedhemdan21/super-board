@@ -128,6 +128,29 @@ class CardReady(unittest.TestCase):
         rc, out, _ = run(issue(body), config={"repo": {"remote": "https://github.com/acme/web.git"}})
         self.assertEqual((rc, out["missing"]), (3, ["Blocked by"]), "a repo not in linked_repos is unreadable")
 
+    def test_two_repos_same_number_get_their_own_verdicts(self):
+        # The Project holds home acme/api#7 and acme/web#7. The planner's graph knows
+        # acme/api's issues only: home #7 is judged by its entry, web #7 never borrows it.
+        cfg = {"repo": {"remote": "https://github.com/acme/api"}}
+        home = issue(GOOD)
+        web = dict(issue(GOOD), repository="acme/web")
+        graph = {"7": {"parseable": True, "why": "", "repository": "acme/api", "key": "acme/api#7"}}
+        rc, out, err = run([home, web], deps=graph, config=cfg)
+        self.assertEqual(rc, 3, err)
+        self.assertEqual([(o["repository"], o["ready"]) for o in out], [("acme/api", True), ("acme/web", False)])
+        self.assertEqual(out[1]["missing"], ["Blocked by"], "web #7 is unknown to acme/api's graph")
+        # A graph entry naming another repo never counts for the home card.
+        rc, out, _ = run(home, deps={"7": {"parseable": True, "why": "", "repository": "acme/web"}}, config=cfg)
+        self.assertEqual((rc, out["missing"]), (3, ["Blocked by"]))
+        # Linked or not, without --deps each repo is parsed as itself: web's `- #3` is acme/web#3.
+        cfg_linked = dict(cfg, linked_repos=["acme/web"])
+        web_bad = dict(issue(GOOD.replace("- None.", "- None — but #3 first")), repository="acme/web")
+        rc, out, err = run([home, web_bad], config=cfg_linked)
+        self.assertEqual([(o["repository"], o["ready"]) for o in out], [("acme/api", True), ("acme/web", False)], err)
+        # Item shape: content.repository is read too.
+        item = {"content": {"number": 7, "title": "t", "body": GOOD, "labels": ["bug"], "repository": "acme/web"}}
+        self.assertEqual(run(item, deps=graph, config=cfg)[1]["repository"], "acme/web")
+
     def test_qa_cards_have_a_lighter_rule_set(self):
         qa = "## Problem\nCheckout totals look wrong.\n\n## Acceptance Criteria\n- [ ] Total equals the sum of line items on `/checkout`\n"
         self.assertEqual(run(issue(qa, labels=("qa",)))[0], 0)

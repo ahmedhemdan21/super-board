@@ -92,12 +92,34 @@ def halt_path():
     override = os.environ.get('SB_GITHUB_HALT_FILE')
     if override:
         return Path(override)
-    result = subprocess.run(['git', 'rev-parse', '--git-common-dir'], capture_output=True,
-                            text=True, encoding='utf-8', timeout=5, cwd=os.environ.get('SB_REPO_PATH'))
     cwd = Path(os.environ.get('SB_REPO_PATH') or Path.cwd())
-    common = Path(result.stdout.strip())
-    root = (cwd / common).resolve().parent if result.returncode == 0 else cwd
-    return root / '.claude/super-board/github-halt.json'
+    return board_root(cwd) / '.claude/super-board/github-halt.json'
+
+
+def board_root(cwd):
+    """The checkout that owns .claude/super-board. A linked worktree shares its main
+    checkout's (common dir <main>/.git). A submodule's common dir is
+    <super>/.git/modules/<name>, whose parent is no checkout: it keeps its own, in the
+    submodule checkout (core.worktree of that dir, else the toplevel), so two submodules
+    never share one halt file. Same rule as the scheduler's board_root()."""
+    def git(*args):
+        try:
+            r = subprocess.run(['git', *args], capture_output=True, text=True, encoding='utf-8',
+                               timeout=5, cwd=str(cwd))
+        except (OSError, subprocess.TimeoutExpired):
+            return ''
+        return r.stdout.strip() if r.returncode == 0 else ''
+    common = git('rev-parse', '--git-common-dir')
+    if not common:
+        return cwd
+    common = (cwd / common).resolve()
+    if common.name == '.git':
+        return common.parent
+    worktree = git('config', '--file', str(common / 'config'), '--get', 'core.worktree')
+    if worktree and (common / worktree).resolve().is_dir():
+        return (common / worktree).resolve()
+    top = git('rev-parse', '--show-toplevel')
+    return Path(top).resolve() if top else cwd
 
 
 def check_halt():

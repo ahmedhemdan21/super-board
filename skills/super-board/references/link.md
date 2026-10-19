@@ -68,3 +68,7 @@ foreign blocker's state in ONE batched GraphQL query through `super-board-github
 `blockers`, `openBlockers` and the sweep's `clearedBy` carry foreign refs as `owner/repo#N`
 strings; same-repo blockers stay numbers. A Blocked card whose foreign blockers are all done is
 swept to Ready in the next wave like any other.
+
+Linking lends state, not cards. If a linked repo's issue sits on this board's Project too, the
+planner reports it in `foreign` and never plans it: a card is `owner/repo#N`, and only
+`repo.remote`'s cards are this board's (hub.md → Card identity).

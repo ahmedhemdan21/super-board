@@ -191,4 +191,37 @@ OUT21C=$("$STUBBIN/super-board-wave-plan.sh" --config <(echo "$NOCAP") --items "
 echo "$OUT21C" | jq -e '[.cards[] | select(.status == "Ready")] == [] and ([.triage[].number] | index(12) != null)' >/dev/null \
   || fail "a crashing card-ready must hold every Ready card, got: $OUT21C"
 
-echo "PASS: test-wave-plan.sh (21 scenarios)"
+# 22 — card keys. The Project holds home acme/api#7 and acme/web#7 (plus web #8 in
+#      QA and web #9 in Blocked). The graph is acme/api's. Home #7 is planned on its
+#      own verdict; web cards are reported in `foreign`, never planned, swept,
+#      stranded or matched to api's #7 — and the same when acme/web is linked.
+#      A Done foreign card is not reported. Both ends are real: deps.sh builds the graph.
+GOODBODY=$(jq -r '.items[] | select(.content.number == 12) | .content.body' "$ITEMS" | tr -d '\r')
+KCFG=$(echo "$NOCAP" | jq '.repo.remote = "https://github.com/Acme/API.git"')
+KITEMS=$(jq -n --arg b "$GOODBODY" '{items: [
+  {status:"Ready",   content:{type:"Issue", number:7, title:"api seven", repository:"acme/api", assignees:[], body:$b}},
+  {status:"Ready",   content:{type:"Issue", number:7, title:"web seven", repository:"acme/web", assignees:[], body:$b}},
+  {status:"QA",      content:{type:"Issue", number:8, title:"web in qa", repository:"acme/web", assignees:[]}},
+  {status:"Blocked", content:{type:"Issue", number:9, title:"web blocked", repository:"acme/web", assignees:[]}},
+  {status:"Building",content:{type:"Issue", number:10, title:"web building", repository:"acme/web", assignees:[]}},
+  {status:"Done",    content:{type:"Issue", number:11, title:"web done", repository:"acme/web", assignees:[]}}]}')
+KDEPS=$(jq -n --arg b "$GOODBODY" '[{number:7, title:"api seven", state:"OPEN", body:$b},
+          {number:9, title:"api nine", state:"OPEN", body:"## Blocked by\n- None."}]' > "$STUBBIN/kdeps.json"
+        ../scripts/super-board-deps.sh --from "$STUBBIN/kdeps.json" --repo acme/api)
+for LINK in '[]' '["acme/web"]'; do
+  OUT22=$("$PLAN" --config <(echo "$KCFG" | jq --argjson l "$LINK" '.linked_repos = $l') --items <(echo "$KITEMS") --deps <(echo "$KDEPS"))
+  echo "$OUT22" | jq -e '.cards == [{number:7, repository:"acme/api", status:"Ready", title:"api seven", lane:"build", labels:[]}]' >/dev/null \
+    || fail "only home #7 is planned (linked=$LINK), got: $(echo "$OUT22" | jq -c .cards)"
+  echo "$OUT22" | jq -e '[.foreign[] | "\(.repository)#\(.number):\(.status)"] == ["acme/web#7:Ready","acme/web#8:QA","acme/web#9:Blocked","acme/web#10:Building"]' >/dev/null \
+    || fail "web cards must be reported as foreign (linked=$LINK), got: $(echo "$OUT22" | jq -c .foreign)"
+  echo "$OUT22" | jq -e '.foreign | all(.why | startswith("card from acme/web: not a member of this board"))' >/dev/null \
+    || fail "foreign cards need the reason (linked=$LINK): $(echo "$OUT22" | jq -c .foreign)"
+  echo "$OUT22" | jq -e '.sweep == [] and .stranded == [] and .flag == [] and .triage == [] and .resume == []' >/dev/null \
+    || fail "web #9 must not be swept on api #9's verdict, web #10 not stranded (linked=$LINK): $OUT22"
+done
+echo "$OUT22" | jq -e '.foreign[0].why | test("linked repo")' >/dev/null || fail "a linked repo's card says why it is still not planned"
+# Without the home card on the board, web #7 never borrows api #7's free verdict.
+OUT22B=$("$PLAN" --config <(echo "$KCFG") --items <(echo "$KITEMS" | jq '.items |= map(select(.content.repository != "acme/api"))') --deps <(echo "$KDEPS"))
+echo "$OUT22B" | jq -e '.cards == [] and (.foreign | length) == 4' >/dev/null || fail "web #7 must not be planned on api #7's verdict: $OUT22B"
+
+echo "PASS: test-wave-plan.sh (22 scenarios)"
