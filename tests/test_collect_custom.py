@@ -181,5 +181,64 @@ class AddAndCollect(Base):
         self.assertEqual((code, r["sources"][0]["status"]), (2, "unavailable"))
 
 
+ADO_BATCH = [
+    {"id": 4711, "rev": 3, "url": "https://dev.azure.com/contoso/Web/_apis/wit/workItems/4711",
+     "fields": {"System.Title": "Checkout 500 on empty cart", "System.State": "Active",
+                "System.WorkItemType": "Bug", "Microsoft.VSTS.Common.Priority": 1,
+                "Microsoft.VSTS.TCM.ReproSteps": "<div>Open cart, pay</div>",
+                "System.CreatedDate": "2026-10-01T10:00:00Z"}},
+    {"id": 4712, "url": "https://dev.azure.com/contoso/Web/_apis/wit/workItems/4712",
+     "_links": {"html": {"href": "https://dev.azure.com/contoso/Web/_workitems/edit/4712"}},
+     "fields": {"System.Title": "Login spinner never stops", "System.State": "New"}},
+]
+
+
+class Ado(Base):
+    def test_presets_classify_to_the_ado_mcp(self):
+        with mock.patch.object(cu, "mcp_servers", return_value=set()):
+            for text in ("ado", "Azure DevOps", "azure-devops", "azdo",
+                         "https://dev.azure.com/contoso/Web", "https://contoso.visualstudio.com/Web"):
+                r = cu.classify(text)
+                self.assertEqual((r["kind"], r["name"], r["target"], r["app"]), ("mcp", "ado", "ado", "ado"), text)
+                self.assertEqual(r["map"], cu.ADO_MAP)
+                self.assertIn("@azure-devops/mcp", r["note"])
+
+    def test_classify_picks_the_configured_server_name(self):
+        with mock.patch.object(cu, "mcp_servers", return_value={"github", "azureDevOps"}):
+            r = cu.classify("ado")
+        self.assertEqual(r["target"], "azureDevOps")
+        self.assertNotIn("note", r)
+
+    def test_default_map_normalizes_work_items(self):
+        json.dump({"collect": {"custom": [{"name": "ado", "kind": "mcp", "target": "ado", "app": "ado"}]}},
+                  open(self.cfg, "w"))
+        with mock.patch("sys.stdin", io.StringIO(json.dumps(ADO_BATCH))):
+            code, r = run(["normalize", "--name", "ado", "--config", self.cfg])
+        self.assertEqual(code, 0)
+        by = {c["key"]: c for c in r["candidates"]}
+        a, b = by["4711"], by["4712"]
+        self.assertEqual((a["fingerprint"], a["title"]), ("custom|ado|4711", "Checkout 500 on empty cart"))
+        self.assertEqual(a["url"], "https://dev.azure.com/contoso/Web/_workitems/edit/4711")
+        self.assertEqual(b["url"], "https://dev.azure.com/contoso/Web/_workitems/edit/4712")
+        self.assertIn("Open cart", a["body"])
+        self.assertEqual(a["fields"], {"state": "Active", "type": "Bug", "priority": 1,
+                                       "created": "2026-10-01T10:00:00Z"})
+
+    def test_ping_unavailable_without_the_server(self):
+        with mock.patch.object(cu, "mcp_servers", return_value={"linear"}):
+            code, r = run(["ping", "--kind", "mcp", "--target", "ado", "--name", "ado"])
+            self.assertEqual((code, r["status"]), (2, "unavailable"))
+            self.assertIn("claude mcp add", r["error"])
+            code, r = run(["list", "--name", "ado", "--config", self.cfg])
+            self.assertEqual((code, r["sources"][0]["status"]), (2, "unavailable"))
+
+    def test_ping_hands_the_wiql_read_to_the_agent_when_configured(self):
+        with mock.patch.object(cu, "mcp_servers", return_value={"ado"}):
+            code, r = run(["ping", "--name", "ado", "--config", self.cfg])
+        self.assertEqual((code, r["status"], r["server"]), (0, "agent", "ado"))
+        self.assertIn("wiql", r["how"])
+        self.assertIn("normalize --name ado", r["how"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
