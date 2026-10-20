@@ -75,7 +75,8 @@ class ResolverTests(unittest.TestCase):
             'repo.path': lambda c: c['members']['frontend']['repo'].pop('path'),
             'repo.remote': lambda c: c['members']['frontend']['repo'].update(remote='not a repo'),
             'hub.remote': lambda c: c.pop('hub'),
-            'board-wide key': lambda c: c['members']['frontend'].update(max_workers=2),
+            'board-wide key': lambda c: c['members']['frontend'].update(worker_backend='claude-p'),
+            'max_workers must be a non-negative integer': lambda c: c['members']['frontend'].update(max_workers=-1),
             'default_order': lambda c: c['split'].update(default_order=['backend', 'mobile']),
             'at least one member': lambda c: c.update(members={}),
         }
@@ -209,12 +210,32 @@ class ResolverTests(unittest.TestCase):
         self.assertEqual(hub['project']['number'], 3)
         self.assertEqual(hub['collect']['slack']['channels'], ['#bugs-reporting'])
 
-    def test_run_gate_refuses_a_members_config_only(self):
-        refused = self.run_resolver('run-gate', '--config', str(self.write(hub_config())))
-        self.assertEqual(refused.returncode, 78)
-        self.assertIn('P4', refused.stderr)
+    def test_run_gate_passes_a_hub_on_the_workflow_backend_only(self):
+        hub = self.write(hub_config())
+        allowed = self.run_resolver('run-gate', '--config', str(hub))
+        self.assertEqual(allowed.returncode, 0, 'P4: a hub runs on the workflow backend (the default)')
+        self.assertEqual(self.run_resolver('run-gate', '--config', str(hub), '--backend', 'workflow').returncode, 0)
+        for backend in ('claude-p', 'codex'):
+            refused = self.run_resolver('run-gate', '--config', str(hub), '--backend', backend)
+            self.assertEqual(refused.returncode, 78, backend)
+            self.assertIn('workflow backend only', refused.stderr)
+        legacy = hub_config()
+        legacy['worker_backend'] = 'claude-p'
+        self.assertEqual(self.run_resolver('run-gate', '--config', str(self.write(legacy, 'legacy'))).returncode, 78,
+                         "the config's own worker_backend is the default")
         single = {'project': {'owner': 'acme', 'number': 1}, 'repo': {'path': '.', 'remote': 'acme/api'}}
-        self.assertEqual(self.run_resolver('run-gate', '--config', str(self.write(single, 'one'))).returncode, 0)
+        for backend in ((), ('--backend', 'claude-p'), ('--backend', 'codex')):
+            self.assertEqual(self.run_resolver('run-gate', '--config', str(self.write(single, 'one')), *backend).returncode, 0,
+                             'a single-repo config always passes')
+
+    def test_member_max_workers_is_a_share(self):
+        cfg = hub_config()
+        cfg['members']['frontend']['max_workers'] = 2
+        self.assertEqual(self.errors(cfg), (0, ''))
+        path = self.write(cfg)
+        front = json.loads(self.run_resolver('member', 'frontend', '--config', str(path)).stdout)
+        back = json.loads(self.run_resolver('member', 'backend', '--config', str(path)).stdout)
+        self.assertEqual((front['max_workers'], back['max_workers']), (2, 6), 'member wins, else the board value')
 
 
 if __name__ == '__main__':

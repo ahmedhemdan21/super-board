@@ -21,6 +21,12 @@ export const meta = {
 //   deploy: true (optional) — config.deploy is set and deploy.branch is the base
 //     branch: every card the Reviewer merges gets the post-merge dev check.
 // }
+// HUB BOARDS (hub.md → Run). configPath is the hub config and each card is one
+// member's: the planner adds { member, configPath, checkout, baseBranch, deploy }.
+// Every prompt about that card names the card's own config, repo, checkout and base
+// branch; its worktrees and branch carry the member key, so `issue-7` of two members
+// never share a folder or a branch. A card without `member` is a single-repo card and
+// gets exactly the prompts it always did.
 // The harness can deliver `args` as a JSON-encoded string (the tool param is
 // untyped) — normalize before validating.
 const input = (() => {
@@ -38,13 +44,24 @@ if (input.variant && input.variant !== 'full') {
 // Lane for a card entering at Ready: the planner's `lane`, else its labels.
 const labelsOf = (card) => (card.labels || []).map((l) => String(l).toLowerCase())
 const readyLane = (card) => card.lane || (labelsOf(card).includes('qa') ? 'qa' : 'build')
+const cfgOf = (card) => (card && card.configPath) || input.configPath
+const tagOf = (card) => (card.member ? `${card.member}#${card.number}` : `#${card.number}`)
+const keyOf = (card) => `${card.member || ''}#${card.number}`
+const deployOn = (card) => (card.member ? Boolean(card.deploy) : Boolean(input.deploy))
+// The member block of every prompt about a hub card (hub.md → Run).
+const MEMBER = (card) => (card.member ? [
+  `Hub board card ${card.repository}#${card.number}, member ${card.member}. Its config is ${card.configPath} (resolved for this member): pass it to every .claude/bin script, never the hub config and never a config found from the cwd.`,
+  `Repo ${card.repository}: every gh issue/pr/run call names --repo ${card.repository}. Checkout ${card.checkout}: run git for this card there (git -C "${card.checkout}" …). Base branch ${card.baseBranch}.`,
+  `Names carry the member key: worktrees ${card.checkout}/.claude/worktrees/${card.member}-issue-${card.number}-<build|qa|review>/, branch ${card.member}-issue-${card.number}-<slug> off ${card.baseBranch}, PR into ${card.baseBranch}. Wherever run.md says issue-<N>-…, use these.`,
+  `Halt check before GitHub writes: python3 .claude/bin/super-board-github-read.py --check --config ${input.configPath} (the hub and every member).`,
+] : [])
 if (input.tier && !['low', 'medium', 'high'].includes(input.tier)) {
   throw new Error(`super-board-wave: unknown tier "${input.tier}" — use low | medium | high`)
 }
 
 let halted = false
 // Valid form per --kind, from validate() in scripts/super-board-github-read.py (#32).
-const READ_SHAPES = [
+const READ_SHAPES = (cfg) => [
   `Read shapes (helper: .claude/bin/super-board-github-read.py --kind <kind> -- <gh args>):`,
   `- issue title+body: --kind issue -- issue view <N> --repo {owner}/{repo} --json number,title,body`,
   `- issue comments: --kind comments -- api repos/{owner}/{repo}/issues/<N>/comments --paginate --slurp (zero comments = [[]])`,
@@ -55,9 +72,9 @@ const READ_SHAPES = [
   `- issue state: --kind state -- issue view <N> --repo {owner}/{repo} --json state --jq .state`,
   `A read whose output misses its shape exits 64 for that call only and prints the valid form: fix the read, do not halt.`,
   // A lane once queried a guessed repo name (owner + folder name) and halted the run (seen 2026-10-18).
-  `{owner}/{repo} (REST paths, GraphQL owner/name) is exactly the owner/name in repo.remote of ${input.configPath}; never derive it from folder names, the git root or memory. Pass --repo {owner}/{repo} on every gh issue/pr/run command, wherever it runs.`,
+  `{owner}/{repo} (REST paths, GraphQL owner/name) is exactly the owner/name in repo.remote of ${cfg}; never derive it from folder names, the git root or memory. Pass --repo {owner}/{repo} on every gh issue/pr/run command, wherever it runs.`,
 ].join('\n')
-const READ_FAILURE = READ_SHAPES + '\n' + `Verification-readiness exit 9 means missing/unusable config.verify_commands: preserve card/worktree/approval/claims, report status=halted (preflight verdict=halted), stop dispatch, repair project configuration before explicit restart; no Build bounce or automatic retries. ` + `Required GitHub reads use .claude/bin/super-board-github-read.py: three total attempts, exit 79 means run halted. Check --check before any GitHub write, migration, or merge. On exit 79 preserve worktree/card/approval/claims, make no more GitHub calls, and report status=halted (preflight verdict=halted). Never retry a mutation. Config: ${input.configPath}.`
+const READ_FAILURE = (cfg = input.configPath) => READ_SHAPES(cfg) + '\n' + `Verification-readiness exit 9 means missing/unusable config.verify_commands: preserve card/worktree/approval/claims, report status=halted (preflight verdict=halted), stop dispatch, repair project configuration before explicit restart; no Build bounce or automatic retries. ` + `Required GitHub reads use .claude/bin/super-board-github-read.py: three total attempts, exit 79 means run halted. Check --check before any GitHub write, migration, or merge. On exit 79 preserve worktree/card/approval/claims, make no more GitHub calls, and report status=halted (preflight verdict=halted). Never retry a mutation. Config: ${cfg}.`
 
 const CLASSIFY_SCHEMA = {
   type: 'object',
@@ -136,8 +153,8 @@ const REVIEW_MEMORY = [
 // 3-card wave spent ~2,850 of 5,000 GraphQL points/hr, nearly all of it lanes
 // finding a card with `gh project item-list` (~203 points on a 131-card board)
 // and its Status options with `gh project field-list` (101) before each move.
-const BOARD_IO = () =>
-  `Board moves and reads: .claude/bin/super-board-card.sh --config ${input.configPath} move <issue> <Status> ` +
+const BOARD_IO = (cfg = input.configPath) =>
+  `Board moves and reads: .claude/bin/super-board-card.sh --config ${cfg} move <issue> <Status> ` +
   `(1 GraphQL point) · status <issue> · items. Comments, labels, PR reads: REST per .claude/skills/super-board/references/rate-limit-etiquette.md → "Price list". Read GitHub once per decision, never in a sleep loop.`
 
 // The orchestrator resolves every remaining chain before claims. The runtime has
@@ -154,26 +171,27 @@ const SKILLS_CHECK = (cards, lane) => [
 // calls are fresh shells, so the target script reprints the env on demand.
 const QA_TARGETS = (card) => {
   const cmd = `bash .claude/bin/super-board-qa-target.sh`
-  const opts = `--config ${input.configPath} --issue ${card.number}`
+  const opts = `--config ${cfgOf(card)} --issue ${card.number}`
   return [
     `QA targets (run.md → Tester step 2): config qa.local set → ${cmd} start ${opts} --worktree <your qa worktree>, then eval "$(${cmd} env ${opts})" at the top of every later Bash call.`,
     `start exit 4 = the PR's app never became healthy: QA fail (bounce to Ready with the log path), not a Block. ALWAYS run ${cmd} stop ${opts} before you exit — pass, fail, block or error.`,
-    `No qa.local → ${cmd} check --config ${input.configPath}; exit 3 = a target is unhealthy → Block. Targets reach your tests as SB_TARGET_URL / SB_TARGET_<NAME> / BASE_URL.`,
+    `No qa.local → ${cmd} check --config ${cfgOf(card)}; exit 3 = a target is unhealthy → Block. Targets reach your tests as SB_TARGET_URL / SB_TARGET_<NAME> / BASE_URL.`,
     `qa.auth_command set → eval "$(${cmd} auth ${opts})" and log in from SB_AUTH_FILE (JSON or Playwright storageState) instead of the Supabase admin-key bootstrap. Never print that file.`,
   ]
 }
 
 const lanePrompt = (lane, card) => [
   SKILLS_CHECK([card], lane),
-  READ_FAILURE,
-  `Run ${LANE[lane].skill} on issue #${card.number} ("${card.title}") for a super-board workflow wave.`,
+  READ_FAILURE(cfgOf(card)),
+  `Run ${LANE[lane].skill} on issue ${card.member ? card.repository : ''}#${card.number} ("${card.title}") for a super-board workflow wave.`,
   `Read .claude/skills/super-board/references/run.md → "${LANE[lane].section}" lifecycle and follow it EXACTLY:`,
   `create your own worktree under .claude/worktrees/, work on the issue branch, post the required PR/issue comments,`,
-  `move the project card yourself, clean up the worktree on exit. Config: ${input.configPath}.`,
-  BOARD_IO(),
+  `move the project card yourself, clean up the worktree on exit. Config: ${cfgOf(card)}.`,
+  ...MEMBER(card),
+  BOARD_IO(cfgOf(card)),
   `Commits, PR title, PR body blocks, comments: .claude/skills/super-board/references/writing-standard.md (config writing.commit_format "conventional" → conventional headers, check with .claude/bin/super-board-commit-header.py). Rewrite only your own PR body blocks, with .claude/bin/super-board-pr-body.sh.`,
   ...(lane === 'review' ? REVIEW_MEMORY : []),
-  ...(lane === 'review' && input.deploy
+  ...(lane === 'review' && deployOn(card)
     ? [`Do not run the post-merge dev check yourself: after you return Done, this wave's Deploy step runs it.`]
     : []),
   ...(lane === 'qa' ? QA_TARGETS(card) : []),
@@ -214,7 +232,7 @@ const runLane = async (lane, card, model, history) => {
     return result
   }
   const r = await agent(lanePrompt(lane, card), {
-    label: `${lane}:#${card.number}`,
+    label: `${lane}:${tagOf(card)}`,
     phase: LANE[lane].phase,
     schema: STAGE_SCHEMA,
     ...(model ? { model } : {}),
@@ -257,17 +275,24 @@ const PREFLIGHT_SCHEMA = {
 }
 const PREFLIGHT_BATCH = 5
 const preflightModel = (input.tier || 'medium') === 'low' ? 'haiku' : 'sonnet'
+// One batch = one member's cards (one config, one repo): a hub wave never mixes them.
 const preflightPrompt = (batch) => [
   SKILLS_CHECK(batch),
-  READ_FAILURE,
-  `Builder pre-flight for issues ${batch.map((c) => `#${c.number} ("${c.title}")`).join(', ')}. Config: ${input.configPath}.`,
+  READ_FAILURE(cfgOf(batch[0])),
+  `Builder pre-flight for issues ${batch.map((c) => `#${c.number} ("${c.title}")`).join(', ')}. Config: ${cfgOf(batch[0])}.`,
   `Read .claude/skills/super-board/references/run.md → "Builder pre-flight" and follow it EXACTLY. You write no code.`,
-  `Other cards in this wave: ${JSON.stringify(input.cards.map(({ number, status, title }) => ({ number, status, title })))}`,
+  `Other cards in this wave: ${JSON.stringify(input.cards
+    .filter((c) => (c.member || '') === (batch[0].member || ''))
+    .map(({ number, status, title }) => ({ number, status, title })))}`,
   `Run .claude/bin/super-board-preflight.sh once for the whole batch, then judge its candidates semantically.`,
+  ...(batch[0].member ? [
+    `Hub board: these are member ${batch[0].member}'s cards in ${batch[0].repository}. Run the pre-flight with --repo ${batch[0].repository} --member ${batch[0].member} (its own branch is ${batch[0].member}-issue-<N>-*), every gh call with --repo ${batch[0].repository}.`,
+    `Halt check before GitHub writes: python3 .claude/bin/super-board-github-read.py --check --config ${input.configPath} (the hub and every member).`,
+  ] : []),
   `hold / sequence-behind → post the Block template (block-template.md) and move the card to Blocked yourself.`,
   `Two Ready cards overlapping each other with no open PR: the lower-numbered one proceeds; sequence only the other, blockedBy [the lower]. Never both.`,
   `A sequence with nothing to wait on (empty blockedBy) leaves the card in Ready: return column Ready and it builds.`,
-  BOARD_IO(),
+  BOARD_IO(cfgOf(batch[0])),
   `Return one verdict per issue: proceed | hold | sequence | skipped (pre-flight blind). Never drop a card silently.`,
 ].join('\n')
 
@@ -275,16 +300,22 @@ const preflightPrompt = (batch) => [
 const ready = input.cards.filter((c) => c.status === 'Ready' && readyLane(c) === 'build')
 const verdicts = new Map()
 const batches = []
-for (let i = 0; i < ready.length; i += PREFLIGHT_BATCH) batches.push(ready.slice(i, i + PREFLIGHT_BATCH))
+const byMember = new Map()
+for (const c of ready) byMember.set(c.member || '', [...(byMember.get(c.member || '') || []), c])
+for (const group of byMember.values()) {
+  for (let i = 0; i < group.length; i += PREFLIGHT_BATCH) batches.push(group.slice(i, i + PREFLIGHT_BATCH))
+}
 await Promise.all(batches.map(async (batch) => {
   const r = await agent(preflightPrompt(batch), {
-    label: `preflight:${batch.map((c) => '#' + c.number).join(',')}`,
+    label: `preflight:${batch.map(tagOf).join(',')}`,
     phase: 'Pre-flight',
     model: preflightModel,
     schema: PREFLIGHT_SCHEMA,
   })
+  // Verdicts name a number; within one batch (one member) that is one card.
   for (const v of (r && r.verdicts) || []) {
-    verdicts.set(v.number, v)
+    const card = batch.find((c) => c.number === v.number)
+    if (card) verdicts.set(keyOf(card), v)
     if (v.verdict === 'halted') halted = true
   }
 }))
@@ -292,14 +323,14 @@ await Promise.all(batches.map(async (batch) => {
 // No column and an empty blockedBy is the same case: nothing to wait on never parks a
 // card (2026-10-03: #180/#181 each "sequenced" behind the other, neither built).
 const preflightGo = (card) => {
-  const v = verdicts.get(card.number)
+  const v = verdicts.get(keyOf(card))
   if (!v) return false
   if (v.verdict === 'proceed') return true
   return v.verdict === 'sequence' && (v.column === 'Ready' ||
     (!v.column && Array.isArray(v.blockedBy) && v.blockedBy.length === 0))
 }
 const preflightExit = (card) => {
-  const v = verdicts.get(card.number) ||
+  const v = verdicts.get(keyOf(card)) ||
     { verdict: 'skipped', detail: 'pre-flight returned no verdict — not built unchecked; retried next wave' }
   return {
     lane: 'preflight',
@@ -327,10 +358,11 @@ const DEPLOY_SCHEMA = {
 const deployModel = (input.tier || 'medium') === 'low' ? 'haiku' : 'sonnet'
 const deployPrompt = (card, review) => [
   SKILLS_CHECK([card]),
-  READ_FAILURE,
-  `Post-merge dev check for issue #${card.number} ("${card.title}"), merged PR ${review.prUrl || '(the merged PR that closes this issue)'}. Config: ${input.configPath}.`,
+  READ_FAILURE(cfgOf(card)),
+  `Post-merge dev check for issue ${card.member ? card.repository : ''}#${card.number} ("${card.title}"), merged PR ${review.prUrl || '(the merged PR that closes this issue)'}. Config: ${cfgOf(card)}.`,
+  ...MEMBER(card),
   `Read .claude/skills/super-board/references/run.md → "Post-merge dev check" and follow it. You write no code and move no card.`,
-  `Run: bash .claude/bin/super-board-deploy-wait.sh --config ${input.configPath} --pr <PR number> --issue ${card.number} --budget-s 540`,
+  `Run: bash .claude/bin/super-board-deploy-wait.sh --config ${cfgOf(card)} --pr <PR number> --issue ${card.number} --budget-s 540`,
   `Exit 75 = still waiting: run the same command again (the timeout clock carries over) until it exits with anything else.`,
   `Exit 0 → status healthy, or skipped when its output says skipped. 10 → failed, bug = the number after "bug: #". 11 → failed, no bug filed (say why). 79 → halted.`,
   `In every case the PR stays merged and the card stays Done: never revert, reopen, block or move anything. detail = the script's last line.`,
@@ -338,7 +370,7 @@ const deployPrompt = (card, review) => [
 const runDeploy = async (card, review) => {
   if (halted) return { status: 'halted', detail: 'run halted before the post-merge dev check' }
   const r = await agent(deployPrompt(card, review), {
-    label: `deploy:#${card.number}`,
+    label: `deploy:${tagOf(card)}`,
     phase: 'Deploy',
     model: deployModel,
     schema: DEPLOY_SCHEMA,
@@ -358,13 +390,13 @@ const results = await pipeline(
     const labels = labelsOf(card)
     const typed = ['qa', 'bug', 'feature'].find((l) => labels.includes(l))
     const cls = await agent(
-      SKILLS_CHECK([card]) + '\n' + READ_FAILURE + '\n' + `Read GitHub issue #${card.number} ("${card.title}") — body (--kind issue) and all comments (--kind comments) — with the read shapes above. ` +
+      SKILLS_CHECK([card]) + '\n' + READ_FAILURE(cfgOf(card)) + '\n' + MEMBER(card).map((l) => l + '\n').join('') + `Read GitHub issue #${card.number} ("${card.title}") — body (--kind issue) and all comments (--kind comments) — with the read shapes above. ` +
       `Classify it: kind (feature|bug|qa) and complexity (low|medium|high) judged by the scope of change required. ` +
       (typed
         ? `Its label says "${typed}": return kind "${typed}" — the label routes the card, you never override it.`
         : `It has no type label, so it is built (no label = Building). Return feature or bug — never qa, ` +
           `which only a person sets. Existing docs/ux/tests/refactor/tech-debt rows keep their label chain: classify complexity without adding feature/bug. For a truly untyped card, re-run skills-ready against a copy of this card with the proposed label before any label write, then add that label: gh issue edit ${card.number}${card.repository ? ` --repo ${card.repository}` : ''} --add-label <kind>.`),
-      { label: `classify:#${card.number}`, phase: 'Classify', model: classifyModel, schema: CLASSIFY_SCHEMA }
+      { label: `classify:${tagOf(card)}`, phase: 'Classify', model: classifyModel, schema: CLASSIFY_SCHEMA }
     )
     if (cls && cls.status === 'halted') halted = true
     return { card, cls }
@@ -374,17 +406,18 @@ const results = await pipeline(
   // from wherever it landed (the board is the loop state, not this script).
   async (prev, card) => {
     const history = []
-    if (halted) return { number: card.number, history: [{ lane: 'none', status: 'halted', column: card.status, detail: 'run halted; preserve current work and resume explicitly' }] }
+    const who = { number: card.number, ...(card.member ? { member: card.member, repository: card.repository } : {}) }
+    if (halted) return { ...who, history: [{ lane: 'none', status: 'halted', column: card.status, detail: 'run halted; preserve current work and resume explicitly' }] }
     const model = tierFor(prev && prev.cls)
     let at = card.status
 
     if (at === 'Ready' && readyLane(card) === 'build') {
       if (!preflightGo(card)) {
         history.push(preflightExit(card))
-        return { number: card.number, history }
+        return { ...who, history }
       }
       const b = await runLane('build', card, model, history)
-      if (b.status !== 'advanced') return { number: card.number, history }
+      if (b.status !== 'advanced') return { ...who, history }
       at = 'QA'
     }
     // A `qa`-labelled card skips Building: Ready → QA, Tester first
@@ -392,18 +425,18 @@ const results = await pipeline(
     if (at === 'Ready' && readyLane(card) === 'qa') at = 'QA'
     if (at === 'QA') {
       const q = await runLane('qa', card, model, history)
-      if (q.status !== 'advanced') return { number: card.number, history }
+      if (q.status !== 'advanced') return { ...who, history }
       at = 'Review'
     }
     if (at === 'Review') {
       // Reviewer always on session model. No lane-level serialisation: the merge
       // gate holds the mutex for the merge alone (see the note above).
       const rv = await runLane('review', card, undefined, history)
-      if (input.deploy && merged(rv)) {
-        return { number: card.number, history, deploy: await runDeploy(card, rv) }
+      if (deployOn(card) && merged(rv)) {
+        return { ...who, history, deploy: await runDeploy(card, rv) }
       }
     }
-    return { number: card.number, history }
+    return { ...who, history }
   }
 )
 
@@ -412,6 +445,8 @@ const summary = results.filter(Boolean).map((r) => {
     { lane: 'none', status: 'failed', column: 'unknown', detail: 'no lane ran' }
   return {
     number: r.number,
+    // Hub cards: which member and repo (the wave report groups by member).
+    ...(r.member ? { member: r.member, repository: r.repository } : {}),
     finalStatus: last.status,
     lastLane: last.lane,
     column: last.column,
@@ -423,6 +458,9 @@ const summary = results.filter(Boolean).map((r) => {
     lanesRun: [...r.history.map((h) => `${h.lane}:${h.status}`), ...(r.deploy ? [`deploy:${r.deploy.status}`] : [])].join(' → ') || 'none',
   }
 })
-log(`wave complete: ${summary.length} cards — ` +
-    summary.map((s) => `#${s.number}=${s.finalStatus}@${s.column}`).join(', '))
+// One line, grouped by member on a hub wave (`backend: #7=advanced@Done · frontend: …`).
+const groups = new Map()
+for (const s of summary) groups.set(s.member || '', [...(groups.get(s.member || '') || []), s])
+log(`wave complete: ${summary.length} cards — ` + [...groups.entries()].map(([m, list]) =>
+  (m ? `${m}: ` : '') + list.map((s) => `#${s.number}=${s.finalStatus}@${s.column}`).join(', ')).join(' · '))
 return { cards: summary, halted }

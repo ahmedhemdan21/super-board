@@ -104,11 +104,19 @@ CONFIG_JSON=$(cat "$CONFIG")
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # HUB BOARDS. A config with `members` plans each member as home in turn, through a
-# resolved single-repo config (super-board-config.py member), over ONE board read.
-# Every picked card carries `member`; `foreign` keeps only repos that are no member.
-# Members trust each other's issues as blockers (the resolver adds the others to
-# linked_repos). In members mode --deps is {"<member>": <deps graph>, …}.
-# max_workers caps the merged wave, in-flight cards first.
+# resolved single-repo config (super-board-config.py member --path), over ONE board read.
+# Every picked card carries `member`, `configPath` (that member's resolved config: lanes
+# run with it), `checkout`, `baseBranch` and `deploy`; `foreign` keeps only repos that are
+# no member, and says so for the hub repo's own issues (split, never built). Members trust
+# each other's issues as blockers (the resolver adds the others to linked_repos), so a
+# frontend card blocked by a backend issue is swept when that issue closes.
+# In members mode --deps is {"<member>": <deps graph>, …}.
+# PARENTS. A `parent`-labelled card (hub.md → Split) is never built, wherever it sits:
+# it is dropped before any member plans and reported in `parents` while in a working column.
+# SHARES. The top-level max_workers caps the merged wave; each member gets
+# `members.<k>.max_workers`, else an even share (ceil(max_workers / members)), so one repo
+# cannot starve the other. Slots a member without its own cap leaves unused go to the
+# others' leftovers. In-flight cards first throughout.
 if printf '%s' "$CONFIG_JSON" | jq -e 'has("members")' >/dev/null; then
   [ -f "$CONFIG" ] || { echo "a members config must be a file (paths resolve from its board root)" >&2; exit 64; }
   python3 "$HERE/super-board-config.py" validate --config "$CONFIG" || exit $?
@@ -120,30 +128,58 @@ if printf '%s' "$CONFIG_JSON" | jq -e 'has("members")' >/dev/null; then
     "$HERE/super-board-card.sh" --owner "$(printf '%s' "$CONFIG_JSON" | jq -r '.project.owner')"       --number "$(printf '%s' "$CONFIG_JSON" | jq -r '.project.number')" items > "$MTMP/items.json"
   fi
   [ -z "$DEPS_FILE" ] || cat "$DEPS_FILE" > "$MTMP/deps.json"
+  # Same label shapes as labels_of below: on the item or the content, strings or {name}.
+  LABELS_OF='[ ((.labels // []) + (.content.labels // []))[] | (if type == "object" then .name else . end) | ascii_downcase ]'
+  jq "[ .items[] | select(.content.type == \"Issue\") | select($LABELS_OF | index(\"parent\"))
+        | select(.status as \$s | [\"Ready\",\"Building\",\"QA\",\"Review\",\"Blocked\"] | index(\$s))
+        | { number: .content.number, repository: (.content.repository // \"\"), status, title: .content.title,
+            why: \"parent: its sub-issues are built, never the parent (close-parents closes it)\" } ]" \
+    "$MTMP/items.json" > "$MTMP/parents.json"
+  jq ".items |= map(select(($LABELS_OF | index(\"parent\")) | not))" "$MTMP/items.json" > "$MTMP/items.plan.json"
   MEMBERS=$(python3 "$HERE/super-board-config.py" members --config "$CONFIG") || exit $?
   printf '[]' > "$MTMP/plans.json"
   for KEY in $(printf '%s' "$MEMBERS" | jq -r '.[].key' | tr -d '\r'); do
-    python3 "$HERE/super-board-config.py" member "$KEY" --config "$CONFIG"       | jq '.max_workers = 0' > "$MTMP/$KEY.json" || exit $?
+    MCFG=$(python3 "$HERE/super-board-config.py" member "$KEY" --config "$CONFIG" --path | tr -d '\r') || exit $?
+    jq '.max_workers = 0' "$MCFG" > "$MTMP/$KEY.json" || exit $?
     DEPS_ARGS=()
     if [ -n "$DEPS_FILE" ]; then
       jq --arg k "$KEY" '.[$k] // {}' "$MTMP/deps.json" > "$MTMP/$KEY.deps.json"
       DEPS_ARGS=(--deps "$MTMP/$KEY.deps.json")
     fi
-    PLAN=$("${BASH_SOURCE[0]}" --config "$MTMP/$KEY.json" --items "$MTMP/items.json" ${DEPS_ARGS[@]+"${DEPS_ARGS[@]}"}) || exit $?
+    PLAN=$("${BASH_SOURCE[0]}" --config "$MTMP/$KEY.json" --items "$MTMP/items.plan.json" ${DEPS_ARGS[@]+"${DEPS_ARGS[@]}"}) || exit $?
     printf '%s' "$PLAN" > "$MTMP/$KEY.plan.json"
-    jq --arg k "$KEY" --slurpfile p "$MTMP/$KEY.plan.json" '. + [{key: $k, plan: $p[0]}]'       "$MTMP/plans.json" > "$MTMP/plans.next" && mv "$MTMP/plans.next" "$MTMP/plans.json"
+    jq --arg k "$KEY" --arg cfg "$MCFG" --slurpfile p "$MTMP/$KEY.plan.json" --slurpfile m "$MTMP/$KEY.json" \
+       --argjson cap "$(printf '%s' "$CONFIG_JSON" | jq --arg k "$KEY" '.members[$k].max_workers // 0')" \
+       '. + [{ key: $k, plan: $p[0], cap: $cap,
+               lane: { member: $k, configPath: $cfg, checkout: $m[0].repo.path, baseBranch: $m[0].base_branch,
+                       deploy: (($m[0].deploy | type) == "object"
+                                and (($m[0].deploy.branch // $m[0].base_branch) == $m[0].base_branch)) } }]' \
+       "$MTMP/plans.json" > "$MTMP/plans.next" && mv "$MTMP/plans.next" "$MTMP/plans.json"
   done
-  jq --argjson members "$MEMBERS" --argjson cap "$(printf '%s' "$CONFIG_JSON" | jq -r '.max_workers // 0')" '
+  HUB_REPO=$(printf '%s' "$CONFIG_JSON" | jq -r '.hub.remote // ""' | tr -d '\r' \
+               | sed -E 's#^(https?://github\.com/|git@github\.com:)##; s#\.git$##')
+  jq --argjson members "$MEMBERS" --argjson cap "$(printf '%s' "$CONFIG_JSON" | jq -r '.max_workers // 0')" \
+     --arg hub "$HUB_REPO" --slurpfile parents "$MTMP/parents.json" '
     def tagged($f): [ .[] | .key as $k | .plan[$f][] | . + { member: $k } ];
     ([ $members[].repo | ascii_downcase ]) as $mine
     | def rank: { "Review": 0, "QA": 1 }[.status] // 2;
-    (tagged("cards") | sort_by(rank)) as $cards
-    | { cards: (if $cap > 0 then $cards[:$cap] else $cards end),
+    # Each member'"'"'s share: its own cap (hard), else an even share of a positive board cap.
+    length as $n
+    | (if $cap > 0 then (($cap + $n - 1) / $n | floor) else 0 end) as $even
+    | [ .[] | . + { share: (if .cap > 0 then .cap elif $even > 0 then $even else null end) } ] as $ps
+    | ([ $ps[] as $p | ($p.plan.cards | if $p.share then .[:$p.share] else . end)[] | . + $p.lane ] | sort_by(rank)) as $first
+    | ([ $ps[] | select(.cap == 0 and .share != null) as $p | $p.plan.cards[$p.share:][] | . + $p.lane ] | sort_by(rank)) as $rest
+    | { cards: (if $cap <= 0 then $first
+                elif ($first | length) >= $cap then $first[:$cap]
+                else ($first + $rest[:($cap - ($first | length))]) | sort_by(rank) end),
         sweep: tagged("sweep"), resume: tagged("resume"), refreshApproval: tagged("refreshApproval"),
         flag: tagged("flag"),
         foreign: ([ .[].plan.foreign[] | select((.repository | ascii_downcase) as $r | $mine | index($r) | not) ]
                   | unique_by([(.repository | ascii_downcase), .number])
-                  | map(.why = "card from \(.repository): not a member of this board")),
+                  | map(.why = (if $hub != "" and (.repository | ascii_downcase) == ($hub | ascii_downcase)
+                                then "hub issue: triage splits it into member sub-issues; never built"
+                                else "card from \(.repository): not a member of this board" end))),
+        parents: $parents[0],
         stranded: tagged("stranded"), triage: tagged("triage") }' "$MTMP/plans.json"
   exit 0
 fi

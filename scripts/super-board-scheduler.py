@@ -53,7 +53,8 @@ A run is `skipped: board busy` while the repo has a board running (inflight/
 workflow-wave.lock, codex-wave.pid, a legacy inflight/<N> lane lock, or another
 scheduler run on that repo) and `skipped: github halted` while the repo's GitHub halt
 file exists. A hub config's job (run from the hub checkout) checks the hub and every
-member checkout the config names; it may only `collect` until hub boards run (P4). Lock files are trusted as present: a stale one keeps skipping, visibly.
+member checkout the config names, and its `run` step runs the whole hub board (P4; workflow
+backend only, like every scheduled run). Lock files are trusted as present: a stale one keeps skipping, visibly.
 
 Records: <state>/runs/<job>/<UTC stamp>/ run.json · log.txt (stream-json flattened,
 secrets redacted) · stream.jsonl · summary.json (board snapshots before/after through
@@ -994,11 +995,6 @@ class Scheduler:
             return d, run
         if bc is None:
             d, run = self.record_simple(job, trigger, "failed", f"no board config .claude/super-board/configs/{job['config']}.json")
-            self.finish(job, run, None)
-            return d, run
-        if "run" in job["steps"] and "members" in bc:
-            d, run = self.record_simple(job, trigger, "failed", "a hub (members) config collects but cannot "
-                                        "run yet (P4); schedule steps [\"collect\"] for it")
             self.finish(job, run, None)
             return d, run
         if "run" in job["steps"] and (bc.get("worker_backend") or "workflow") != "workflow":

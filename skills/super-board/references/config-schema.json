@@ -119,9 +119,11 @@
   // `base_branch`. Per-repo keys go here: verify_commands, verify_retry, merge_gate,
   // merge_policy, migrations, deploy, target, qa, env_check, runtime_verification,
   // refine, writing, paths, guard, linked_repos, collect (e.g. collect.sentry.project).
-  // Board-wide keys (project, columns, labels, triage, max_workers, worker_backend,
-  // model_tier, no_progress_cycles, rebuild_cap, notifications) stay top level; a
-  // member that sets one is refused. Members trust each other's issues as blockers.
+  // Board-wide keys (project, columns, labels, triage, worker_backend, model_tier,
+  // no_progress_cycles, rebuild_cap, notifications) stay top level; a member that
+  // sets one is refused. `max_workers` is both: top level caps the whole wave,
+  // `members.<k>.max_workers` caps that member's share (default: an even split of a
+  // positive top-level cap; hub.md → Run). Members trust each other's issues as blockers.
   "members": {
     "backend": { "repo": { "path": "backend", "remote": "https://github.com/<owner>/<api>" },
                  "base_branch": "dev", "verify_commands": ["dotnet test"] },

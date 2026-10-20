@@ -230,6 +230,8 @@ echo "$OUT22B" | jq -e '.cards == [] and (.foreign | length) == 4' >/dev/null ||
 #      waits on open acme/api#3 and stays; frontend #8 waits on closed acme/api#2 and
 #      is swept: members trust each other without linked_repos. The graph is derived
 #      for real (deps.sh --from per repo); a stub only records the --linked it got.
+#      P4: each card carries its member's resolved config, checkout, base branch and
+#      deploy flag; `parent` cards (hub or member) are never planned, only reported.
 HUB="$STUBBIN/hub"; mkdir -p "$HUB/.claude/super-board/configs" "$HUB/backend" "$HUB/frontend"
 cp ../scripts/super-board-config.py ../scripts/super-board-approval.py "$STUBBIN/"
 cp ../scripts/super-board-deps.sh "$STUBBIN/super-board-deps-real.sh"
@@ -262,15 +264,30 @@ HITEMS=$(jq -n --arg b "$GOODBODY" --arg w7 "$WEB7" '{items: [
   {status:"Blocked", content:{type:"Issue", number:8, title:"web eight", repository:"acme/web", assignees:[]}},
   {status:"QA",      content:{type:"Issue", number:9, title:"web nine", repository:"acme/web", assignees:[]}},
   {status:"Ready",   content:{type:"Issue", number:1, title:"other one", repository:"acme/other", assignees:[]}},
-  {status:"Ready",   content:{type:"Issue", number:4, title:"hub parent", repository:"acme/docs", assignees:[]}}]}')
+  {status:"Ready",   content:{type:"Issue", number:4, title:"hub report", repository:"acme/docs", assignees:[]}},
+  {status:"Ready",   labels:["parent"], content:{type:"Issue", number:5, title:"hub parent", repository:"acme/docs", assignees:[]}},
+  {status:"Ready",   content:{type:"Issue", number:12, title:"api parent", repository:"acme/api", assignees:[], body:$b,
+                              labels:[{name:"Parent"}]}}]}')
 echo "$HITEMS" > "$STUBBIN/hub-items.json"
 OUT23=$("$STUBBIN/super-board-wave-plan.sh" --config "$HCFG" --items "$STUBBIN/hub-items.json") || fail "hub plan failed"
 echo "$OUT23" | jq -e '[.cards[] | "\(.member):\(.repository)#\(.number):\(.lane)"] == ["frontend:acme/web#9:qa","backend:acme/api#7:build"]' >/dev/null \
   || fail "both members' cards are planned with member, in flight first, got: $(echo "$OUT23" | jq -c .cards)"
 echo "$OUT23" | jq -e '[.foreign[] | "\(.repository)#\(.number)"] == ["acme/docs#4","acme/other#1"]' >/dev/null \
   || fail "only non-member repos are foreign, got: $(echo "$OUT23" | jq -c .foreign)"
-echo "$OUT23" | jq -e '.foreign | all(.why == "card from \(.repository): not a member of this board")' >/dev/null \
-  || fail "foreign why names the repo: $(echo "$OUT23" | jq -c .foreign)"
+echo "$OUT23" | jq -e '[.foreign[].why] == ["hub issue: triage splits it into member sub-issues; never built",
+                                            "card from acme/other: not a member of this board"]' >/dev/null \
+  || fail "foreign why names the repo, and a hub issue says it is split: $(echo "$OUT23" | jq -c .foreign)"
+echo "$OUT23" | jq -e '[.parents[] | "\(.repository)#\(.number):\(.status)"] == ["acme/docs#5:Ready","acme/api#12:Ready"]' >/dev/null \
+  || fail "parent cards are reported, hub or member, got: $(echo "$OUT23" | jq -c .parents)"
+echo "$OUT23" | jq -e '[.cards[], .triage[], .flag[], .foreign[] | select(.number == 5 or .number == 12)] == []' >/dev/null \
+  || fail "a parent card is never planned, triaged or foreign: $OUT23"
+echo "$OUT23" | jq -e --arg hub "$HUB" '.cards | map(select(.member == "backend"))[0]
+    | (.configPath | test("resolved[\\\\/]hub\\.backend\\.json$")) and (.checkout | test("[\\\\/]backend$"))
+      and .baseBranch == "dev" and .deploy == false' >/dev/null \
+  || fail "a member card carries its resolved config, checkout, base and deploy: $(echo "$OUT23" | jq -c .cards)"
+BCFG=$(echo "$OUT23" | jq -r '.cards | map(select(.member == "backend"))[0].configPath')
+jq -e '.member == "backend" and .repo.remote == "https://github.com/acme/api"' "$BCFG" >/dev/null \
+  || fail "configPath is the backend's resolved config: $BCFG"
 echo "$OUT23" | jq -e '.sweep == [{number:8, repository:"acme/web", title:"web eight", clearedBy:["acme/api#2"], member:"frontend"}]' >/dev/null \
   || fail "a cross-member blocker that closed sweeps the card, got: $(echo "$OUT23" | jq -c .sweep)"
 echo "$OUT23" | jq -e '.flag == [] and .triage == [] and .stranded == []' >/dev/null \
@@ -294,4 +311,54 @@ jq '.repo = {path:".", remote:"https://github.com/acme/x"}' "$HCFG" > "$HCFG.tmp
 RC=0; "$STUBBIN/super-board-wave-plan.sh" --config "$HCFG" --items "$STUBBIN/hub-items.json" >/dev/null 2>&1 || RC=$?
 [ "$RC" -eq 65 ] || fail "a members config with a top-level repo must exit 65, got $RC"
 
-echo "PASS: test-wave-plan.sh (23 scenarios)"
+# 24 — member shares (hub.md → Run). Backend has three free Ready cards, frontend one
+#      in QA and one free Ready. A board max_workers gives each member an even share;
+#      a member that has fewer cards leaves its slots to the other's leftovers; a
+#      member's own max_workers is a hard cap. A deploy block on the base branch sets
+#      `deploy` for that member's cards only.
+HUB2="$STUBBIN/hub2"; mkdir -p "$HUB2/.claude/super-board/configs" "$HUB2/backend" "$HUB2/frontend"
+H2CFG="$HUB2/.claude/super-board/configs/pair.json"
+hub2() {  # <jq filter on the base config>
+  jq -n '{project:{owner:"acme", number:3}, hub:{remote:"https://github.com/acme/docs"},
+    members:{backend:{repo:{path:"backend", remote:"https://github.com/acme/api"}, base_branch:"dev",
+                      deploy:{workflow:"deploy.yml"}},
+             frontend:{repo:{path:"frontend", remote:"https://github.com/acme/web"}, base_branch:"main",
+                       deploy:{workflow:"deploy.yml", branch:"prod"}}},
+    verify_commands:["git diff --check"]}' | jq "$1" > "$H2CFG"
+}
+SITEMS=$(jq -n --arg b "$GOODBODY" '{items: [
+  {status:"Ready", content:{type:"Issue", number:21, title:"api 21", repository:"acme/api", assignees:[], body:$b}},
+  {status:"Ready", content:{type:"Issue", number:22, title:"api 22", repository:"acme/api", assignees:[], body:$b}},
+  {status:"Ready", content:{type:"Issue", number:23, title:"api 23", repository:"acme/api", assignees:[], body:$b}},
+  {status:"QA",    content:{type:"Issue", number:31, title:"web 31", repository:"acme/web", assignees:[]}},
+  {status:"Ready", content:{type:"Issue", number:32, title:"web 32", repository:"acme/web", assignees:[], body:$b}}]}')
+SDEPS=$(jq -n --arg b "$GOODBODY" '[21,22,23] | map({number: ., title: "api \(.)", state: "OPEN", body: $b})' > "$STUBBIN/s-api.json"
+        jq -n --arg b "$GOODBODY" '[{number:32, title:"web 32", state:"OPEN", body:$b}]' > "$STUBBIN/s-web.json"
+        jq -n --argjson a "$(../scripts/super-board-deps.sh --from "$STUBBIN/s-api.json" --repo acme/api)" \
+              --argjson w "$(../scripts/super-board-deps.sh --from "$STUBBIN/s-web.json" --repo acme/web)" '{backend:$a, frontend:$w}')
+share() {  # <config filter> <items filter> -> member:number list
+  hub2 "$1"
+  "$STUBBIN/super-board-wave-plan.sh" --config "$H2CFG" --items <(echo "$SITEMS" | jq "$2") --deps <(echo "$SDEPS") \
+    | jq -c '[.cards[] | "\(.member):\(.number)"]'
+}
+GOT=$(share '.max_workers = 0' '.')
+[ "$GOT" = '["frontend:31","backend:21","backend:22","backend:23","frontend:32"]' ] || fail "no cap plans every free card, got $GOT"
+GOT=$(share '.max_workers = 2' '.')
+[ "$GOT" = '["frontend:31","backend:21"]' ] || fail "max_workers 2 = one slot per member, got $GOT"
+GOT=$(share '.max_workers = 4' '.')
+[ "$GOT" = '["frontend:31","backend:21","backend:22","frontend:32"]' ] || fail "max_workers 4 = two per member, got $GOT"
+GOT=$(share '.max_workers = 4' '.items |= map(select(.content.repository == "acme/api"))')
+[ "$GOT" = '["backend:21","backend:22","backend:23"]' ] || fail "an idle member's slots go to the other, got $GOT"
+GOT=$(share '.members.backend.max_workers = 1' '.')
+[ "$GOT" = '["frontend:31","backend:21","frontend:32"]' ] || fail "a member's own max_workers caps it with no board cap, got $GOT"
+GOT=$(share '.max_workers = 4 | .members.backend.max_workers = 1' '.items |= map(select(.content.number != 32))')
+[ "$GOT" = '["frontend:31","backend:21"]' ] || fail "a member's own cap is hard: no backfill past it, got $GOT"
+hub2 '.'
+OUT24=$("$STUBBIN/super-board-wave-plan.sh" --config "$H2CFG" --items <(echo "$SITEMS") --deps <(echo "$SDEPS"))
+echo "$OUT24" | jq -e '[.cards[] | "\(.member):\(.baseBranch):\(.deploy)"] | unique == ["backend:dev:true","frontend:main:false"]' >/dev/null \
+  || fail "deploy follows each member's deploy.branch vs its base, got: $(echo "$OUT24" | jq -c .cards)"
+# Single-repo plans are untouched: no member fields, no parents key.
+echo "$OUT" | jq -e '(has("parents") | not) and ([.cards[] | has("member") or has("configPath")] | any | not)' >/dev/null \
+  || fail "a single-repo plan must not change shape"
+
+echo "PASS: test-wave-plan.sh (24 scenarios)"

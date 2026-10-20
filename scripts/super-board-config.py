@@ -19,8 +19,10 @@ gate, deploy wait, preflight, card.sh and the planner never learn about members.
     super-board-config.py members --config C                  [{key, repo, path}]; a
         single-repo config is one pseudo-member with key "".
     super-board-config.py for-repo <owner/name> --config C    the member key; exit 3 if none
-    super-board-config.py run-gate --config C                 exit 78 for a members config
-                                                              (running one arrives in P4)
+    super-board-config.py run-gate --config C [--backend B]   exit 78 for a members config on
+        the legacy `claude-p` runner or the Codex wave (B = workflow | claude-p | codex;
+        default the config's worker_backend, else workflow). A hub runs on the workflow
+        backend (P4); a single-repo config always passes.
 
 Board root = the folder holding `.claude/super-board/configs/<slug>.json`; a config
 elsewhere uses its git toplevel, else its own folder. Member and repo paths that are
@@ -37,7 +39,9 @@ from pathlib import Path
 
 KEY_RE = re.compile(r"^[a-z][a-z0-9-]{0,30}$")
 # Keys that describe the board, never one member. A member setting one is an error.
-BOARD_ONLY = {"project", "columns", "labels", "triage", "max_workers", "worker_backend",
+# `max_workers` is both: top level caps the whole wave, `members.<k>.max_workers` caps
+# one member's share of it (the planner, hub.md → Run).
+BOARD_ONLY = {"project", "columns", "labels", "triage", "worker_backend",
               "model_tier", "no_progress_cycles", "rebuild_cap", "notifications",
               "members", "hub", "split", "version", "description"}
 HUB_KEYS = ("members", "hub", "split")
@@ -141,6 +145,9 @@ def validate(cfg):
                 errors.append(f"{where}.repo.path must be the member's checkout (relative to the hub checkout, or absolute)")
         if not isinstance(member.get("base_branch"), str) or not member["base_branch"].strip():
             errors.append(f"{where}.base_branch is required")
+        workers = member.get("max_workers")
+        if workers is not None and (type(workers) is not int or workers < 0):
+            errors.append(f"{where}.max_workers must be a non-negative integer")
         board = sorted(BOARD_ONLY & set(member))
         if board:
             errors.append(f"{where} sets board-wide key(s) {', '.join(board)}: set them at the top level")
@@ -241,16 +248,19 @@ def main(argv=None):
     parser.add_argument("--config", required=True)
     parser.add_argument("--out")
     parser.add_argument("--path", action="store_true")
+    parser.add_argument("--backend", choices=("workflow", "claude-p", "codex"))
     args = parser.parse_args(argv)
     try:
         cfg = checked(args.config)
         if args.cmd == "validate":
             return 0
         if args.cmd == "run-gate":
-            if "members" in cfg:
-                print(f"run refused: {args.config} is a hub (members) config. Hub boards plan "
-                      "and resolve today (super-board-wave-plan.sh --config); running one arrives "
-                      "in P4. Run each member's own single-repo config meanwhile.", file=sys.stderr)
+            backend = args.backend or cfg.get("worker_backend") or "workflow"
+            if "members" in cfg and backend != "workflow":
+                print(f"run refused: {args.config} is a hub (members) config and hub boards run "
+                      f"on the workflow backend only, not {backend} (hub.md → Run). Run it with "
+                      "/super-board run on Claude, or run one member's own single-repo config.",
+                      file=sys.stderr)
                 return RUN_REFUSED
             return 0
         if args.cmd == "members":

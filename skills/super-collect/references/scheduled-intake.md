@@ -33,8 +33,8 @@ Confirm the active config matches the intended repo/board, then test a dry run.
 **Hub board.** Point the job at the hub checkout (`repo`) and the hub config (`config`), steps
 `["collect"]`: one run files the shared sources into the hub and each member's own sources into
 that member (SKILL.md → Hub boards). Keys live in the hub's `.env.local`. "Board busy" and the
-halt check cover every member checkout the config names; a `run` step is refused until hub
-boards run (P4). Receipts and the lock key on the hub repo (`--repo <hub owner/repo>` when
+halt check cover every member checkout the config names; a `run` step runs the whole hub
+board (hub.md → Run (P4)). Receipts and the lock key on the hub repo (`--repo <hub owner/repo>` when
 reconciling).
 
 Adapt invocation to the host: Claude uses `/super-collect --yes`; Codex uses

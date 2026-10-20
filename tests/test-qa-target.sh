@@ -120,6 +120,22 @@ COMMON=$(git -C "$WORK/main" rev-parse --path-format=absolute --git-common-dir)
 [ -e "$WORK/main/.claude" ] && bad "main checkout untouched" "no main/.claude" "created" || ok "main checkout untouched"
 [ -e "$WORK/lane/.claude" ] && bad "lane checkout untouched" "no lane/.claude" "created" || ok "lane checkout untouched"
 
+echo "== hub members: backend #8 and frontend #8 share the leases, never a state file"
+jq '.member = "backend"' "$WORK/local.json" > "$WORK/be.json"
+jq '.member = "frontend"' "$WORK/local.json" > "$WORK/fe.json"
+q start --config "$WORK/be.json" --issue 8 --worktree "$WORK/wt" > "$WORK/sbe" 2>/dev/null; is "backend #8 healthy" 0 $?
+q start --config "$WORK/fe.json" --issue 8 --worktree "$WORK/wt" > "$WORK/sfe" 2>/dev/null; is "frontend #8 healthy" 0 $?
+BBE=$(sed -n 's/^export SB_PORT_BASE=//p' "$WORK/sbe"); BFE=$(sed -n 's/^export SB_PORT_BASE=//p' "$WORK/sfe")
+[ -n "$BBE" ] && [ -n "$BFE" ] && [ "$BBE" != "$BFE" ] && ok "distinct blocks ($BBE, $BFE)" || bad "distinct blocks" "two different" "$BBE / $BFE"
+[ -e "$WORK/state/issue-backend-8.json" ] && [ -e "$WORK/state/issue-frontend-8.json" ] && ok "state per member" \
+  || bad "state per member" "issue-backend-8 + issue-frontend-8" "$(ls "$WORK/state")"
+has "env --issue reads the member's own stack" "$(q env --config "$WORK/fe.json" --issue 8)" "SB_PORT_BASE=$BFE"
+q stop --config "$WORK/be.json" --issue 8 2>/dev/null
+sleep 1
+up "http://127.0.0.1:$BBE/health" && bad "backend #8 stopped" "down" "still up" || ok "backend #8 stopped"
+up "http://127.0.0.1:$BFE/health" && ok "frontend #8 untouched" || bad "frontend #8 untouched" "up" "down"
+q stop --config "$WORK/fe.json" --issue 8 2>/dev/null
+
 echo "== qa.auth_command: JSON login, never printed"
 jq -n --arg u "$EXT/health" '{target:{url:$u}, qa:{auth_command:"printf %s \"{\\\"token\\\":\\\"s3cr3t-tok\\\",\\\"user\\\":\\\"$BASE_URL\\\"}\""}}' > "$WORK/auth.json"
 OUT=$(q auth --config "$WORK/auth.json" 2>"$WORK/ea"); RC=$?
