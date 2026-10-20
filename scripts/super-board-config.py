@@ -25,7 +25,8 @@ gate, deploy wait, preflight, card.sh and the planner never learn about members.
         backend (P4); a single-repo config always passes.
     super-board-config.py hub-of <dir> [--hub-dir H]          the hub board that names <dir> as a
         member checkout: {slug, config, member, hub_root, hub_repo, repo}; exit 3 when none.
-        Looks in H's configs, else in each ancestor of <dir> (up to 4 levels). After the
+        Looks in H's configs, else in each ancestor of <dir> (up to 4 levels); with H, a
+        checkout whose origin is a member repo matches too (a worktree or clone). After the
         cut-over a member checkout keeps no pack (hub.md → Cut-over): install.sh --member,
         setup and the scheduler use this to name the hub and its slug.
 
@@ -262,6 +263,15 @@ def find_hub(start, hub_dir=None, levels=4):
             if here.parent == here:
                 break
             here = here.parent
+    remote = None
+    if hub_dir:
+        # Named hub: another clone or worktree of a member repo matches by its origin remote.
+        try:
+            out = subprocess.run(["git", "-C", str(target), "remote", "get-url", "origin"],
+                                 capture_output=True, text=True, timeout=10)
+            remote = repo_name(out.stdout.strip()).lower() if out.returncode == 0 and out.stdout.strip() else None
+        except (OSError, subprocess.SubprocessError, ValueError):
+            remote = None
     for place in places:
         for path in sorted((place / ".claude" / "super-board" / "configs").glob("*.json")):
             try:
@@ -271,7 +281,7 @@ def find_hub(start, hub_dir=None, levels=4):
             if "members" not in cfg or validate(cfg):
                 continue
             for m in members_of(cfg, str(path)):
-                if same_path(m["path"], target):
+                if same_path(m["path"], target) or (remote and remote == m["repo"].lower()):
                     return {"slug": path.stem, "config": str(path.resolve()), "member": m["key"],
                             "hub_root": hub_path(cfg, str(path)), "hub_repo": repo_name(cfg["hub"]["remote"]),
                             "repo": m["repo"]}

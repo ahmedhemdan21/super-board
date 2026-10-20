@@ -255,6 +255,17 @@ class ResolverTests(unittest.TestCase):
         self.assertEqual(self.run_resolver('hub-of', str(other)).returncode, 3)
         self.assertEqual(self.run_resolver('validate').returncode, 64, 'other commands still need --config')
 
+    def test_hub_of_matches_a_member_clone_by_remote_with_hub_dir(self):
+        self.write(hub_config(), 'pc')
+        clone = Path(self.temp.name) / 'api-worktree'
+        clone.mkdir()
+        subprocess.run(['git', 'init', '-q', str(clone)], check=True)
+        subprocess.run(['git', '-C', str(clone), 'remote', 'add', 'origin', 'git@github.com:ACME/api.git'], check=True)
+        self.assertEqual(self.run_resolver('hub-of', str(clone)).returncode, 3, 'no hub named: path match only')
+        found = self.run_resolver('hub-of', str(clone), '--hub-dir', str(self.root))
+        self.assertEqual(found.returncode, 0, found.stderr)
+        self.assertEqual(json.loads(found.stdout)['member'], 'backend')
+
 
 if __name__ == '__main__':
     unittest.main()
