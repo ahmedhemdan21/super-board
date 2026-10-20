@@ -5,8 +5,9 @@ Opt-in. `super-board onboard` asks once ("Block direct/force pushes to main?") a
 `install.sh --protect-main` wires it. Lanes push feature branches and merge through
 `super-board-merge-gate.sh` (`gh pr merge`), so nothing in the loop needs to push a base.
 
-Protected: main, master, every `base_branch` in .claude/super-board/configs/*.json, and
-any name in SB_PROTECTED_BRANCHES (comma-separated). A `git push` is denied when it would
+Protected: main, master, every `base_branch` in .claude/super-board/configs/*.json (a hub
+config's `members.<k>.base_branch` too; in a member checkout, its own from the hub config
+of an ancestor folder), and any name in SB_PROTECTED_BRANCHES (comma-separated). A `git push` is denied when it would
 update or delete one of them: an explicit refspec (`feat:main`, `+main`, `HEAD:refs/heads/main`,
 `--delete main`), `--all` / `--mirror`, or a bare `git push` / `git push origin HEAD` while the
 protected branch is checked out. Force flags (`-f`, `--force`, `--force-with-lease`) are named in
@@ -130,15 +131,49 @@ def current_branch(d):
         return None
 
 
+def _configs(folder):
+    for p in glob.glob(os.path.join(folder, ".claude", "super-board", "configs", "*.json")):
+        try:
+            cfg = json.load(open(p, encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(cfg, dict):
+            yield cfg
+
+
+def _same(a, b):
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+
+
+def governing(project_dir, levels=4):
+    """(config, member key or None) for every config that governs project_dir: its own
+    configs, and a hub config in an ancestor naming it as a member checkout (hub.md:
+    after the cut-over a member keeps no configs of its own)."""
+    out = [(cfg, None) for cfg in _configs(project_dir)]
+    here = os.path.dirname(os.path.realpath(project_dir))
+    for _ in range(levels):
+        for cfg in _configs(here):
+            members = cfg.get("members")
+            for key, m in (members.items() if isinstance(members, dict) else []):
+                path = ((m or {}).get("repo") or {}).get("path") if isinstance(m, dict) else None
+                if isinstance(path, str) and path and _same(os.path.join(here, os.path.expanduser(path)), project_dir):
+                    out.append((cfg, key))
+        parent = os.path.dirname(here)
+        if parent == here:
+            break
+        here = parent
+    return out
+
+
 def protected_branches(project_dir):
     names = {"main", "master"}
-    for p in glob.glob(os.path.join(project_dir, ".claude", "super-board", "configs", "*.json")):
-        try:
-            base = json.load(open(p, encoding="utf-8")).get("base_branch")
-            if isinstance(base, str) and base:
-                names.add(base)
-        except (OSError, ValueError, AttributeError):
-            pass
+    for cfg, member in governing(project_dir):
+        members = cfg.get("members") if isinstance(cfg.get("members"), dict) else {}
+        if member is None:  # its own config: the base, and every member's of a hub config
+            bases = [cfg.get("base_branch")] + [m.get("base_branch") for m in members.values() if isinstance(m, dict)]
+        else:
+            bases = [(members.get(member) or {}).get("base_branch")]
+        names.update(b for b in bases if isinstance(b, str) and b)
     names.update(n.strip() for n in os.environ.get("SB_PROTECTED_BRANCHES", "").split(",") if n.strip())
     return names
 

@@ -164,6 +164,14 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    │    skills, .claude/bin scripts, workflows, guard hooks + settings.json entries (runs the
    │    pack's install.sh), removes old skill folders (super-refine, cleanup-wt, arch-loop),
    │    migrates every config to the v3 keys, git init, Matt Pocock's helper skills (Node present).
+   ├─ Hub boards (hub.md → Cut-over). In a hub checkout, `hub` lists each member of each hub
+   │    config: checkout missing (✗), guard hooks missing (✗) or the old full pack still
+   │    there (!), each with its command (`install.sh --member <dir>`, `install.sh --member
+   │    --remove-pack <dir>`). Print them; ask before running one: it writes into another
+   │    repo. `--remove-pack` lists first; add `--apply` only after the user says yes.
+   │    In a slim member checkout (`member_of`), only the guard hooks are checked and `fix`
+   │    runs `install.sh --member` — never the full pack. Say: "This repo is member <key> of
+   │    hub board <slug>; onboard and run from <hub_root>." and stop.
    ├─ Print its list exactly, one ✓ per line:
    │      ⏺ Fixed for you:
    │        ✓ super-board skills and scripts installed
@@ -447,7 +455,8 @@ and a committed symlink breaks on Windows.
 | Size + markers | `check --file <staged AGENTS.md>` (≤ 200 lines, one marker pair) |
 | Write | `write --src <staged> --dest AGENTS.md` (atomic) |
 | CLAUDE.md pointer | `pointer --tail <claude-only.md> --force` (only after backup + approval) |
-| super-board section | `block` (`--create` when AGENTS.md is new) |
+| super-board section | `block` (`--create` when AGENTS.md is new; in a hub add `--hub-config <hub config>` per hub config) |
+| hub member section | `block --template references/agents-md-member-block.md --var member=… --var slug=… --var hub_repo=… --var hub_path=…` (what `install.sh --member` writes) |
 
 **Semantic — the agent, by these rules:**
 

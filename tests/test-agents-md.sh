@@ -79,4 +79,25 @@ am block --root "$T" --file ok.md --create >/dev/null; am check --file "$T/ok.md
 N=$(wc -l < ../skills/super-board/references/agents-md-block.md)
 [ "$N" -le 40 ] || fail "the managed block is $N lines; keep it ≤ 40 so AGENTS.md stays under 200"
 
-echo "PASS: test-agents-md.sh (10 scenarios)"
+# 11 — hub boards (hub.md → Cut-over): the member template needs every {{var}}; a hub's
+#      block gains one "Hub board" table per hub config; the member block stays small.
+MT=../skills/super-board/references/agents-md-member-block.md
+RC=0; am block --root "$T" --file member.md --create --template "$MT" --var member=api >/dev/null 2>&1 || RC=$?
+[ "$RC" -eq 2 ] && [ ! -e "$T/member.md" ] || fail "a member block with unfilled vars must be refused before writing (rc $RC)"
+am block --root "$T" --file member.md --create --template "$MT" --var member=api --var slug=pc \
+  --var hub_repo=acme/docs --var hub_path=.. >/dev/null || fail "member block with all vars failed"
+grep -q 'member `api` of the hub board `pc`' "$T/member.md" && ! grep -q '{{' "$T/member.md" || fail "member block filled: $(cat "$T/member.md")"
+RC=0; am block --root "$T" --file member.md --template "$MT" --var 'bad name=x' >/dev/null 2>&1 || RC=$?
+[ "$RC" -eq 64 ] || fail "a malformed --var is a usage error (rc $RC)"
+[ "$(wc -l < "$MT")" -le 25 ] || fail "the member block should stay ≤ 25 lines"
+mkdir -p "$T/hub/.claude/super-board/configs"
+cat > "$T/hub/.claude/super-board/configs/pc.json" <<'JSON'
+{"project":{"owner":"acme","number":3},"hub":{"remote":"https://github.com/acme/docs"},
+ "members":{"api":{"repo":{"path":"api","remote":"https://github.com/acme/api"},"base_branch":"dev"}}}
+JSON
+am block --root "$T/hub" --create --hub-config "$T/hub/.claude/super-board/configs/pc.json" >/dev/null || fail "hub block failed"
+grep -q '^### Hub board `pc`$' "$T/hub/AGENTS.md" && grep -q '^| api | acme/api | `api` | dev |$' "$T/hub/AGENTS.md" \
+  && grep -q '/super-board run pc' "$T/hub/AGENTS.md" || fail "hub block lists the board: $(cat "$T/hub/AGENTS.md")"
+am check --file "$T/hub/AGENTS.md" >/dev/null || fail "the hub block passes check"
+
+echo "PASS: test-agents-md.sh (11 scenarios)"

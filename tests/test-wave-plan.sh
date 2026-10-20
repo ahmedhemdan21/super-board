@@ -281,6 +281,9 @@ echo "$OUT23" | jq -e '[.parents[] | "\(.repository)#\(.number):\(.status)"] == 
   || fail "parent cards are reported, hub or member, got: $(echo "$OUT23" | jq -c .parents)"
 echo "$OUT23" | jq -e '[.cards[], .triage[], .flag[], .foreign[] | select(.number == 5 or .number == 12)] == []' >/dev/null \
   || fail "a parent card is never planned, triaged or foreign: $OUT23"
+# P6: packDir is the hub's absolute .claude, so lanes in a slim member worktree find the pack.
+echo "$OUT23" | jq -e '.packDir | test("/hub/\\.claude$") and (test("\\\\") | not)' >/dev/null \
+  || fail "a hub plan carries packDir = <hub>/.claude, got: $(echo "$OUT23" | jq -c .packDir)"
 echo "$OUT23" | jq -e --arg hub "$HUB" '.cards | map(select(.member == "backend"))[0]
     | (.configPath | test("resolved[\\\\/]hub\\.backend\\.json$")) and (.checkout | test("[\\\\/]backend$"))
       and .baseBranch == "dev" and .deploy == false' >/dev/null \

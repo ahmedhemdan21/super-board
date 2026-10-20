@@ -17,6 +17,13 @@ on missing requirements and recheck each conditional helper before use.
 
 # super-qa — BFS Route-Crawler that Builds the Spec Suite
 
+## Pack paths on a hub board
+
+`.claude/bin/<script>` and `.claude/skills/<path>` below are the pack's folders. On a hub
+board (hub.md → Cut-over) the pack lives only in the hub checkout: a member checkout and
+its worktrees have no `.claude/bin`. The wave prompt names the hub's absolute pack folder
+(`packDir`); call `<packDir>/bin/<script>` and read `<packDir>/skills/<path>` from any cwd.
+
 ## Auth bootstrap — auto-discover, never ask
 
 Before iter 1, resolve a test login. **Never ask the user; discover or create.** Order:

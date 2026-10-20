@@ -11,6 +11,13 @@ Inside `super-board run`, Super Build is the Builder lane: a lane agent in the i
 
 **This skill is single-purpose: EXECUTE curated GitHub Project `Ready` issues.** It is INDEPENDENT of `/super-qa` / **Super QA** (the autonomous bug-bash loop that hardens shipped code). They share no state unless a `super-board run` sequences them through the board. Run **Super Build** to make forward progress on the issue queue; run **Super QA** to bug-bash the existing codebase. They CAN run concurrently in different orchestrator sessions, but expect merge conflicts if both touch the same files.
 
+## Pack paths on a hub board
+
+`.claude/bin/<script>` and `.claude/skills/<path>` below are the pack's folders. On a hub
+board (hub.md → Cut-over) the pack lives only in the hub checkout: a member checkout and
+its worktrees have no `.claude/bin`. The wave prompt names the hub's absolute pack folder
+(`packDir`); call `<packDir>/bin/<script>` and read `<packDir>/skills/<path>` from any cwd.
+
 ## Role boundary
 
 Super Build is the canonical builder. Do not use a separate `build-feature` workflow. If the user wants a one-off feature, first create or curate a GitHub issue/card with clear acceptance criteria, move it to `Ready`, then let Super Build execute it.

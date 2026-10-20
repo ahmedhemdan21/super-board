@@ -34,6 +34,12 @@ What `fix` does, with NO question (all of it backed up first to
 It never installs a system tool or signs in: those come back in `needs` with the exact
 command for this OS, for onboard to ask about.
 
+Hub boards (hub.md → Cut-over): in a hub checkout `check` adds `hub` — per hub config, each
+member checkout: found, guard hooks missing (red), old full pack left (warning), with the
+`install.sh --member [--remove-pack]` commands; it never writes into a member. In a slim
+member checkout (`member_of`, no pack of its own) only the guard hooks are checked and `fix`
+runs `install.sh --member`, never the full pack.
+
 `board-migrate` is the board half (needs `gh` with project scope): adds the missing
 Status options (--prune-empty also drops unused extras such as a new board's Todo),
 creates the three labels, maps old type labels, labels every card `qa`
@@ -424,7 +430,94 @@ def installed_version(root):
     return read(os.path.join(root, ".claude", "skills", "super-board", "VERSION")) or None
 
 
+def resolver():
+    spec = importlib.util.spec_from_file_location(
+        "sb_config", os.path.join(os.path.dirname(os.path.abspath(__file__)), "super-board-config.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def stale_pack(path):
+    """Pack files a full install left in a checkout (skills, .claude/bin scripts, workflows)."""
+    claude = os.path.join(path, ".claude")
+    found = [f"skills/{s}" for s in SKILLS if os.path.isdir(os.path.join(claude, "skills", s))]
+    found += [f"bin/{b}" for b in BIN if os.path.exists(os.path.join(claude, "bin", b))]
+    found += [f"workflows/{w}" for w in WORKFLOWS if os.path.exists(os.path.join(claude, "workflows", w))]
+    return found
+
+
+def member_hooks_missing(path, pack):
+    """What a hub member lacks of the guard hooks and their settings.json wiring."""
+    hook_files = sorted(os.path.basename(p) for p in glob.glob(os.path.join(pack, "hooks", "*.py"))) if pack else []
+    missing = [h for h in hook_files if not os.path.isfile(os.path.join(path, ".claude", "hooks", h))]
+    wired = settings_commands(path)
+    unwired = [c for c in snippet_commands(pack) if c not in wired] if pack else []
+    return missing + ([f"settings.json: {len(unwired)} guard entries"] if unwired else [])
+
+
+def hub_checks(root, pack):
+    """Per hub config (members): each member checkout exists, has the guard hooks, and holds
+    no full pack from before the cut-over (hub.md → Cut-over). Report-only: the member
+    commands are named, never run, so another repo's tree changes only when asked."""
+    installer = posix_path(os.path.join(pack, "install.sh")) if pack else "install.sh"
+    out = {}
+    try:
+        res = resolver()
+    except Exception:
+        return out
+    for p in sorted(glob.glob(os.path.join(root, ".claude", "super-board", "configs", "*.json"))):
+        cfg = load_json(p)
+        if not isinstance(cfg, dict) or "members" not in cfg or res.validate(cfg):
+            continue
+        rows = []
+        for m in res.members_of(cfg, p):
+            row = {"member": m["key"], "repo": m["repo"], "path": m["path"], "exists": os.path.isdir(m["path"])}
+            if row["exists"]:
+                row["hooks_missing"] = member_hooks_missing(m["path"], pack)
+                row["stale_pack"] = stale_pack(m["path"])
+                cmd = []
+                if row["hooks_missing"]:
+                    cmd.append(f"{installer} --member {posix_path(m['path'])}")
+                if row["stale_pack"]:
+                    cmd.append(f"{installer} --member --remove-pack {posix_path(m['path'])}   # lists them; add --apply to delete")
+                row["commands"] = cmd
+            rows.append(row)
+        out[os.path.splitext(os.path.basename(p))[0]] = rows
+    return out
+
+
+def member_of(root):
+    """The hub board naming root as a slim member checkout (no pack of its own), else None."""
+    if os.path.isfile(os.path.join(root, ".claude", "skills", "super-board", "SKILL.md")):
+        return None
+    try:
+        return resolver().find_hub(root)
+    except Exception:
+        return None
+
+
+def member_check(root, pack, hub):
+    """A slim hub member (hub.md → Cut-over): only its guard hooks matter here; the board,
+    skills and scripts live in the hub. Onboard runs from the hub checkout."""
+    hooks = member_hooks_missing(root, pack)
+    stale = stale_pack(root)
+    git = is_git_repo(root)
+    ok = [f"hub member {hub['member']} of board {hub['slug']} ({hub['hub_repo']}): onboard and run from {hub['hub_root']}"]
+    if not hooks:
+        ok.append("safety guards on")
+    return {"root": root, "pack": pack, "pack_version": read(os.path.join(pack, "VERSION")) if pack else None,
+            "installed_version": None, "member_of": hub, "upgrade": False, "from": None, "added_skills": [],
+            "missing": [f"hook {h}" if not h.startswith("settings") else h for h in hooks], "stale_pack": stale,
+            "old_dirs": [], "configs": {}, "verification": {}, "git": git, "helper_skills": True,
+            "helper_readiness": {"ready": True, "entries": []}, "env_secrets": [], "needs": [], "os": os_family(),
+            "ok": ok, "hub": {}, "green": not hooks and git}
+
+
 def check(root, pack, host="claude", home=None, catalog=None):
+    hub_of = member_of(root)
+    if hub_of:
+        return member_check(root, pack, hub_of)
     claude = os.path.join(root, ".claude")
     pack_version = read(os.path.join(pack, "VERSION")) if pack else None
     have_v = installed_version(root)
@@ -494,9 +587,15 @@ def check(root, pack, host="claude", home=None, catalog=None):
     bad_rules = [r for r in allow if isinstance(r, str) and r != r.strip()]
     if bad_rules:
         missing.append(f"settings.json: {len(bad_rules)} permission rule(s) with stray whitespace")
-    red = bool(missing or old_dirs or configs or verification or not git or needs or not helpers
+    hub = hub_checks(root, pack)
+    hub_red = any(not r["exists"] or r.get("hooks_missing") for rows in hub.values() for r in rows)
+    for slug, rows in hub.items():
+        if rows and not any(not r["exists"] or r.get("hooks_missing") or r.get("stale_pack") for r in rows):
+            ok.append(f"hub {slug}: {len(rows)} member checkout(s) with guard hooks, no old pack")
+    red = bool(missing or old_dirs or configs or verification or not git or needs or not helpers or hub_red
                or any(e["level"] == "must" for e in env_secrets))
     return {
+        "hub": hub,
         "root": root, "pack": pack, "pack_version": pack_version, "installed_version": have_v,
         "upgrade": older, "from": from_v or ("older" if older else None),
         "added_skills": upgrade_rec.get("added_skills", []),
@@ -519,6 +618,20 @@ def backup(root, paths, stamp):
 
 def fix(root, pack, helpers=True, dry=False, host="claude", home=None, catalog=None):
     before = check(root, pack, host, home, catalog)
+    if before.get("member_of"):
+        # A slim hub member gets the guard hooks only (install.sh --member), never the pack.
+        fixed = []
+        if before["missing"]:
+            if not pack:
+                return {**before, "fixed": [], "error": "pack-not-found"}
+            if not dry:
+                r = run([bash(), posix_path(os.path.join(pack, "install.sh")), "--member", posix_path(root)],
+                        input="", cwd=root)
+                if r.returncode != 0:
+                    return {**before, "fixed": [], "error": "install.sh --member failed: " + (r.stderr or r.stdout)[-300:]}
+            fixed.append("guard hooks installed (hub member: install.sh --member)")
+        after = check(root, pack, host, home, catalog) if not dry else before
+        return {**after, "upgraded": False, "fixed": fixed, "notes": [], "backup": None}
     fixed, notes = [], []
     claude = os.path.join(root, ".claude")
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M")
@@ -632,6 +745,20 @@ def text_report(res):
         lines.append(f"    → {e['remedy']}")
     for path, error in res.get("verification", {}).items():
         lines.append(f"  ✗ {path}: {error}")
+    if res.get("member_of") and res.get("stale_pack"):
+        lines.append(f"  ! {len(res['stale_pack'])} pack files from a full install are still here")
+        lines.append(f"    → install.sh --member --remove-pack {posix_path(res['root'])}   (lists them; add --apply to delete)")
+    for slug, rows in (res.get("hub") or {}).items():
+        for r in rows:
+            if not r["exists"]:
+                lines.append(f"  ✗ hub {slug}: member {r['member']} checkout {r['path']} not found (git submodule update --init?)")
+                continue
+            if r.get("hooks_missing"):
+                lines.append(f"  ✗ hub {slug}: member {r['member']} has no guard hooks ({len(r['hooks_missing'])} missing)")
+            if r.get("stale_pack"):
+                lines.append(f"  ! hub {slug}: member {r['member']} still holds the full pack ({len(r['stale_pack'])} files)")
+            for cmd in r.get("commands", []):
+                lines.append(f"    → {cmd}")
     for n in res.get("needs", []):
         lines.append(f"  Needs your machine: {n['name']} isn't installed. It's needed for {n['why']}.")
         lines.append(f"    {n['command']}")

@@ -23,6 +23,11 @@ gate, deploy wait, preflight, card.sh and the planner never learn about members.
         the legacy `claude-p` runner or the Codex wave (B = workflow | claude-p | codex;
         default the config's worker_backend, else workflow). A hub runs on the workflow
         backend (P4); a single-repo config always passes.
+    super-board-config.py hub-of <dir> [--hub-dir H]          the hub board that names <dir> as a
+        member checkout: {slug, config, member, hub_root, hub_repo, repo}; exit 3 when none.
+        Looks in H's configs, else in each ancestor of <dir> (up to 4 levels). After the
+        cut-over a member checkout keeps no pack (hub.md → Cut-over): install.sh --member,
+        setup and the scheduler use this to name the hub and its slug.
 
 Board root = the folder holding `.claude/super-board/configs/<slug>.json`; a config
 elsewhere uses its git toplevel, else its own folder. Member and repo paths that are
@@ -241,15 +246,58 @@ def cached_member(cfg, path, key):
     return target
 
 
+def same_path(a, b):
+    return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
+
+
+def find_hub(start, hub_dir=None, levels=4):
+    """The hub config naming `start` as a member checkout, or None. Invalid configs are
+    skipped (their own run refuses them)."""
+    target = Path(start).resolve()
+    places = [Path(hub_dir).resolve()] if hub_dir else []
+    if not hub_dir:
+        here = target.parent
+        for _ in range(levels):
+            places.append(here)
+            if here.parent == here:
+                break
+            here = here.parent
+    for place in places:
+        for path in sorted((place / ".claude" / "super-board" / "configs").glob("*.json")):
+            try:
+                cfg = load(path)
+            except (ConfigError, SystemExit):
+                continue
+            if "members" not in cfg or validate(cfg):
+                continue
+            for m in members_of(cfg, str(path)):
+                if same_path(m["path"], target):
+                    return {"slug": path.stem, "config": str(path.resolve()), "member": m["key"],
+                            "hub_root": hub_path(cfg, str(path)), "hub_repo": repo_name(cfg["hub"]["remote"]),
+                            "repo": m["repo"]}
+    return None
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("cmd", choices=("validate", "member", "hub", "members", "for-repo", "run-gate"))
+    parser.add_argument("cmd", choices=("validate", "member", "hub", "members", "for-repo", "run-gate", "hub-of"))
     parser.add_argument("arg", nargs="?")
-    parser.add_argument("--config", required=True)
+    parser.add_argument("--config")
+    parser.add_argument("--hub-dir")
     parser.add_argument("--out")
     parser.add_argument("--path", action="store_true")
     parser.add_argument("--backend", choices=("workflow", "claude-p", "codex"))
     args = parser.parse_args(argv)
+    if args.cmd == "hub-of":
+        found = find_hub(args.arg or ".", args.hub_dir)
+        if not found:
+            print(f"{args.arg or '.'} is not a member checkout of any hub config", file=sys.stderr)
+            return NOT_MEMBER
+        print(json.dumps(found))
+        return 0
+    if not args.config:
+        print("--config is required", file=sys.stderr)
+        return USAGE
     try:
         cfg = checked(args.config)
         if args.cmd == "validate":

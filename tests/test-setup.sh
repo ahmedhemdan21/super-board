@@ -393,4 +393,47 @@ echo "$OUT" | q '.fixed | index("settings.json permission rules repaired (stray 
 jq -e '.permissions.allow == ["Bash(gh pr view:*)","Bash(ls:*)"]' "$T/.claude/settings.json" >/dev/null \
   || fail "rules not repaired: $(jq -c .permissions "$T/.claude/settings.json")"
 
-echo "PASS: test-setup.sh (14 scenarios)"
+# 15 — hub board (hub.md → Cut-over). From the hub, check reports each member checkout:
+#      missing, without guard hooks (red, with the --member command) or still holding the
+#      full pack (warning, with the --remove-pack command); it never writes into a member.
+#      From a slim member, check and fix deal in guard hooks only, never the full pack.
+H="$WORK/hub"; mkdir -p "$H/.claude/super-board/configs" "$H/backend" "$H/frontend"
+git -C "$H" init -q
+for m in backend frontend; do git -C "$H/$m" init -q; done
+cat > "$H/.claude/super-board/configs/pc.json" <<'JSON'
+{"project":{"owner":"acme","number":3},"hub":{"remote":"https://github.com/acme/docs","path":"."},
+ "verify_commands":["git diff --check"],
+ "members":{"backend":{"repo":{"path":"backend","remote":"https://github.com/acme/api"},"base_branch":"dev"},
+            "frontend":{"repo":{"path":"frontend","remote":"https://github.com/acme/web"},"base_branch":"dev"},
+            "infra":{"repo":{"path":"infra","remote":"https://github.com/acme/infra"},"base_branch":"main"}}}
+JSON
+bash "$PACK/install.sh" --hub "$H" >/dev/null 2>&1 || fail "install --hub on a valid hub config should pass"
+bash "$PACK/install.sh" "$H/backend" >/dev/null 2>&1
+OUT=$(python3 "$SETUP" check --root "$H" || true)
+echo "$OUT" | q '.green == false and (.hub.pc | length) == 3' || fail "hub check lists three members and is red: $OUT"
+echo "$OUT" | q '.hub.pc[] | select(.member == "backend") | (.stale_pack | length) > 30 and .hooks_missing == []' \
+  || fail "backend: old full pack reported, hooks present: $(echo "$OUT" | jq -c .hub)"
+echo "$OUT" | q '.hub.pc[] | select(.member == "frontend") | (.hooks_missing | length) > 0 and .stale_pack == []' \
+  || fail "frontend: missing hooks reported: $(echo "$OUT" | jq -c .hub)"
+echo "$OUT" | q '.hub.pc[] | select(.member == "infra") | .exists == false' || fail "infra: missing checkout reported"
+TXT=$(python3 "$SETUP" check --root "$H" --text || true)
+echo "$TXT" | grep -q "member infra checkout .* not found" || fail "text names the missing checkout: $TXT"
+echo "$TXT" | grep -q -- "--member --remove-pack .*backend" || fail "text offers the removal command: $TXT"
+echo "$TXT" | grep -q -- "--member .*frontend" || fail "text offers the member install: $TXT"
+[ ! -e "$H/frontend/.claude" ] || fail "a hub check must never write into a member"
+# slim the backend, then check from it: a member, green on hooks alone
+bash "$PACK/install.sh" --member --remove-pack --apply "$H/backend" >/dev/null 2>&1
+[ ! -e "$H/backend/.claude/bin" ] && [ ! -e "$H/backend/.claude/skills/super-board" ] || fail "--remove-pack --apply slims the backend"
+OUT=$(python3 "$SETUP" check --root "$H/backend" || true)
+echo "$OUT" | q '.member_of.slug == "pc" and .member_of.member == "backend" and .missing == [] and .green == true' \
+  || fail "a slim member checks green on its hooks: $OUT"
+OUT=$(python3 "$SETUP" fix --root "$H/frontend" --no-helpers || true)
+echo "$OUT" | q '(.fixed | index("guard hooks installed (hub member: install.sh --member)")) and .missing == []' \
+  || fail "fix in a member installs the guard hooks only: $OUT"
+[ -f "$H/frontend/.claude/hooks/guard-worktree-path.py" ] && [ ! -e "$H/frontend/.claude/bin" ] \
+  || fail "member fix must not install the pack"
+OUT=$(python3 "$SETUP" check --root "$H" || true)
+echo "$OUT" | q '[.hub.pc[] | select(.exists) | .hooks_missing + .stale_pack] | add == []' \
+  || fail "after the cut-over the present members are clean: $(echo "$OUT" | jq -c .hub)"
+
+echo "PASS: test-setup.sh (15 scenarios)"

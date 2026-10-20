@@ -405,6 +405,13 @@ Same rules as §4 config discovery:
 - **No active config found** → halt with:
   `Run super-board onboard first.`
 
+**Hub boards** (hub.md → Cut-over). A hub config's home is the hub repo: a member's
+card prints `<member>#N` (`backend#7`, `frontend#7` stay two cards), a `parent` card prints
+`🧩<ref>`, and the config line reads `config: <slug> (hub <owner/repo>) … base: backend dev
+· frontend main`. `--json` items carry `member` and `parent: true`. In a slim member
+checkout (no configs of its own) the script reads the hub board that names it, from the
+hub's checkout, and says so on stderr.
+
 ---
 
 ## Read-only contract — enforced on both rendering paths

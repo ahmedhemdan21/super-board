@@ -15,7 +15,10 @@ What it does:
   2. ONE GraphQL call for project items (number, repository, title, labels, Status).
      A card is `owner/repo#N`: the home repo (config repo.remote) prints `#N`, another
      repo's card on the same Project prints `owner/repo#N`, and nothing is keyed by
-     bare number, so two repos' #7 never merge.
+     bare number, so two repos' #7 never merge. A hub config (members, hub.md): the
+     home is the hub repo, a member's card prints `<member>#N`, a `parent` card prints
+     `🧩<ref>` (JSON: `member`, `parent: true`), and the header names the hub and each
+     member's base. Run from a slim member checkout, it reads the hub board naming it.
   3. ONE `gh issue view <N> --repo <its repo>` per Blocked card for reason-tag extraction.
   4. Read today's manifest and pipe everything to the locked-template
      renderer that prints the 80-col snapshot matching the spec in
@@ -351,6 +354,20 @@ def valid_slug(slug: str) -> bool:
     return bool(_SLUG_RE.match(slug))
 
 
+def hub_of_cwd() -> dict[str, Any] | None:
+    """The hub board naming the cwd as a member checkout (super-board-config.py hub-of),
+    or None. After the cut-over a member keeps no configs (hub.md → Cut-over)."""
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "sb_config", Path(__file__).resolve().parent / "super-board-config.py")
+        res = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(res)  # type: ignore[union-attr]
+        return res.find_hub(Path.cwd())
+    except Exception:
+        return None
+
+
 def resolve_config_slug(argv: list[str]) -> str:
     if len(argv) > 1 and argv[1]:
         return argv[1]
@@ -360,8 +377,34 @@ def resolve_config_slug(argv: list[str]) -> str:
     cfgs = sorted(Path(".claude/super-board/configs").glob("*.json"))
     if len(cfgs) == 1:
         return cfgs[0].stem
+    hub = None if cfgs else hub_of_cwd()
+    if hub:
+        return hub["slug"]
     print(f"usage: {argv[0]} <config-slug>  (or set .claude/super-board/active)", file=sys.stderr)
     sys.exit(64)
+
+
+def hub_view(cfg: dict[str, Any]) -> dict[str, str]:
+    """{repo lower: member key} for a hub config (members), else {}."""
+    out: dict[str, str] = {}
+    for key, m in (cfg.get("members") or {}).items():
+        repo = home_repo({"repo": (m or {}).get("repo") or {}})
+        if repo:
+            out[repo.lower()] = key
+    return out
+
+
+def mark_hub_items(items: list[dict[str, Any]], members: dict[str, str]) -> None:
+    """Hub board display: a member card prints `<member>#N`, a parent (label `parent`,
+    hub.md → Split) prints with 🧩 and carries `parent: true`. Pure (mutates items)."""
+    for it in items:
+        key = members.get(str(it.get("repository") or "").lower())
+        if key:
+            it["member"] = key
+            it["ref"] = f"{key}#{it['number']}"
+        if "parent" in [str(l).lower() for l in it.get("labels") or []]:
+            it["parent"] = True
+            it["ref"] = "🧩" + ref_of(it)
 
 
 def gh(*args: str, check: bool = True) -> str:
@@ -583,10 +626,19 @@ def main() -> int:
         return 64
     config_path = Path(f".claude/super-board/configs/{config_slug}.json")
     if not config_path.is_file():
-        print(f"config not found: {config_path}", file=sys.stderr)
-        return 66
+        # A slim member checkout (hub.md → Cut-over): read the hub board it belongs to.
+        hub = hub_of_cwd()
+        if hub and hub["slug"] == config_slug:
+            print(f"(member {hub['member']} of hub board {hub['slug']}: reading it from {hub['hub_root']})",
+                  file=sys.stderr)
+            import os
+            os.chdir(hub["hub_root"])
+        else:
+            print(f"config not found: {config_path}", file=sys.stderr)
+            return 66
 
     cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    members = hub_view(cfg)
     project_owner: str = cfg["project"]["owner"]
     project_number: int = int(cfg["project"]["number"])
     runs_dir = cfg.get("paths", {}).get("runs_dir", "docs/super-board/runs")
@@ -621,8 +673,12 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    home = home_repo(cfg)
+    # A hub config (members) has no repo.remote: its home is the hub repo, so every
+    # member's #7 keeps its own key; member cards print `<member>#N`, parents with 🧩.
+    home = home_repo(cfg) or (home_repo({"repo": cfg.get("hub") or {}}) if members else "")
     items = [i for i in (card_item(n, home) for n in items_raw) if i is not None]
+    if members:
+        mark_hub_items(items, members)
 
     by_status: dict[str, list[dict[str, Any]]] = {
         s: sorted([i for i in items if i["status"] == s], key=lambda x: -x["number"])
@@ -728,7 +784,11 @@ def main() -> int:
 
     print(f"📊 super-board · {proj['title']} (#{proj['number']})")
     print("─" * 80)
-    print(f"config: {config_slug}   labels: qa · bug · feature   base: {cfg.get('base_branch', '?')}")
+    if members:
+        bases = " · ".join(f"{k} {(m or {}).get('base_branch', '?')}" for k, m in cfg["members"].items())
+        print(f"config: {config_slug} (hub {home or '?'})   labels: qa · bug · feature   base: {bases}")
+    else:
+        print(f"config: {config_slug}   labels: qa · bug · feature   base: {cfg.get('base_branch', '?')}")
     print(f"mode:   {mode_label:<22} truth gate: {gate_label}")
     print()
 

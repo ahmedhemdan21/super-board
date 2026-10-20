@@ -237,6 +237,24 @@ class ResolverTests(unittest.TestCase):
         back = json.loads(self.run_resolver('member', 'backend', '--config', str(path)).stdout)
         self.assertEqual((front['max_workers'], back['max_workers']), (2, 6), 'member wins, else the board value')
 
+    def test_hub_of_names_the_hub_for_a_member_checkout(self):
+        self.write(hub_config(), 'pc')
+        for m in ('backend', 'frontend'):
+            (self.root / m).mkdir()
+        found = self.run_resolver('hub-of', str(self.root / 'backend'))
+        self.assertEqual(found.returncode, 0, found.stderr)
+        got = json.loads(found.stdout)
+        self.assertEqual((got['slug'], got['member'], got['hub_repo'], got['repo']),
+                         ('pc', 'backend', 'acme/docs', 'acme/api'))
+        self.assertEqual(Path(got['hub_root']).resolve(), self.root)
+        explicit = self.run_resolver('hub-of', str(self.root / 'frontend'), '--hub-dir', str(self.root))
+        self.assertEqual(json.loads(explicit.stdout)['member'], 'frontend')
+        self.assertEqual(self.run_resolver('hub-of', str(self.root)).returncode, 3, 'the hub is no member')
+        other = Path(self.temp.name) / 'elsewhere'
+        other.mkdir()
+        self.assertEqual(self.run_resolver('hub-of', str(other)).returncode, 3)
+        self.assertEqual(self.run_resolver('validate').returncode, 64, 'other commands still need --config')
+
 
 if __name__ == '__main__':
     unittest.main()

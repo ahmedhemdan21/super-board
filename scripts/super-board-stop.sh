@@ -12,6 +12,11 @@
 #   6. Remove in-flight locks. Leave worktrees in place (Builder can resume).
 #   7. Print summary + resume command.
 #
+# Hub boards (hub.md → Cut-over): a config with `members` stops the whole board. Locks are
+# read in the hub checkout and in every member checkout (super-board-config.py members);
+# each card's comments and claim release name --repo <its member repo>, and its branch is
+# found as `<member>-issue-<N>-*` in that member's checkout.
+#
 # What it does NOT do:
 #   - Wait for workers to reach a clean stopping point (claude -p has no SIGTERM
 #     handler that flushes a partial commit). Unsaved in-memory work can be lost;
@@ -57,6 +62,17 @@ BOT_LOGIN=$(jq -r '.notifications.bot_identity // .bot_identity // ""' "$CONFIG_
 GH_REPO_NAME=$(jq -r '.repo.remote // ""' "$CONFIG_PATH" | tr -d '\r' | sed -E 's#^(https?://github\.com/|git@github\.com:)##; s#\.git$##')
 [ -z "$GH_REPO_NAME" ] || export GH_REPO="$GH_REPO_NAME"
 INFLIGHT_DIR=".claude/super-board/inflight"
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# Places to sweep: "<member key>|<repo>|<checkout>". One place (".") for a single-repo
+# config; the hub plus every member checkout for a hub config.
+PLACES=("||.")
+if jq -e 'has("members")' "$CONFIG_PATH" >/dev/null 2>&1; then
+  MEMBERS_JSON=$(python3 "$HERE/super-board-config.py" members --config "$CONFIG_PATH") || exit $?
+  # Forward slashes and no CR: Git Bash globs treat a Windows path's backslashes as escapes.
+  while IFS= read -r place; do
+    [ -n "$place" ] && PLACES+=("$place")
+  done < <(printf '%s' "$MEMBERS_JSON" | jq -r '.[] | "\(.key)|\(.repo)|\(.path | gsub("\\\\"; "/"))"' | tr -d '\r')
+fi
 RUN_DATE=$(date +%Y-%m-%d)
 RUN_MANIFEST="docs/super-board/runs/${RUN_DATE}-${CONFIG_SLUG}.md"
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -70,7 +86,7 @@ log() {
 # Source a lock file. Supports both v1.3.0+ (PID=/LANE=/STARTED= assignments)
 # and pre-v1.3.0 (single-line PID) formats.
 read_lock() {
-  local lock="$INFLIGHT_DIR/$1"
+  local lock="${2:-$INFLIGHT_DIR}/$1"
   PID=""; LANE=""; STARTED=""
   [ -f "$lock" ] || return 1
   if grep -q '^PID=' "$lock" 2>/dev/null; then
@@ -83,24 +99,29 @@ read_lock() {
 }
 
 # Look up the PR number for an issue's branch (if any). One gh call.
+# A member card's branch is <member>-issue-<N>-<slug> (hub.md → Run); $2 = member, $3 = repo.
 pr_for_issue() {
-  local issue="$1"
-  gh pr list --state open --json number,headRefName \
-    --jq ".[] | select(.headRefName | startswith(\"issue-${issue}-\")) | .number" 2>/dev/null | head -1
+  local issue="$1" prefix="${2:+$2-}" repo="${3:-}"
+  gh pr list ${repo:+--repo "$repo"} --state open --json number,headRefName \
+    --jq ".[] | select(.headRefName | startswith(\"${prefix}issue-${issue}-\")) | .number" 2>/dev/null | head -1
 }
 
 # Latest commit on the issue's branch (local or remote). Best-effort.
 last_commit_on_branch() {
-  local issue="$1" branch
-  branch=$(git branch -a --list "*issue-${issue}-*" 2>/dev/null | head -1 | sed 's|^[* ]*||;s|^remotes/[^/]*/||')
+  local issue="$1" prefix="${2:+$2-}" place="${3:-.}" branch
+  if [ -n "$prefix" ]; then
+    branch=$(git -C "$place" branch -a --list "${prefix}issue-${issue}-*" "*/${prefix}issue-${issue}-*" 2>/dev/null | head -1 | sed 's|^[*+ ]*||;s|^remotes/[^/]*/||')
+  else
+    branch=$(git branch -a --list "*issue-${issue}-*" 2>/dev/null | head -1 | sed 's|^[* ]*||;s|^remotes/[^/]*/||')
+  fi
   [ -z "$branch" ] && { echo "(no branch yet)"; return; }
-  git log -1 --format='%h %s' "$branch" 2>/dev/null || echo "(branch found but no commits)"
+  git -C "$place" log -1 --format='%h %s' "$branch" 2>/dev/null || echo "(branch found but no commits)"
 }
 
 post_stop_comment() {
-  local issue="$1" lane="$2" pid="$3" pr commit body
-  commit=$(last_commit_on_branch "$issue")
-  pr=$(pr_for_issue "$issue" || echo "")
+  local issue="$1" lane="$2" pid="$3" member="${4:-}" repo="${5:-}" place="${6:-.}" pr commit body
+  commit=$(last_commit_on_branch "$issue" "$member" "$place")
+  pr=$(pr_for_issue "$issue" "$member" "$repo" || echo "")
 
   # Comment format: writing-standard.md § 4.
   body="[orchestrator] [report] 🛑 stopped · ${lane:-unknown} lane
@@ -109,25 +130,25 @@ Did: \`super-board stop\` ended worker PID ${pid:-unknown} at ${TS}
 ❌ Not done: interrupted work may be uncommitted; inspect the preserved worktree
 Next: preserve edits before \`super-board run ${CONFIG_SLUG}\`; dirty or legacy worktrees need inspection"
 
-  gh issue comment "$issue" --body "$body" >/dev/null 2>&1 \
-    && log "  💬 issue comment posted on #${issue}" \
-    || log "  ⚠ failed to comment on issue #${issue} (continuing)"
+  gh issue comment "$issue" ${repo:+--repo "$repo"} --body "$body" >/dev/null 2>&1 \
+    && log "  💬 issue comment posted on ${repo}#${issue}" \
+    || log "  ⚠ failed to comment on issue ${repo}#${issue} (continuing)"
 
   if [ -n "$pr" ]; then
-    gh pr comment "$pr" --body "$body" >/dev/null 2>&1 \
+    gh pr comment "$pr" ${repo:+--repo "$repo"} --body "$body" >/dev/null 2>&1 \
       && log "  💬 PR comment posted on #${pr}" \
       || log "  ⚠ failed to comment on PR #${pr} (continuing)"
   fi
 }
 
 release_claim() {
-  local issue="$1"
+  local issue="$1" repo="${2:-}"
   [ -z "$BOT_LOGIN" ] && return 0
-  gh issue edit "$issue" --remove-assignee "$BOT_LOGIN" >/dev/null 2>&1 || true
+  gh issue edit "$issue" ${repo:+--repo "$repo"} --remove-assignee "$BOT_LOGIN" >/dev/null 2>&1 || true
   for label in loop:in-build loop:in-qa loop:in-review; do
-    gh issue edit "$issue" --remove-label "$label" >/dev/null 2>&1 || true
+    gh issue edit "$issue" ${repo:+--repo "$repo"} --remove-label "$label" >/dev/null 2>&1 || true
   done
-  log "  🔓 released assignee + lane labels on #${issue}"
+  log "  🔓 released assignee + lane labels on ${repo}#${issue}"
 }
 
 kill_pid() {
@@ -156,16 +177,20 @@ echo "════════════════════════�
 
 # 1. Inventory in-flight workers BEFORE killing anything.
 WORKERS=()
-if [ -d "$INFLIGHT_DIR" ]; then
-  for lock in "$INFLIGHT_DIR"/*; do
+for place_entry in "${PLACES[@]}"; do
+  IFS='|' read -r pmember prepo ppath <<< "$place_entry"
+  pdir="$ppath/$INFLIGHT_DIR"
+  [ "$ppath" = "." ] && pdir="$INFLIGHT_DIR"
+  [ -d "$pdir" ] || continue
+  for lock in "$pdir"/*; do
     [ -f "$lock" ] || continue
     issue=$(basename "$lock")
     # Wave/merge control markers are not GitHub issue numbers.
     case "$issue" in ''|*[!0-9]*) continue ;; esac
-    read_lock "$issue"
-    WORKERS+=("${issue}|${LANE:-unknown}|${PID:-}")
+    read_lock "$issue" "$pdir"
+    WORKERS+=("${issue}|${LANE:-unknown}|${PID:-}|${pmember}|${prepo}|${ppath}")
   done
-fi
+done
 
 DISPATCHER_PIDS=$(pgrep -f 'super-board-run\.sh' 2>/dev/null || true)
 ORPHAN_WORKERS=$(pgrep -f 'claude -p .*super-board' 2>/dev/null || true)
@@ -204,11 +229,11 @@ fi
 if [ "${#WORKERS[@]}" -gt 0 ]; then
   log "📋 ${#WORKERS[@]} in-flight worker(s) to wrap up"
   for entry in "${WORKERS[@]}"; do
-    IFS='|' read -r issue lane pid <<< "$entry"
+    IFS='|' read -r issue lane pid member repo place <<< "$entry"
     log ""
-    log "─── #${issue} (lane=${lane}, pid=${pid:-unknown}) ───"
-    post_stop_comment "$issue" "$lane" "$pid"
-    release_claim "$issue"
+    log "─── ${member:+$member}#${issue} (lane=${lane}, pid=${pid:-unknown}) ───"
+    post_stop_comment "$issue" "$lane" "$pid" "$member" "$repo" "$place"
+    release_claim "$issue" "$repo"
     kill_pid "$pid" "worker(${lane}/#${issue})"
   done
 fi
@@ -232,13 +257,13 @@ if [ -n "$DISPATCHER_PIDS" ]; then
 fi
 
 # 5. Clear in-flight locks (PIDs are dead now).
-if [ -d "$INFLIGHT_DIR" ] && [ -n "$(ls -A "$INFLIGHT_DIR" 2>/dev/null)" ]; then
+if [ "${#WORKERS[@]}" -gt 0 ]; then
   for entry in "${WORKERS[@]}"; do
-    IFS='|' read -r issue lane pid <<< "$entry"
-    rm -f "$INFLIGHT_DIR/$issue"
+    IFS='|' read -r issue lane pid member repo place <<< "$entry"
+    if [ "$place" = "." ]; then rm -f "$INFLIGHT_DIR/$issue"; else rm -f "$place/$INFLIGHT_DIR/$issue"; fi
   done
   log ""
-  log "🧽 cleared $INFLIGHT_DIR"
+  log "🧽 cleared the in-flight worker locks"
 fi
 [ -z "$CODEX_WAVE_PID" ] || rm -f "$INFLIGHT_DIR/workflow-wave.lock" "$CODEX_WAVE_MARKER"
 

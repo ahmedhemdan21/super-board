@@ -98,7 +98,12 @@ if git rev-parse --verify "$WORKER_BRANCH" >/dev/null 2>&1; then
 fi
 
 # Compose the worker prompt: preamble + issue body + working-dir footer
-SB_BIN="$REPO_DIR/.claude/bin"
+# The pack's bin: $SB_BIN, else the .claude/bin next to this installed skill (a hub
+# board's member checkout has none of its own, hub.md → Cut-over), else REPO_DIR's.
+if [ -z "${SB_BIN:-}" ]; then
+  SB_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../bin" 2>/dev/null && pwd)" || SB_BIN=""
+  [ -f "$SB_BIN/super-board-github-read.py" ] || SB_BIN="$REPO_DIR/.claude/bin"
+fi
 ISSUE_JSON=$(python3 "$SB_BIN/super-board-github-read.py" --kind issue -- issue view "$N" --json number,title,body 2>&1) || {
   echo "error: gh issue view #$N failed:" >&2
   echo "$ISSUE_JSON" >&2

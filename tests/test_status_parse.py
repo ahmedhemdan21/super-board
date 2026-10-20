@@ -445,6 +445,77 @@ def test_every_issue_read_names_its_repo() -> None:
     assert all("--repo" in c for c in views), views
 
 
+def _hub_cfg() -> dict:
+    return {"project": {"owner": "acme", "title": "Acme", "number": 3}, "hub": {"remote": "https://github.com/acme/docs"},
+            "members": {"backend": {"repo": {"path": "backend", "remote": "https://github.com/acme/api"},
+                                    "base_branch": "dev"},
+                        "frontend": {"repo": {"path": "frontend", "remote": "https://github.com/acme/web"},
+                                     "base_branch": "main"}}}
+
+
+def _hub_page() -> dict:
+    parent = _node(5, "acme/docs", "Backlog", "split me")
+    parent["content"]["labels"] = {"nodes": [{"name": "parent"}]}
+    return {"data": {"repositoryOwner": {"projectV2": {"items": {
+        "pageInfo": {"endCursor": None, "hasNextPage": False},
+        "nodes": [_node(7, "acme/api", "Ready", "api seven"), _node(7, "acme/web", "Ready", "web seven"),
+                  _node(4, "acme/docs", "Backlog", "hub report"), parent]}}}}}
+
+
+def _run_main(root: Path, cwd: Path, argv: list, page: dict) -> tuple:
+    import contextlib, io, json as _json, os
+    real_gh, real_argv, here = sbs.gh, sys.argv, os.getcwd()
+    out, err = io.StringIO(), io.StringIO()
+    try:
+        sbs.gh = lambda *a, check=True: _json.dumps(page) if a[:2] == ("api", "graphql") else '{"comments": []}'
+        sys.argv = ["super-board-status.py", *argv]
+        os.chdir(cwd)
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = sbs.main()
+    finally:
+        sbs.gh, sys.argv = real_gh, real_argv
+        os.chdir(here)
+    return rc, out.getvalue(), err.getvalue()
+
+
+def test_hub_board_shows_members_and_parents() -> None:
+    """P6: a hub's members keep apart (backend#7 vs frontend#7), parents print as parents,
+    and the header names the hub and each member's base."""
+    import json as _json, tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp).resolve()
+        conf = root / ".claude/super-board/configs/pc.json"
+        conf.parent.mkdir(parents=True)
+        conf.write_text(_json.dumps(_hub_cfg()), encoding="utf-8")
+        rc, text, _ = _run_main(root, root, ["pc"], _hub_page())
+        assert rc == 0
+        assert "config: pc (hub acme/docs)" in text and "base: backend dev · frontend main" in text, text
+        assert "backend#7  api seven" in text and "frontend#7  web seven" in text, text
+        assert "🧩#5" in text and "#4" in text, "a parent prints as a parent; the hub report as #N"
+        rc, js, _ = _run_main(root, root, ["pc", "--json"], _hub_page())
+        snap = _json.loads(js)
+        by = {(i["repository"], i["number"]): i for i in snap["items"]}
+        assert len(snap["items"]) == 4 and by[("acme/api", 7)]["member"] == "backend"
+        assert by[("acme/web", 7)]["member"] == "frontend" and by[("acme/docs", 5)].get("parent") is True
+        assert "parent" not in by[("acme/docs", 4)] and "member" not in by[("acme/docs", 4)]
+
+
+def test_slim_member_checkout_reads_its_hub_board() -> None:
+    """P6: a member checkout with no configs of its own reads the hub board naming it."""
+    import json as _json, tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp).resolve()
+        conf = root / ".claude/super-board/configs/pc.json"
+        conf.parent.mkdir(parents=True)
+        conf.write_text(_json.dumps(_hub_cfg()), encoding="utf-8")
+        (root / "backend").mkdir()
+        rc, text, err = _run_main(root, root / "backend", [], _hub_page())
+        assert rc == 0 and "member backend of hub board pc" in err, err
+        assert "config: pc (hub acme/docs)" in text
+        rc, _, err = _run_main(root, root / "backend", ["other"], _hub_page())
+        assert rc == 66, "another slug is still not found"
+
+
 def _run() -> int:
     tests = [
         (name, fn) for name, fn in globals().items()

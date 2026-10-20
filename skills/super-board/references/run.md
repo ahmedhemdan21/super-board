@@ -254,6 +254,13 @@ e2e/streaming/ttfb.spec.ts:18   [qa] [issue] spec asserts status only — add a 
 
 Threads are resolved via `gh api graphql` `resolveReviewThread` mutation when the fix is committed.
 
+## Pack paths on a hub board
+
+`.claude/bin/<script>` and `.claude/skills/<path>` below are the pack's folders. On a hub
+board (hub.md → Cut-over) the pack lives only in the hub checkout: a member checkout and
+its worktrees have no `.claude/bin`. The wave prompt names the hub's absolute pack folder
+(`packDir`); call `<packDir>/bin/<script>` and read `<packDir>/skills/<path>` from any cwd.
+
 ## Lane lifecycles (per card)
 
 ### Builder pre-flight (before ANY card goes Ready → Building)
