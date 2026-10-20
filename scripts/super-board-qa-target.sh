@@ -69,6 +69,10 @@ state_root() {
   echo "$PWD/.claude/super-board/qa-local"
 }
 STATE=$(state_root)
+# A hub member's config names its member (hub.md → Run): two members' #7 share this
+# machine's port leases but never a state file. Single-repo configs: CARD = the issue.
+MEMBER=$(echo "$CFG" | jqx -r '.member // ""')
+CARD="${MEMBER:+$MEMBER-}${ISSUE}"
 ensure_state() {
   mkdir -p "$STATE/ports" || exit 66
   [ -e "$STATE/.gitignore" ] || printf '*\n' > "$STATE/.gitignore"
@@ -133,9 +137,9 @@ kill_tree() {  # <pid> <winpid>
   return 0
 }
 
-do_stop() {  # <issue>
+do_stop() {  # <issue> (state files by $CARD)
   local f pid winpid base slot dir stop_cmd
-  f=$(state_file "$1")
+  f=$(state_file "$CARD")
   [ -f "$f" ] || { echo "qa-local: issue #$1 has no running stack" >&2; return 0; }
   pid=$(jqx -r '.pid // empty' "$f"); winpid=$(jqx -r '.winpid // empty' "$f")
   base=$(jqx -r '.port_base' "$f"); slot=$(jqx -r '.slot' "$f"); dir=$(jqx -r '.worktree' "$f")
@@ -143,10 +147,10 @@ do_stop() {  # <issue>
   if [ -n "$stop_cmd" ]; then
     stop_cmd=$(subst "$stop_cmd" "$base")
     ( cd "$dir" 2>/dev/null || cd "$PWD"; SB_PORT_BASE="$base" SB_QA_ISSUE="$1" bash -c "$stop_cmd" ) \
-      >>"$STATE/issue-$1.log" 2>&1 || echo "qa-local: stop command failed for #$1; killing the process tree" >&2
+      >>"$STATE/issue-$CARD.log" 2>&1 || echo "qa-local: stop command failed for #$1; killing the process tree" >&2
   fi
   kill_tree "$pid" "$winpid"
-  rm -rf "$STATE/ports/$slot" "$f" "$STATE/issue-$1.env"
+  rm -rf "$STATE/ports/$slot" "$f" "$STATE/issue-$CARD.env"
   echo "qa-local: stopped #$1 (ports ${base}+${STRIDE})" >&2
 }
 
@@ -167,7 +171,7 @@ lease_slot() {
       rm -rf "$STATE/ports/$slot"; mkdir "$STATE/ports/$slot" 2>/dev/null || continue
     fi
     echo "$$" > "$STATE/ports/$slot/leaser"
-    echo "$n" > "$STATE/ports/$slot/issue"
+    echo "$CARD" > "$STATE/ports/$slot/issue"
     # Something outside the board already answering on the block's first port.
     if curl -s -o /dev/null --max-time 2 "http://127.0.0.1:${base}/" 2>/dev/null; then
       rm -rf "$STATE/ports/$slot"; continue
@@ -177,8 +181,8 @@ lease_slot() {
   return 1
 }
 
-local_exports() {  # <issue>: from the env file a start wrote
-  local f="$STATE/issue-$1.env"
+local_exports() {  # from the env file a start wrote for $CARD
+  local f="$STATE/issue-$CARD.env"
   [ -f "$f" ] && cat "$f"
 }
 
@@ -196,7 +200,7 @@ case "$CMD" in
     exit 0 ;;
 
   env)
-    if [ -n "$ISSUE" ] && [ -f "$STATE/issue-$ISSUE.env" ]; then local_exports "$ISSUE"; exit 0; fi
+    if [ -n "$ISSUE" ] && [ -f "$STATE/issue-$CARD.env" ]; then local_exports; exit 0; fi
     remote_targets | print_exports
     exit 0 ;;
 
@@ -214,11 +218,11 @@ case "$CMD" in
     WORKTREE=$(cd "$WORKTREE" && pwd)
     ensure_state
     # A stack left by a crashed lane for this card is stopped before a new one starts.
-    [ -f "$(state_file "$ISSUE")" ] && do_stop "$ISSUE"
+    [ -f "$(state_file "$CARD")" ] && do_stop "$ISSUE"
     LEASE=$(lease_slot "$ISSUE") || { echo "qa-local: no free port block (${SLOTS} x ${STRIDE} from ${PORT_BASE})" >&2; exit 5; }
     SLOT=${LEASE% *}; BASE=${LEASE#* }
     CMDLINE=$(subst "$START_CMD" "$BASE")
-    LOG="$STATE/issue-$ISSUE.log"; : > "$LOG"
+    LOG="$STATE/issue-$CARD.log"; : > "$LOG"
     # Own process group (setsid, else job control) so stop can take the whole tree.
     if command -v setsid >/dev/null 2>&1 && ! is_windows; then
       ( cd "$WORKTREE" && SB_PORT_BASE="$BASE" SB_QA_ISSUE="$ISSUE" setsid bash -c "$CMDLINE" ) >>"$LOG" 2>&1 </dev/null &
@@ -233,7 +237,7 @@ case "$CMD" in
     jqx -n --argjson pid "$PID" --arg winpid "$WINPID" --argjson base "$BASE" --argjson slot "$SLOT" \
       --arg worktree "$WORKTREE" --argjson issue "$ISSUE" --arg started "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       '{issue:$issue, pid:$pid, winpid:$winpid, port_base:$base, slot:$slot, worktree:$worktree, started:$started}' \
-      > "$(state_file "$ISSUE")"
+      > "$(state_file "$CARD")"
     HEALTH=$(echo "$CFG" | jqx -r '.qa.local.health[] | "\(.name // "app")\t\(.url)"')
     RESOLVED=""
     while IFS=$'\t' read -r name url; do
@@ -262,9 +266,9 @@ case "$CMD" in
       echo "export SB_QA_ISSUE=$ISSUE"
       echo "export SB_PORT_BASE=$BASE"
       printf '%s' "$RESOLVED" | print_exports
-    } > "$STATE/issue-$ISSUE.env"
+    } > "$STATE/issue-$CARD.env"
     echo "qa-local: #$ISSUE healthy on ports ${BASE}..$((BASE + STRIDE - 1)) (pid $PID, log $LOG)" >&2
-    local_exports "$ISSUE"
+    local_exports
     exit 0 ;;
 
   auth)
@@ -272,7 +276,7 @@ case "$CMD" in
     [ -n "$AUTH_CMD" ] || { echo "qa-target: qa.auth_command not configured — use super-qa's default login" >&2; exit 0; }
     umask 077
     OUT=$(mktemp -d "${TMPDIR:-/tmp}/super-board-auth-${ISSUE:-x}-XXXXXX") || exit 66
-    EXPORTS=$( if [ -n "$ISSUE" ] && [ -f "$STATE/issue-$ISSUE.env" ]; then local_exports "$ISSUE"; else remote_targets | print_exports; fi )
+    EXPORTS=$( if [ -n "$ISSUE" ] && [ -f "$STATE/issue-$CARD.env" ]; then local_exports; else remote_targets | print_exports; fi )
     # Output is captured to files and never echoed: it holds tokens.
     ( eval "$EXPORTS"; SB_QA_ISSUE="${ISSUE:-}" bash -c "$AUTH_CMD" ) >"$OUT/auth.out" 2>"$OUT/auth.err"
     RC=$?

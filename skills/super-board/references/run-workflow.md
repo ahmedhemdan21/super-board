@@ -85,9 +85,13 @@ The interactive session that runs this backend is the orchestrator. It:
 ## Preconditions (before the first wave)
 
 Run the same preconditions as `run.md` §Preconditions, minus PID checks:
-0. Hub gate: `python3 .claude/bin/super-board-config.py run-gate --config <config>`.
-   Exit 78 = a hub (`members`) config: it plans and resolves, but running one arrives in
-   P4 (hub.md). Stop and tell the user; run a member's single-repo config instead.
+0. Hub gate: `python3 .claude/bin/super-board-config.py run-gate --config <config>`
+   (`--backend codex` for a Codex run, explicit, host-switched or fallback). Exit 78 = a hub
+   (`members`) config on a backend other than this workflow: stop and tell the user. A hub
+   config passes on the workflow backend and runs every member together (hub.md → Run (P4)):
+   run the per-repo checks below (verification, production-merge guard, worktree scan,
+   database reach) once per member, on its resolved config
+   (`super-board-config.py member <key> --config <config> --path`) and in its checkout.
 1. Config exists and validates against `config-schema.json`. Run
    `python3 .claude/bin/super-board-verification-ready.py --config <config>`; exit 9
    stops before dispatch until the owning project's verification commands are configured.
@@ -114,6 +118,11 @@ Run the same preconditions as `run.md` §Preconditions, minus PID checks:
       remains is the marker stale from a crashed run — replace it.
       Remove the lock when the run ends or stops. The legacy dispatcher
       refuses to start (and halts mid-run) while it exists.
+      **Hub config:** the lock above is the hub checkout's. Then, for each member checkout
+      (`super-board-config.py members`), refuse to start if its `workflow-wave.lock` or
+      `codex-wave.pid` names a live run (remove yours and stop: a member's own run won), else
+      create the same marker there with an extra `HUB=<hub owner/repo>` line. A member run
+      that finds a `HUB=` marker never replaces it. Release every marker you created at the end.
    b. THEN verify no legacy run is active: BOTH
       `pgrep -f 'super-board-run.sh'` (the legacy dispatcher idles between
       dispatches with zero workers alive) and
@@ -147,6 +156,8 @@ Repeat until a done condition or halt gate fires:
    **Usage guard** (Claude waves only; skip for `--codex`, explicit or host-switched) — `bash .claude/bin/super-board-usage.sh check --config <config-path>`
    (Claude 5-hour and weekly plan usage; threshold `usage_pause_pct`, default 95):
    - exit 0 → launch.
+   - exit 10 on a hub config → pause (below), even with `usage_fallback: "codex"`: a hub
+     runs on Claude workflow waves only (step 0).
    - exit 10 with `usage_fallback: "codex"` → resolve the selected remaining
      chain for `--host codex` before fallback claims; missing helpers halt with
      `skills-readiness:` and preserve state. Build/QA may use
@@ -256,7 +267,7 @@ Repeat until a done condition or halt gate fires:
    there is no cross-session claim at all, so never run two orchestrators
    (or /loop re-entries) against the same board without bot_identity.
 4. **Launch** — With `--codex`, or no Workflow tool, or the host check printing `codex`, use
-   "Codex runs" above; otherwise Workflow tool with
+   "Codex runs" above (a hub config refuses it: step 0); otherwise Workflow tool with
    `scriptPath: .claude/workflows/super-board-wave.js` and
    `args: { configPath, cards, humanApprovesMerge, tier }` (`cards` hydrated after the planner: each
    carries `lane` and `labels`, and a `qa` card skips the Builder). Runs in the background; the
@@ -273,6 +284,10 @@ Repeat until a done condition or halt gate fires:
    carries it as `deploy` (`healthy` · `skipped` · `failed` + `bug` · `halted`) and the
    manifest's `lanesRun` ends `→ deploy:<status>`; report a `failed` one as a line with its bug.
    The QA lane runs pass one against `qa.local` / `target.urls` (run.md → Tester step 2).
+   **Hub config:** `configPath` is the hub config and `cards` are the planner's, each with its
+   `member`, `configPath`, `checkout`, `baseBranch` and `deploy`; omit the wave-level `deploy`
+   (each member card carries its own). Claim, release and comment with each card's
+   `--repo <repository>`.
 5. **Reconcile** (when the run completes) — read the returned `cards`
    summary. If `halted: true`, any card is `halted`, or the GitHub helper's `--check`
    fails, preserve claims and stop. For verification-readiness (exit 9), repair
@@ -283,6 +298,9 @@ Repeat until a done condition or halt gate fires:
    Append one line per card to the run manifest
    `docs/super-board/runs/<date>-<slug>.md`:
    `| #N | <lanesRun> | <finalStatus> | <column> | <detail> |`.
+   **Hub config:** then run `python3 .claude/bin/super-board-split.py close-parents --config
+   <config>`; it closes every parent whose children all closed as completed and comments once
+   on a parent with a not-planned child. Its exit 79 is a read halt like any other.
    Then the GitHub-limit step-down: save the returned `cards` to a temp file and run
    `bash .claude/bin/super-board-throttle.sh --config <config-path> --results <file>`.
    `hit: true` (GraphQL at 0, or a lane failed on the limit) has already written
@@ -298,6 +316,14 @@ Repeat until a done condition or halt gate fires:
    Next: wave 4 (3 cards)   |   ⏸ paused until 14:05   |   ✅ board drained
    ```
    A throttle hit adds one line: `🐢 GitHub hourly limit hit — max_workers 3 → 2 (config saved)`.
+   A hub wave groups the card lines by member and names cards `owner/repo#N`; the first line
+   adds a count per member, and closed parents get one line:
+   ```
+   Wave 3 · 6 cards (backend 4 · frontend 2) → 3 merged · 2 bounced · 1 blocked
+     backend  🛡 acme/api#15 Blocked 🔐 missing STRIPE_TEST_KEY — owner: Eric
+     frontend ❌ acme/web#18 failed: build lane returned no result — retried next wave
+     ✅ parents closed: acme/docs#4
+   ```
    Merged and bounced cards are counts, not lines — they need nobody. Every
    `human-gate`/`blocked` card gets its line and its owner: that is the
    human's queue. Never report a card as done that is not on the base branch.

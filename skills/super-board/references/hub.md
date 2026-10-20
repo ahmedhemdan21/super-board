@@ -47,14 +47,13 @@ GitHub spells them.
   read each issue with `--repo <its repo>`.
 - A submodule keeps its own `.claude/super-board/` (halt file, card cache) in its own checkout.
 
-Later: member cards (P4) get worktree and branch names with a member prefix, so `issue-7` of
-two members never share a folder.
+Member cards (P4) get worktree and branch names with a member prefix, so `issue-7` of two
+members never share a folder (Run (P4) below).
 
 ## Config
 
-P2: a hub config plans and resolves; running a members board arrives in P4. Until then
-`/super-board run` refuses one (`super-board-config.py run-gate`, exit 78), as do the
-legacy runner and the Codex wave.
+A hub config plans, resolves and runs (P4, Run below) on the workflow backend. The legacy
+runner and the Codex wave refuse one (`super-board-config.py run-gate`, exit 78).
 
 ```json
 { "project": { "owner": "acme", "title": "Acme", "number": 3 },
@@ -80,8 +79,9 @@ legacy runner and the Codex wave.
   `target`/`qa`, `env_check`, `runtime_verification`, `refine`, `writing`, `paths`, `guard`,
   `linked_repos`, `collect` (merged one level: a member's `collect.sources` replaces the board's).
 - **Per board** (a member setting one is refused): `project`, `columns`, `labels`, `triage`,
-  `max_workers`, `worker_backend`, `model_tier`, `no_progress_cycles`, `rebuild_cap`,
-  `notifications`.
+  `worker_backend`, `model_tier`, `no_progress_cycles`, `rebuild_cap`, `notifications`.
+- **Both**: `max_workers` caps the wave at the top level and one member's share under
+  `members.<k>` (Run below).
 
 `scripts/super-board-config.py` is the one resolver:
 
@@ -91,12 +91,11 @@ legacy runner and the Codex wave.
 | `member <key> --config C [--out F \| --path]` | a full single-repo config: `repo.path` absolute, `member`, `hub_config`, the other members added to `linked_repos`. `--path` caches it at `.claude/super-board/resolved/<slug>.<key>.json` (gitignored; rebuilt when the source is newer) and prints the path |
 | `members --config C` | `[{key, repo, path}]`; a single-repo config is one member with key `""` |
 | `for-repo <owner/name> --config C` | the member key; exit 3 when not a member |
-| `run-gate --config C` | exit 78 for a members config |
+| `run-gate --config C [--backend B]` | exit 78 for a members config on `claude-p` or `codex` (default: the config's `worker_backend`); 0 on `workflow` and for every single-repo config |
 
 Every single-repo script (merge gate, deploy wait, preflight, verify, card.sh) takes the
 resolved config unchanged. `super-board-wave-plan.sh --config <hub config>` plans each member
-as home over one board read: every card carries `member`, `foreign` lists only repos that
-are no member (the hub's own parents too, until P3), `max_workers` caps the merged wave.
+as home over one board read (Run below).
 `super-board-github-read.py --check --config C` checks the hub's and every member's halt
 file. Every `gh issue|pr|run` call names `--repo`.
 
@@ -156,13 +155,51 @@ Decision file (`body_file` relative to the decision file's folder):
   write exits 69 and prints what was written. Rerun the same `apply`.
 
 **Parents stay off the lanes.** A parent is labelled `parent` and sits in Backlog, which the
-planner never plans. TODO at integration (P2/P4): `super-board-wave-plan.sh` must also skip a
-`parent`-labelled card in Ready, and the status reader should show it as a parent.
+planner never plans. A `parent` card dragged to Ready is skipped too and listed in the plan's
+`parents` (Run below). Later (P6): the status reader shows it as a parent.
 
 **close-parents.** GitHub never closes a parent. For every open hub issue with sub-issues:
 every child closed `COMPLETED` → comment listing them and close the parent as completed; any
 child closed `NOT_PLANNED` → leave it open and comment once (`<!-- sb-parent-needs-human -->`)
-that a human must decide. Run it once a wave, or after a merge.
+that a human must decide. A hub run calls it after every wave's reconcile.
+
+## Run (P4)
+
+`/super-board run <hub slug>` runs the whole hub board: one wave loop, cards of every member
+together. It runs on the workflow backend only; `super-board-config.py run-gate` refuses a hub
+on the legacy `claude-p` runner and the Codex wave (`--codex`, Codex host, usage fallback) with
+exit 78. Run from the hub checkout with the hub config; the orchestrator never reads a member's
+settings from the cwd.
+
+- **Plan.** `super-board-wave-plan.sh --config <hub config>` plans every member over one board
+  read. Each card carries `member`, `repository`, `configPath` (the member's resolved config,
+  `member <key> --path`), `checkout`, `baseBranch` and `deploy` (that member has a `deploy`
+  block whose branch is its base). A `parent`-labelled card, in the hub or a member, is never
+  planned: it is listed in `parents`. The hub repo's other issues are `foreign` ("triage
+  splits it"). Cross-member blockers count like home ones: a frontend card blocked by a
+  backend issue is swept to Ready when that issue closes.
+- **Shares.** Top-level `max_workers` caps the wave. Each member gets
+  `members.<k>.max_workers`, else an even share, `ceil(max_workers / members)`. A member with
+  fewer free cards leaves its unused slots to the others; a member's own `max_workers` is a hard
+  cap. In-flight cards (Review, QA) go first. Unset or 0 = no cap, as on one repo.
+- **Wave.** `super-board-wave.js` gets `configPath` = the hub config and the planned cards.
+  Every prompt about a card names that card's config, `--repo`, checkout and base branch.
+  Names carry the member key: worktree `<checkout>/.claude/worktrees/<member>-issue-<N>-<lane>/`,
+  branch `<member>-issue-<N>-<slug>`, lane labels `build:backend#7`, so `issue-7` of two
+  members never share a folder, a branch or a pre-flight verdict. Pre-flight batches one
+  member at a time (`super-board-preflight.sh --member <key>` knows its own branch).
+- **Locks.** The merge gate locks per repo (`<member checkout>/.claude/super-board/inflight/merge.lock`);
+  the post-merge dev check waits per member; QA stacks lease ports from one pool, state per
+  `<member>-<N>`. The run lock is the hub's `workflow-wave.lock`, plus the same marker
+  (with `HUB=<hub owner/repo>`) in each member checkout so a member's own single-repo run
+  cannot start beside it. A member checkout already holding a live lock stops the hub run.
+- **Halt.** One halt stops the whole board: `super-board-github-read.py --check --config <hub
+  config>` reads the hub's and every member's halt file.
+- **Each wave.** After reconcile, `super-board-split.py close-parents --config <hub config>`
+  closes every parent whose children all closed as completed. The wave report groups lines
+  by member.
+
+A single-repo config runs exactly as before: no member fields, no prefixes, no close-parents.
 
 ## Intake (P5)
 
@@ -183,8 +220,8 @@ Reports are filed once. `/super-collect` runs from the hub checkout with the hub
 - The Slack thread reply links the hub issue (or the dedupe hit); a later transfer keeps the
   link working (GitHub redirects).
 - Scheduled intake: a job whose `repo` is the hub checkout and `config` the hub config, steps
-  `["collect"]`. "Board busy" and halt checks cover every member checkout; a `run` step on a hub
-  config is refused until P4.
+  `["collect"]`. "Board busy" and halt checks cover every member checkout; a `run` step runs
+  the whole hub board (Run (P4)).
 - Install: `install.sh <hub checkout>` installs the full pack into the hub's `.claude/`; member
   submodules keep their own `.claude/` untouched. Scripts resolve member paths through
   `super-board-config.py`, never cwd. Collector keys (`SLACK_BOT_TOKEN`, …) go in the hub's

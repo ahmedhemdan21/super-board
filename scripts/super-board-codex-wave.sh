@@ -62,9 +62,9 @@ try:
     pinned = codex[0].startswith('--codex=') or (isinstance(configured, str) and configured.strip())
 except (OSError, ValueError, subprocess.CalledProcessError) as error:
     parser.error(str(error))
-# A hub (members) config plans but does not run until P4 (hub.md): exit 78.
+# A hub (members) config runs on the Claude workflow backend only (hub.md → Run): exit 78.
 gate = subprocess.run([sys.executable, str(launcher.with_name('super-board-config.py')), 'run-gate',
-                       '--config', str(config_path)])
+                       '--backend', 'codex', '--config', str(config_path)])
 if gate.returncode:
     sys.exit(gate.returncode)
 readiness = launcher.with_name('super-board-verification-ready.py')

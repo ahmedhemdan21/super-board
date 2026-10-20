@@ -91,8 +91,8 @@ GH_REPO_NAME=$(jq -r '.repo.remote // ""' "$CONFIG_PATH" | tr -d '\r' | sed -E '
 NO_PROGRESS_CYCLES=$(jq -r '.no_progress_cycles // 6' "$CONFIG_PATH")
 MAX_DISPATCHES=$(jq -r '.max_dispatches // 0' "$CONFIG_PATH")
 
-# A hub (members) config plans but does not run until P4 (hub.md): exit 78.
-python3 "$(dirname "$SB_GITHUB_READ")/super-board-config.py" run-gate --config "$CONFIG_PATH" || exit $?
+# A hub (members) config runs on the workflow backend only (hub.md → Run): exit 78 here.
+python3 "$(dirname "$SB_GITHUB_READ")/super-board-config.py" run-gate --backend claude-p --config "$CONFIG_PATH" || exit $?
 
 # Workflow is the default backend (v1.6.0). This legacy dispatcher only runs
 # when the config opts in explicitly — never by accident or stale habit.

@@ -126,4 +126,18 @@ jq -n '[range(100) | {number: (500 + .), title: "Unrelated change \(.)", body: (
 OUT11=$(run --issues 23)
 echo "$OUT11" | jq -e '.["23"].verdict == "proceed"' >/dev/null || fail "a large open-PR list must still be read: $OUT11"
 
-echo "PASS: test-preflight.sh (11 scenarios)"
+# 12 — a hub member card's own branch carries the member key (hub.md → Run):
+#      backend-issue-23-* is #23 coming back with --member backend, and still a
+#      duplicate in flight without it (single-repo boards are unchanged).
+cat > "$FX/open.json" <<'J'
+[ {"number":43,"title":"Weekly digest email","body":"Resolves #23","url":"u43","headRefName":"backend-issue-23-weekly-digest",
+   "files":[{"path":"src/mail/digest.ts"}]} ]
+J
+run --issues 23 --member backend | jq -e '.["23"].verdict == "proceed"' >/dev/null \
+  || fail "the member-prefixed branch is the card's own with --member"
+run --issues 23 | jq -e '.["23"].verdict == "hold" and .["23"].tag == "in-progress"' >/dev/null \
+  || fail "without --member a prefixed branch is another PR, as before"
+run --issues 23 --member frontend | jq -e '.["23"].verdict == "hold"' >/dev/null \
+  || fail "another member's prefix is not this card's branch"
+
+echo "PASS: test-preflight.sh (12 scenarios)"

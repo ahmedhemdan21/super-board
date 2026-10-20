@@ -35,6 +35,7 @@
 #                            [--inflight <cards.json>]   # [{number,title,status}] board cards
 #                            [--files a/b.ts,c/d.ts]     # paths the card will touch (else: parsed from body)
 #                            [--threshold 0.6]           # title Jaccard for a duplicate
+#                            [--member <key>]            # hub board: own branch is also <key>-issue-<N>-*
 #
 # Stdout, one object keyed by issue number:
 #   { "14": { "number": 14, "title": "…", "verdict": "proceed|hold|sequence",
@@ -48,7 +49,7 @@ set -euo pipefail
 # Fixed read commands: a malformed payload is GitHub's, so it halts (#32).
 export SB_GITHUB_READ_STRICT=1
 
-REPO=""; ISSUES=""; INFLIGHT=""; FILES=""; THRESHOLD="0.6"
+REPO=""; ISSUES=""; INFLIGHT=""; FILES=""; THRESHOLD="0.6"; MEMBER=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo)      REPO="$2"; shift 2 ;;
@@ -56,6 +57,7 @@ while [ $# -gt 0 ]; do
     --inflight)  INFLIGHT="$2"; shift 2 ;;
     --files)     FILES="$2"; shift 2 ;;
     --threshold) THRESHOLD="$2"; shift 2 ;;
+    --member)    MEMBER="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 64 ;;
   esac
 done
@@ -86,7 +88,7 @@ done
 # other files one list each, unwrapped where the filter starts.
 jq -n --slurpfile targets "$WORK/targets.json" --slurpfile merged "$WORK/merged.json" --slurpfile open "$WORK/open.json" \
       --slurpfile closed "$WORK/closed.json" --slurpfile cards "$WORK/cards.json" --arg files "$FILES" \
-      --argjson th "$THRESHOLD" '
+      --argjson th "$THRESHOLD" --arg member "$MEMBER" '
   def stop: ["the","and","for","with","from","into","when","that","this","add","fix","make","use","should","not","are","can","new"];
   def toks: ascii_downcase | [scan("[a-z0-9]+")] | map(select(length > 2)) | . - stop | unique;
   def sim($a; $b): ($a | toks) as $x | ($b | toks) as $y
@@ -109,8 +111,10 @@ jq -n --slurpfile targets "$WORK/targets.json" --slurpfile merged "$WORK/merged.
   | [ $targets[] | . as $i | $i.number as $n
     | ($i | fps) as $myfp
     | (if $files == "" then ($i | paths) else ($files / ",") end) as $mine
-    # Own branch = this card coming back (rebuild, rebase); never its own duplicate.
-    | [ $open[] | select((.headRefName // "") | startswith("issue-\($n)-") | not) ] as $others
+    # Own branch = this card coming back (rebuild, rebase); never its own duplicate. A hub
+    # member card branch carries the member key (hub.md → Run): <member>-issue-<N>-<slug>.
+    | [ $open[] | select((.headRefName // "") | startswith("issue-\($n)-")
+                         or ($member != "" and startswith("\($member)-issue-\($n)-")) | not) ] as $others
 
     | ( [ $merged[] | select(closes($n)) | "PR #\(.number) merged and closes #\($n)" ]
       + [ $merged[] | select(($myfp | length) > 0 and (fps - (fps - $myfp) | length) > 0)

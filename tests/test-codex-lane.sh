@@ -244,6 +244,17 @@ wave --codex >"$T/out"
 jq -e '.cards[0].finalStatus == "failed" and (.cards[0].detail | contains("could not start"))' "$T/out" >/dev/null || fail 'startup failure needs structured result'
 rmdir .claude/super-board/inflight/1
 
+# A hub (members) config runs on the Claude workflow backend only (hub.md → Run (P4)).
+mkdir -p "$T/hub/.claude/super-board/configs"
+jq -n '{project:{owner:"acme", number:3}, hub:{remote:"https://github.com/acme/docs"},
+  members:{backend:{repo:{path:"backend", remote:"https://github.com/acme/api"}, base_branch:"dev"}},
+  verify_commands:["git diff --check"]}' > "$T/hub/.claude/super-board/configs/hub.json"
+: > "$SB_CODEX_TEST_LOG"
+RC=0; bash "$KIT/scripts/super-board-codex-wave.sh" --config "$T/hub/.claude/super-board/configs/hub.json" \
+  --cards '[{"number":1,"status":"Review"}]' --codex >/dev/null 2>"$T/stderr" || RC=$?
+[ "$RC" -eq 78 ] && grep -q 'workflow backend only' "$T/stderr" && [ ! -s "$SB_CODEX_TEST_LOG" ] \
+  || fail "a Codex wave must refuse a hub config before any lane (got $RC)"
+
 # TERM reaps the Codex process group and its descendants before lock cleanup.
 # Windows: Git Bash cannot deliver SIGTERM to native Python (its PIDs are Windows
 # PIDs), so the wave's TERM handler never runs there; the cancellation path is POSIX-only.

@@ -268,11 +268,16 @@ class Execute(unittest.TestCase):
         self.assertEqual(run["status"], "ok", run)
         self.assertEqual(s.board_repo_name(self.hub_repo()), "acme/docs", "runs issue in the hub repo")
 
-    def test_hub_config_run_step_is_refused(self):
-        self.hub_repo()
+    def test_hub_config_runs_on_the_workflow_backend_only(self):
+        cfg = self.hub_repo()
+        _, run = self.sched(config="hub").execute("nightly", "manual")
+        self.assertEqual(run["status"], "ok", run)
+        self.assertEqual([x["prompt"] for x in run["steps"]][-1], "/super-board run hub", "P4: one run for the hub")
+        cfg["worker_backend"] = "claude-p"
+        (self.repo / ".claude" / "super-board" / "configs" / "hub.json").write_text(json.dumps(cfg), encoding="utf-8")
         _, run = self.sched(config="hub").execute("nightly", "manual")
         self.assertEqual(run["status"], "failed")
-        self.assertIn("P4", run["error"])
+        self.assertIn("never the legacy claude-p runner", run["error"])
 
     def test_run_record_and_summary_from_snapshots(self):
         # The stub's collect step writes the receipt mid-run (a pre-stamped `now + 1` raced

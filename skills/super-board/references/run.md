@@ -60,7 +60,7 @@ bounded receipt and delegate the external skill after normal final reconciliatio
 
 | Check | Action on fail |
 |---|---|
-| Not a hub config | `python3 .claude/bin/super-board-config.py run-gate --config <config>`. Exit 78: a `members` config plans but does not run until P4 (hub.md). |
+| Hub runs on workflow only | `python3 .claude/bin/super-board-config.py run-gate --backend claude-p --config <config>` (this runner). Exit 78: a `members` config runs on the workflow backend only (hub.md → Run (P4)). |
 | Usable verification commands | Run `python3 .claude/bin/super-board-verification-ready.py --config <config>`. Exit 9 halts setup before dispatch: configure the owning project's checks, then restart explicitly. |
 | Active config exists | Halt: "Run `super-board onboard` first." |
 | Project + required columns exist | Halt: "Project / columns missing. Run `super-board onboard` to repair." |
@@ -89,7 +89,13 @@ label picks its path — three labels, no per-board variant:
 
 `super-board-wave-plan.sh` puts `lane` (`build` / `qa` / `review`) and `labels` on every picked
 card; `super-board-wave.js` sends a `qa` card from Ready straight to the Tester. The legacy runner
-reads the label of the top Ready card the same way (`card_lane`).
+reads the label of the top Ready card the same way (`card_lane`). A `parent`-labelled card on a
+hub board takes no lane (hub.md → Run (P4)).
+
+**Hub member cards** (hub.md → Run (P4)) carry their member key in every name below:
+worktree `<member checkout>/.claude/worktrees/<member>-issue-<N>-build|qa|review/`, branch
+`<member>-issue-<N>-<slug>` off that member's base branch, every script run with the card's
+`configPath` and every `gh` call with `--repo <card repository>`. Single-repo cards are unchanged.
 
 ```
 Builder:   Ready → Building → QA
