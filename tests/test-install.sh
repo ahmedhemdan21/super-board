@@ -350,4 +350,89 @@ RC=0; (cd / && python3 "$H/.claude/bin/super-board-github-read.py" --check --con
 [ "$RC" -eq 79 ] || fail "hub install: a member's halt must stop the hub check (got $RC)"
 rm -rf "$H"
 
-echo "PASS: test-install.sh (19 scenarios)"
+# 20 — cut-over (hub.md → Cut-over). --hub installs the full pack and validates the hub
+#      config; --member installs guard hooks + the AGENTS.md member block only;
+#      --remove-pack lists (dry run) then, with --apply, deletes ONLY the pack's own files:
+#      configs, hooks, settings, other skills and other bin files stay.
+H=$(mktemp -d)
+mkdir -p "$H/.claude/super-board/configs" "$H/backend" "$H/frontend"
+cat > "$H/.claude/super-board/configs/pc.json" <<'JSON'
+{"project":{"owner":"acme","title":"Acme","number":3},
+ "hub":{"remote":"https://github.com/acme/docs","path":"."},
+ "members":{"backend":{"repo":{"path":"backend","remote":"https://github.com/acme/api"},"base_branch":"dev"},
+            "frontend":{"repo":{"path":"frontend","remote":"https://github.com/acme/web"},"base_branch":"main"}}}
+JSON
+printf '# AGENTS.md\n- hub rule\n<!-- super-board:begin v0.0.1 -->\nold\n<!-- super-board:end -->\n' > "$H/AGENTS.md"
+"$INSTALL" "$H/backend" >/dev/null 2>&1                       # the old per-repo full install
+mkdir -p "$H/backend/.claude/super-board/configs" "$H/backend/.claude/skills/own-skill"
+echo '{"repo":{"remote":"https://github.com/acme/api"}}' > "$H/backend/.claude/super-board/configs/api.json"
+echo own > "$H/backend/.claude/skills/own-skill/SKILL.md"
+echo mine > "$H/backend/.claude/bin/my-tool.sh"
+OUT=$("$INSTALL" --hub "$H" 2>&1) || fail "--hub on a valid hub config failed: $OUT"
+[ -x "$H/.claude/bin/super-board-wave-plan.sh" ] && [ -f "$H/.claude/skills/super-board/SKILL.md" ] || fail "--hub installs the full pack"
+echo "$OUT" | grep -q "🏠 hub config pc: valid · 2 member(s)" || fail "--hub reports the valid hub config: $OUT"
+echo "$OUT" | grep -q "backend (acme/api): hooks ✓ · old full pack" || fail "--hub flags backend's old full pack: $OUT"
+echo "$OUT" | grep -q "frontend (acme/web): hooks missing" || fail "--hub flags frontend's missing hooks: $OUT"
+echo "$OUT" | grep -q -- "--member --remove-pack .*backend" || fail "--hub names the removal command: $OUT"
+grep -q '^- hub rule$' "$H/AGENTS.md" && grep -q '^### Hub board `pc`$' "$H/AGENTS.md" \
+  && grep -q '^| frontend | acme/web | `frontend` | main |$' "$H/AGENTS.md" || fail "hub AGENTS.md block lists the hub board: $(cat "$H/AGENTS.md")"
+# an invalid hub config: the pack still lands, the run exits 65 naming the reason
+cp "$H/.claude/super-board/configs/pc.json" "$H/pc.bak"
+jq '.members.frontend.repo.remote = "https://github.com/acme/api"' "$H/pc.bak" > "$H/.claude/super-board/configs/pc.json"
+RC=0; OUT=$("$INSTALL" --hub "$H" 2>&1) || RC=$?
+[ "$RC" -eq 65 ] && echo "$OUT" | grep -q "remotes must be unique" || fail "--hub must exit 65 on an invalid hub config (rc $RC): $OUT"
+mv "$H/pc.bak" "$H/.claude/super-board/configs/pc.json"
+# --member on frontend (never installed): hooks + member block, no pack
+OUT=$("$INSTALL" --member "$H/frontend" 2>&1) || fail "--member failed: $OUT"
+[ -f "$H/frontend/.claude/hooks/guard-protected-push.py" ] && [ -f "$H/frontend/.claude/hooks/cleanup-wt.py" ] || fail "--member installs the hooks"
+jq -e '[.hooks.SessionStart[].hooks[].command | select(contains("cleanup-wt.py --auto"))] | length == 1' "$H/frontend/.claude/settings.json" >/dev/null \
+  || fail "--member wires the hooks in settings.json"
+[ ! -e "$H/frontend/.claude/bin" ] && [ ! -e "$H/frontend/.claude/skills" ] && [ ! -e "$H/frontend/.claude/workflows" ] \
+  || fail "--member must not install skills, scripts or workflows"
+grep -q 'member `frontend` of the hub board `pc`' "$H/frontend/AGENTS.md" && grep -q '/super-board run pc' "$H/frontend/AGENTS.md" \
+  && grep -q 'checkout `..` from here' "$H/frontend/AGENTS.md" || fail "member block names the hub, slug and path: $(cat "$H/frontend/AGENTS.md")"
+grep -q '{{' "$H/frontend/AGENTS.md" && fail "member block left a placeholder"
+echo "$OUT" | grep -q "member frontend of hub board pc (acme/docs)" || fail "--member names the hub: $OUT"
+# --remove-pack dry run: lists, deletes nothing
+BEFORE=$(cd "$H/backend" && find . | sort)
+OUT=$("$INSTALL" --member --remove-pack "$H/backend" 2>&1) || fail "--remove-pack dry run failed: $OUT"
+echo "$OUT" | grep -q "dry run" && echo "$OUT" | grep -q -- "- .claude/bin/super-board-run.sh" \
+  && echo "$OUT" | grep -q -- "- .claude/skills/super-board$" || fail "dry run lists the pack files: $OUT"
+echo "$OUT" | grep -q "my-tool.sh\|own-skill\|configs" && fail "dry run must list only pack files: $OUT"
+AFTER=$(cd "$H/backend" && find . | grep -v -e '^./AGENTS.md$' -e '^./.claude/settings.json' | sort)
+[ "$(echo "$BEFORE" | grep -v -e '^./.claude/settings.json' | sort)" = "$AFTER" ] || fail "a dry run must delete nothing"
+# --apply: exactly the pack's files go
+OUT=$("$INSTALL" --member --remove-pack --apply "$H/backend" 2>&1) || fail "--remove-pack --apply failed: $OUT"
+for p in skills/super-board skills/super-build skills/ui-refine-loop bin/super-board-run.sh bin/super-board-config.py workflows/super-board-wave.js; do
+  [ ! -e "$H/backend/.claude/$p" ] || fail "--apply should remove .claude/$p"
+done
+[ ! -e "$H/backend/.claude/workflows" ] || fail "an emptied workflows/ folder goes"
+[ "$(cat "$H/backend/.claude/super-board/configs/api.json")" = '{"repo":{"remote":"https://github.com/acme/api"}}' ] \
+  || fail "configs under .claude/super-board/ are never touched"
+[ "$(cat "$H/backend/.claude/skills/own-skill/SKILL.md")" = own ] && [ "$(cat "$H/backend/.claude/bin/my-tool.sh")" = mine ] \
+  || fail "only pack files are removed: a project skill or bin file stays"
+for h in guard-worktree-path.py guard-prod.py cleanup-wt.py; do [ -f "$H/backend/.claude/hooks/$h" ] || fail "hooks stay ($h)"; done
+echo "$OUT" | grep -q "removed .* pack path(s)" || fail "--apply prints what it removed: $OUT"
+OUT=$("$INSTALL" --member --remove-pack "$H/backend" 2>&1)
+echo "$OUT" | grep -q "no pack files left" || fail "a second dry run finds nothing: $OUT"
+OUT=$("$INSTALL" --hub "$H" 2>&1)
+echo "$OUT" | grep -q "✓ backend (acme/api): hooks ✓" && echo "$OUT" | grep -q "✓ frontend (acme/web): hooks ✓" \
+  || fail "after the cut-over --hub reports clean members: $OUT"
+# refusals: flag misuse, the hub as a member, the pack's own folder
+for bad in "--hub --member $H/frontend" "--remove-pack $H/frontend" "--apply --member $H/frontend" \
+           "--member --no-hooks $H/frontend" "--member $H" "--hub-dir $H $H/frontend"; do
+  RC=0; "$INSTALL" $bad >/dev/null 2>&1 || RC=$?
+  [ "$RC" -eq 64 ] || fail "install.sh $bad should exit 64, got $RC"
+done
+RC=0; "$INSTALL" --member .. >/dev/null 2>&1 || RC=$?
+[ "$RC" -eq 64 ] || fail "--member on the pack itself must be refused, got $RC"
+# a member the hub config does not name: hooks still install, the block has placeholders + a warning
+X=$(mktemp -d)
+OUT=$("$INSTALL" --member "$X" 2>&1) || fail "--member on an unknown checkout failed: $OUT"
+echo "$OUT" | grep -q "no hub config names this checkout" || fail "unknown member warns: $OUT"
+[ -f "$X/.claude/hooks/guard-prod.py" ] || fail "unknown member still gets the hooks"
+OUT=$("$INSTALL" --member --hub-dir "$H" "$H/backend" 2>&1)
+echo "$OUT" | grep -q "member backend of hub board pc" || fail "--hub-dir names the hub explicitly: $OUT"
+rm -rf "$H" "$X"
+
+echo "PASS: test-install.sh (20 scenarios)"

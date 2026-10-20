@@ -34,6 +34,11 @@ Nothing else. Stop is intentionally tolerant — its job is to bring the system 
 - `pgrep -f 'super-board-run\.sh'` — dispatcher PID(s).
 - `pgrep -f 'claude -p .*super-board'` — orphan worker scan (workers without a lock file, e.g. from a crashed dispatcher).
 
+**Hub config** (`members`, hub.md → Cut-over): the locks are read in the hub checkout and in
+every member checkout (`<member>/.claude/super-board/inflight/<N>`). Each card's comments and
+claim release name `--repo <member repo>`; its branch is `<member>-issue-<N>-*`, looked up
+in that member's checkout. Run it from the hub: `super-board-stop.sh <hub slug>`.
+
 ## Per-worker wrap-up (run for each in-flight lock)
 
 1. **Look up branch + PR**

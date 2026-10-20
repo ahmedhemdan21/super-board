@@ -54,7 +54,9 @@ workflow-wave.lock, codex-wave.pid, a legacy inflight/<N> lane lock, or another
 scheduler run on that repo) and `skipped: github halted` while the repo's GitHub halt
 file exists. A hub config's job (run from the hub checkout) checks the hub and every
 member checkout the config names, and its `run` step runs the whole hub board (P4; workflow
-backend only, like every scheduled run). Lock files are trusted as present: a stale one keeps skipping, visibly.
+backend only, like every scheduled run). A job whose repo is a slim member checkout (no pack
+of its own after the cut-over, hub.md → Cut-over) is refused at load, naming the hub checkout
+and slug to use instead. Lock files are trusted as present: a stale one keeps skipping, visibly.
 
 Records: <state>/runs/<job>/<UTC stamp>/ run.json · log.txt (stream-json flattened,
 secrets redacted) · stream.jsonl · summary.json (board snapshots before/after through
@@ -260,6 +262,11 @@ def validate_config(cfg):
             raise ConfigError(f"job {name}: repo {j.get('repo')!r} is not a folder")
         if not SLUG.fullmatch(str(j.get("config") or "")):
             raise ConfigError(f"job {name}: config must be a super-board config slug")
+        hub = slim_member_hub(j["repo"])
+        if hub:
+            raise ConfigError(f"job {name}: {j['repo']} is member {hub['member']} of hub board {hub['slug']} and has no "
+                              f"super-board of its own (hub.md → Cut-over): set repo to the hub checkout "
+                              f"{hub['hub_root']} and config to {hub['slug']}")
         steps = j.get("steps")
         if not isinstance(steps, list) or not steps or any(s not in STEPS for s in steps):
             raise ConfigError(f"job {name}: steps must be a non-empty list of {STEPS}")
@@ -454,6 +461,18 @@ def board_root(repo):
     r = subprocess.run(["git", "rev-parse", "--git-common-dir"], cwd=str(repo), capture_output=True, text=True)
     common = (Path(repo) / r.stdout.strip()).resolve() if r.returncode == 0 and r.stdout.strip() else None
     return common.parent if common is not None and common.name == ".git" else Path(repo).resolve()
+
+
+def slim_member_hub(repo):
+    """The hub board (super-board-config.py hub-of) of a member checkout that has no pack of
+    its own after the cut-over, else None. A member still holding the full pack is left
+    alone: it may run its own single-repo board until it is slimmed."""
+    if (Path(repo) / ".claude" / "skills" / "super-board" / "SKILL.md").is_file():
+        return None
+    try:
+        return _load("sb_config", "super-board-config.py").find_hub(repo)
+    except Exception:
+        return None
 
 
 def board_places(repo, slug=None):

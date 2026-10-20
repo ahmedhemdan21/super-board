@@ -71,6 +71,7 @@ card dropped on purpose is closed as not planned and moved to Done with a 🤷 c
 
 - Needs Claude Code, `gh` (authenticated for the board's owner), `jq`, bash 3.2+ and Python 3.
 - Or install from a checkout: `./install.sh [--no-hooks] [--protect-main] /path/to/your-project`.
+- One board over several repos (a hub): `./install.sh --hub <hub checkout>` installs the pack in the hub and validates its hub config; each member repo gets only the guard hooks with `./install.sh --member <member checkout>` (`--remove-pack`, then `--apply`, removes an old full install). See [hub.md → Cut-over](../../skills/super-board/references/hub.md#cut-over-p6).
 - The board is a GitHub Project (v2) with a `Status` field: `Backlog, Ready, Building, QA, Review, Blocked, Done`. `onboard` reuses your best-matching board (adding what is missing, keeping every card) or creates one.
 - Three labels route cards: `qa` skips Building (test what exists), `bug` and `feature` are built first; no label is built too.
 - Default backend is in-session dynamic workflows: turn them on in `/config`. Headless `claude -p` is opt-in (`worker_backend: "claude-p"`).

@@ -45,7 +45,8 @@ GitHub spells them.
   verdicts are matched by card key, never by number alone.
 - `super-board-status.py` and `super-board-card-ready.py` carry `repository` on every card and
   read each issue with `--repo <its repo>`.
-- A submodule keeps its own `.claude/super-board/` (halt file, card cache) in its own checkout.
+- A submodule keeps its own `.claude/super-board/` (halt file, card cache, run-lock marker) in
+  its own checkout, also after the cut-over: only the pack moves to the hub.
 
 Member cards (P4) get worktree and branch names with a member prefix, so `issue-7` of two
 members never share a folder (Run (P4) below).
@@ -92,6 +93,7 @@ runner and the Codex wave refuse one (`super-board-config.py run-gate`, exit 78)
 | `members --config C` | `[{key, repo, path}]`; a single-repo config is one member with key `""` |
 | `for-repo <owner/name> --config C` | the member key; exit 3 when not a member |
 | `run-gate --config C [--backend B]` | exit 78 for a members config on `claude-p` or `codex` (default: the config's `worker_backend`); 0 on `workflow` and for every single-repo config |
+| `hub-of <dir> [--hub-dir H]` | `{slug, config, member, hub_root, hub_repo, repo}` of the hub config naming `<dir>` as a member checkout (H's configs, else each parent folder up to 4 levels); exit 3 when none |
 
 Every single-repo script (merge gate, deploy wait, preflight, verify, card.sh) takes the
 resolved config unchanged. `super-board-wave-plan.sh --config <hub config>` plans each member
@@ -156,7 +158,7 @@ Decision file (`body_file` relative to the decision file's folder):
 
 **Parents stay off the lanes.** A parent is labelled `parent` and sits in Backlog, which the
 planner never plans. A `parent` card dragged to Ready is skipped too and listed in the plan's
-`parents` (Run below). Later (P6): the status reader shows it as a parent.
+`parents` (Run below). The status reader prints it as `🧩<ref>` (`parent: true` in `--json`).
 
 **close-parents.** GitHub never closes a parent. For every open hub issue with sub-issues:
 every child closed `COMPLETED` → comment listing them and close the parent as completed; any
@@ -182,7 +184,8 @@ settings from the cwd.
   `members.<k>.max_workers`, else an even share, `ceil(max_workers / members)`. A member with
   fewer free cards leaves its unused slots to the others; a member's own `max_workers` is a hard
   cap. In-flight cards (Review, QA) go first. Unset or 0 = no cap, as on one repo.
-- **Wave.** `super-board-wave.js` gets `configPath` = the hub config and the planned cards.
+- **Wave.** `super-board-wave.js` gets `configPath` = the hub config, the planned cards and
+  the plan's `packDir` (the hub's `.claude`, absolute; Cut-over (P6) below).
   Every prompt about a card names that card's config, `--repo`, checkout and base branch.
   Names carry the member key: worktree `<checkout>/.claude/worktrees/<member>-issue-<N>-<lane>/`,
   branch `<member>-issue-<N>-<slug>`, lane labels `build:backend#7`, so `issue-7` of two
@@ -222,8 +225,8 @@ Reports are filed once. `/super-collect` runs from the hub checkout with the hub
 - Scheduled intake: a job whose `repo` is the hub checkout and `config` the hub config, steps
   `["collect"]`. "Board busy" and halt checks cover every member checkout; a `run` step runs
   the whole hub board (Run (P4)).
-- Install: `install.sh <hub checkout>` installs the full pack into the hub's `.claude/`; member
-  submodules keep their own `.claude/` untouched. Scripts resolve member paths through
+- Install: `install.sh --hub <hub checkout>` installs the full pack into the hub's `.claude/`;
+  members get the guard hooks only (Cut-over (P6) below). Scripts resolve member paths through
   `super-board-config.py`, never cwd. Collector keys (`SLACK_BOT_TOKEN`, …) go in the hub's
   `.env.local`.
 
@@ -242,3 +245,58 @@ PrimeCore (`.claude/super-board/configs/primecore.json` in primecore-docs):
   "split": {"default_order":["backend","frontend"],"confirm":true},
   "collect": {"sources":["slack"], "slack":{"channels":["#bugs-reporting"],"reaction":"bug"}} }
 ```
+
+## Cut-over (P6)
+
+The hub is the only full install. A member checkout keeps the guard hooks (wired in its
+`.claude/settings.json`), its `.claude/super-board/` state and a managed AGENTS.md block that
+points at the hub. Everything a lane runs comes from the hub's `.claude/`.
+
+| Piece | Hub checkout | Member checkout |
+|---|---|---|
+| skills, `.claude/bin`, workflows | ✓ (`install.sh --hub`) | none |
+| guard hooks + `cleanup-wt.py` | ✓ | ✓ (`install.sh --member`) |
+| AGENTS.md block | board rules + a "Hub board `<slug>`" table | "member `<key>` of hub board `<slug>`": run from the hub |
+| configs | the hub config | old configs stay, unused |
+
+**Steps for one project.** Ask before each step that writes; never close a board unasked.
+
+1. Hub: `install.sh --hub <hub checkout>`. It installs the pack and validates every hub
+   config (exit 65 with the reasons when one is invalid), then lists each member: checkout
+   found, hooks, old full pack, and the command to run for it.
+2. Each member: `install.sh --member <member checkout>`. It installs the guard hooks and
+   writes the member AGENTS.md block. The hub is found from the hub config of a parent folder
+   (`super-board-config.py hub-of <dir>`); `--hub-dir <hub>` names it otherwise.
+3. Each member, the old pack: `install.sh --member --remove-pack <member checkout>` lists the
+   pack files a full install left (the skills, `.claude/bin` scripts and workflows install.sh
+   copies); add `--apply` to delete them. Configs under `.claude/super-board/`, hooks,
+   settings and any other file stay. Commit the removal in the member repo.
+4. Run from the hub: `/super-board run <hub slug>`. `/super-board onboard` (setup's checks)
+   in the hub reports any member still missing hooks or holding the old pack.
+5. Retire the old per-repo boards. List them first (each member's old Project and config),
+   ask the user, and only then close each Project; their open cards belong on the hub board
+   before it closes. Old member configs can stay: no run reads them.
+
+**What changes for lanes.** The hub plan carries `packDir` (the hub's `.claude`, absolute);
+the wave refuses a hub wave without it. Every prompt calls `<packDir>/bin/<script>` and
+reads `<packDir>/skills/…`, so a lane works from any member worktree. Lane SKILL.md files and
+run.md say the same ("Pack paths on a hub board").
+
+**What else knows the hub.**
+
+- `super-board-status.py` keeps members apart (`backend#7`, `frontend#7`), prints parents as
+  `🧩<ref>`, and names the hub and each member's base in its header. Run in a slim member
+  checkout, it reads the hub board that names the checkout.
+- `super-board-stop.sh <hub slug>` reads in-flight locks in the hub and every member
+  checkout; each card's comments and claim release name `--repo <member repo>` and find the
+  `<member>-issue-<N>-*` branch in that member.
+- `cleanup-wt.py --members` (and the SessionStart `--auto`) in the hub also sweeps every
+  member checkout, with each member's `base_branch`. The merge gate runs `--post-merge` in the
+  member checkout itself, where the hooks stay.
+- `guard-protected-push.py` protects every member's `base_branch` from the hub session, and a
+  member's own from a member session (hub config of a parent folder). `guard-prod.py` merges
+  `members.<k>.guard.prod` the same way. No guard hook needs `.claude/bin`.
+- The scheduler refuses a job whose repo is a slim member and names the hub checkout and slug.
+- `super-board-setup.py check` in the hub lists each member: checkout found, hooks, old pack
+  (with the commands); in a slim member it checks the hooks only, and `fix` there runs
+  `install.sh --member`, never the full pack.

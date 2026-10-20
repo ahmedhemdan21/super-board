@@ -113,6 +113,8 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # In members mode --deps is {"<member>": <deps graph>, …}.
 # PARENTS. A `parent`-labelled card (hub.md → Split) is never built, wherever it sits:
 # it is dropped before any member plans and reported in `parents` while in a working column.
+# PACK. `packDir` is the hub's .claude folder, absolute: the wave passes it on so lanes in a
+# member worktree (no .claude/bin after the cut-over) run the hub's scripts.
 # SHARES. The top-level max_workers caps the merged wave; each member gets
 # `members.<k>.max_workers`, else an even share (ceil(max_workers / members)), so one repo
 # cannot starve the other. Slots a member without its own cap leaves unused go to the
@@ -158,8 +160,12 @@ if printf '%s' "$CONFIG_JSON" | jq -e 'has("members")' >/dev/null; then
   done
   HUB_REPO=$(printf '%s' "$CONFIG_JSON" | jq -r '.hub.remote // ""' | tr -d '\r' \
                | sed -E 's#^(https?://github\.com/|git@github\.com:)##; s#\.git$##')
+  # packDir: the hub's .claude (absolute). After the cut-over a member checkout has no
+  # .claude/bin, so lanes working in a member worktree call the hub's (hub.md → Cut-over).
+  # Forward slashes: lanes paste it unquoted into bash, which eats a Windows backslash.
+  PACK_DIR="$(python3 "$HERE/super-board-config.py" hub --config "$CONFIG" | jq -r '.repo.path | gsub("\\\\"; "/")' | tr -d '\r')/.claude"
   jq --argjson members "$MEMBERS" --argjson cap "$(printf '%s' "$CONFIG_JSON" | jq -r '.max_workers // 0')" \
-     --arg hub "$HUB_REPO" --slurpfile parents "$MTMP/parents.json" '
+     --arg hub "$HUB_REPO" --arg pack "$PACK_DIR" --slurpfile parents "$MTMP/parents.json" '
     def tagged($f): [ .[] | .key as $k | .plan[$f][] | . + { member: $k } ];
     ([ $members[].repo | ascii_downcase ]) as $mine
     | def rank: { "Review": 0, "QA": 1 }[.status] // 2;
@@ -179,7 +185,7 @@ if printf '%s' "$CONFIG_JSON" | jq -e 'has("members")' >/dev/null; then
                   | map(.why = (if $hub != "" and (.repository | ascii_downcase) == ($hub | ascii_downcase)
                                 then "hub issue: triage splits it into member sub-issues; never built"
                                 else "card from \(.repository): not a member of this board" end))),
-        parents: $parents[0],
+        parents: $parents[0], packDir: $pack,
         stranded: tagged("stranded"), triage: tagged("triage") }' "$MTMP/plans.json"
   exit 0
 fi

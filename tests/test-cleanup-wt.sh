@@ -119,4 +119,44 @@ OUT=$(cd "$R" && echo '{"hook_event_name":"SessionStart"}' | python3 "$CW" --aut
 gone feat-auto
 printf '%s' "$OUT" | jq -e '.hookSpecificOutput.hookEventName == "SessionStart"' >/dev/null || fail "--auto under a hook should emit hook JSON, got: $OUT"
 
+# 7 -- hub board (hub.md → Cut-over): run from the hub, --members sweeps each member
+#      checkout, where the hub's <member>-issue-<N>-* worktrees and branches live, with
+#      the member's base_branch from the hub config (here `release`, which detection
+#      would not guess). Unmerged member work stays.
+HB="$T/hub"; mkdir -p "$HB/.claude/super-board/configs"
+git -C "$HB" init -q -b main; git -C "$HB" commit -q --allow-empty -m hub
+cat > "$HB/.claude/super-board/configs/pc.json" <<'JSON'
+{"project":{"owner":"a","number":1},"hub":{"remote":"https://github.com/a/docs","path":"."},
+ "members":{"backend":{"repo":{"path":"backend","remote":"https://github.com/a/api"},"base_branch":"release"}}}
+JSON
+git init -q --bare -b main "$T/api.git"
+git clone -q "$T/api.git" "$HB/backend" 2>/dev/null
+b() { git -C "$HB/backend" "$@"; }
+bcommit() { echo "$2" > "$HB/backend/$1"; b add "$1"; GIT_COMMITTER_DATE=$OLD GIT_AUTHOR_DATE=$OLD b commit -qm "$1 $2"; }
+b switch -q -c main 2>/dev/null || true
+bcommit base.txt 1; b push -q origin main
+b switch -q -c release; b push -q origin release
+b switch -q -c backend-issue-7-csv; bcommit csv.txt 1
+b switch -q release; b merge -q --ff-only backend-issue-7-csv; b push -q origin release
+b switch -q -c backend-issue-8-wip main; bcommit wip.txt 1
+b switch -q main
+b worktree add -q "$HB/backend/.claude/worktrees/backend-issue-7-build" backend-issue-7-csv
+for d in "$HB"/backend/.git/worktrees/*; do touch -t 202001010000 "$d/gitdir" "$d/commondir"; done
+OUT=$(cd "$HB" && python3 "$CW" --no-fetch --local-only)
+printf '%s\n' "$OUT" | grep -q '== member backend' && fail "without --members a hub run must not touch members"
+OUT=$(cd "$HB" && python3 "$CW" --members --no-fetch --local-only --apply)
+printf '%s\n' "$OUT" | grep -q '== member backend' || fail "--members should sweep the backend checkout"$'\n'"$OUT"
+[ ! -d "$HB/backend/.claude/worktrees/backend-issue-7-build" ] || fail "merged member worktree should go"$'\n'"$OUT"
+b rev-parse -q --verify refs/heads/backend-issue-7-csv >/dev/null && fail "merged member branch (into release) should go"
+b rev-parse -q --verify refs/heads/backend-issue-8-wip >/dev/null || fail "unmerged member branch must stay"
+b rev-parse -q --verify refs/heads/release >/dev/null || fail "the member base must stay"
+# --auto from the hub covers members too, in one hook JSON object.
+b branch backend-issue-9-done release
+OUT=$(cd "$HB" && python3 "$CW" --auto </dev/null)   # first run records each repo's tips
+b switch -q release; bcommit more.txt 1; b push -q origin release; b switch -q main
+OUT=$(cd "$HB" && echo '{"hook_event_name":"SessionStart"}' | python3 "$CW" --auto)
+b rev-parse -q --verify refs/heads/backend-issue-9-done >/dev/null && fail "--auto from the hub should sweep a merged member branch"$'\n'"$OUT"
+printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | test("member backend")' >/dev/null \
+  || fail "--auto should report member actions in one hook JSON, got: $OUT"
+
 echo "PASS: test-cleanup-wt.sh"

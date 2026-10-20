@@ -545,6 +545,23 @@ class Config(unittest.TestCase):
                     s.validate_config({"jobs": [bad]})
             with self.assertRaises(s.ConfigError):
                 s.validate_config({"jobs": [good, good]})
+            # P6 cut-over: a slim member checkout (no pack) names its hub board instead.
+            cfgs = Path(d) / ".claude" / "super-board" / "configs"
+            cfgs.mkdir(parents=True)
+            (cfgs / "pc.json").write_text(json.dumps({
+                "project": {"owner": "acme", "number": 1}, "hub": {"remote": "https://github.com/acme/docs"},
+                "members": {"backend": {"repo": {"path": "backend", "remote": "https://github.com/acme/api"},
+                                        "base_branch": "dev"}}}), encoding="utf-8")
+            member = Path(d) / "backend"
+            (member / ".claude" / "super-board" / "configs").mkdir(parents=True)
+            with self.assertRaises(s.ConfigError) as err:
+                s.validate_config({"jobs": [job(member, config="backend")]})
+            self.assertIn("member backend of hub board pc", str(err.exception))
+            self.assertIn("config to pc", str(err.exception))
+            (member / ".claude" / "skills" / "super-board").mkdir(parents=True)
+            (member / ".claude" / "skills" / "super-board" / "SKILL.md").write_text("x", encoding="utf-8")
+            s.validate_config({"jobs": [job(member, config="backend")]})  # still a full install: its own board
+            s.validate_config({"jobs": [job(d, config="pc")]})  # the hub job itself
             with self.assertRaises(s.ConfigError):
                 s.validate_config({"jobs": [], "shell": "x"})
 

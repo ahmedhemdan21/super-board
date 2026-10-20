@@ -17,6 +17,10 @@ Usage (from the repo root or any of its worktrees):
                       silent unless it acted
     --auto            SessionStart mode: --post-merge, but only when a base tip moved
                       since the last --auto run (the first run only records the tips)
+    --members         in a hub checkout, also sweep every member checkout named by a hub
+                      config (.claude/super-board/configs/*.json with `members`), where the
+                      hub board's <member>-issue-<N>-* worktrees and branches live, each with
+                      its member base_branch added. --auto does this too (hub.md → Cut-over)
 
 Bases, when no --base is given: the remote default branch (origin/HEAD), else
 init.defaultBranch, else main/master -- plus staging, develop and dev when they exist.
@@ -419,7 +423,7 @@ def print_table(rows, dry):
 
 def parse_args(argv):
     a = {"apply": False, "force": False, "auto": False, "post_merge": False, "fetch": None,
-         "local": True, "remote": True, "tsv": None, "bases": [], "help": False}
+         "local": True, "remote": True, "tsv": None, "bases": [], "help": False, "members": False}
     it = iter(argv)
     for arg in it:
         if arg == "--apply":
@@ -442,6 +446,8 @@ def parse_args(argv):
             a["tsv"] = next(it)
         elif arg == "--base":
             a["bases"].append(next(it))
+        elif arg == "--members":
+            a["members"] = True
         elif arg in ("-h", "--help"):
             a["help"] = True
         else:
@@ -479,6 +485,34 @@ def hook_event():
         return None
 
 
+def hub_members(root):
+    """[(key, checkout, base_branch)] of every hub config (members) under root's
+    .claude/super-board/configs: the member checkouts a hub board builds in (hub.md →
+    Run). Their worktrees and branches are `<member>-issue-<N>-*` in each checkout."""
+    found, seen = [], set()
+    folder = os.path.join(root, ".claude", "super-board", "configs")
+    for name in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(folder, name), encoding="utf-8") as fh:
+                cfg = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        members = cfg.get("members") if isinstance(cfg, dict) else None
+        for key, m in (members.items() if isinstance(members, dict) else []):
+            path = ((m or {}).get("repo") or {}).get("path") if isinstance(m, dict) else None
+            if not isinstance(path, str) or not path.strip():
+                continue
+            full = real(os.path.join(root, os.path.expanduser(path)))
+            if full in seen:
+                continue
+            seen.add(full)
+            base = m.get("base_branch") if isinstance(m.get("base_branch"), str) else None
+            found.append((key, full, base))
+    return found
+
+
 def run(argv):
     args = parse_args(argv)
     if args["help"]:
@@ -487,6 +521,39 @@ def run(argv):
     ctx = context(os.getcwd())
     if not ctx:
         raise RuntimeError("not inside a git repository")
+    args["_msgs"] = []
+    try:
+        code = sweep(ctx, args)
+    except RuntimeError:
+        if not (args.get("quiet") and hub_members(ctx["root"])):
+            raise
+        code = 0  # hook mode in a hub without a base of its own: still sweep the members
+    # A hub checkout (hub.md → Run): its cards' worktrees and branches live in each member
+    # checkout as <member>-issue-<N>-*. --members (and the SessionStart --auto) sweeps them.
+    if args["members"] or args.get("auto_gate"):
+        for key, path, base in hub_members(ctx["root"]):
+            mctx = context(path) if os.path.isdir(path) else None
+            if not mctx or real(mctx["root"]) == real(ctx["root"]):
+                continue
+            margs = dict(args)
+            if not args["bases"] and base:
+                margs["bases"] = list(dict.fromkeys(base_names(mctx["cwd"], []) + [base]))
+            if not args.get("quiet"):
+                print("\n== member %s (%s)" % (key, path))
+            try:
+                code = sweep(mctx, margs, key) or code
+            except RuntimeError as e:  # one member without a base must not stop the others
+                if not args.get("quiet"):
+                    print("member %s: %s" % (key, e))
+    if args.get("quiet") and args["_msgs"]:
+        msg = " ".join(args["_msgs"])
+        ev = hook_event()
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": ev, "additionalContext": msg}}) if ev else msg)
+    return code
+
+
+def sweep(ctx, args, member=""):
+    """Plan and (with --apply) act on one repo. member names a hub member in messages."""
     if args["fetch"]:
         code, _, err = git(ctx["cwd"], "fetch", "--prune", "--quiet", "origin", timeout=20 if args.get("quiet") else 120)
         if code != 0 and not args.get("quiet"):
@@ -517,9 +584,8 @@ def run(argv):
                 fh.write(gate[1] + "\n")
         acted = [d for d in done if d.startswith(("removed", "deleted", "pruned"))]
         if acted:
-            msg = "cleanup-wt: %d cleanup action(s): %s. Recovery TSV: %s" % (len(acted), "; ".join(acted), tsv)
-            ev = hook_event()
-            print(json.dumps({"hookSpecificOutput": {"hookEventName": ev, "additionalContext": msg}}) if ev else msg)
+            args.setdefault("_msgs", []).append("cleanup-wt%s: %d cleanup action(s): %s. Recovery TSV: %s" % (
+                " (member %s)" % member if member else "", len(acted), "; ".join(acted), tsv))
         return 0
 
     print("bases: " + ", ".join(names))

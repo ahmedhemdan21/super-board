@@ -12,8 +12,12 @@ the lossless-coverage check and the size check. Stdlib only.
     backup   [--root .]                         copy every instruction file to
                                                 .claude/super-board/backup/<ts>/; print the dir
     block    [--root .] [--file AGENTS.md] [--template T] [--version V] [--create]
+             [--var NAME=VALUE ...] [--hub-config C ...]
                                                 write the super-board block between the markers;
-                                                nothing outside them changes. Prints
+                                                nothing outside them changes. --var fills
+                                                {{NAME}} in the template (the hub member block);
+                                                --hub-config adds a "Hub board" table per hub
+                                                config (slug, members). Prints
                                                 created | inserted | updated | unchanged
     pointer  [--root .] [--tail FILE] [--force] CLAUDE.md := "@AGENTS.md" (+ Claude-only tail).
                                                 Refuses to replace a non-pointer CLAUDE.md
@@ -33,6 +37,7 @@ upgrade) -->` … `<!-- super-board:end -->`. Exit codes: 0 ok, 1 check failed,
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -142,10 +147,41 @@ def cmd_backup(a) -> int:
     return 0
 
 
-def render_block(template: Path, version: str) -> list[str]:
+def hub_lines(root: Path, config: str) -> list[str]:
+    """The "Hub board" table of one hub config: slug, hub repo, members (hub.md)."""
+    spec = importlib.util.spec_from_file_location("sb_config", HERE / "super-board-config.py")
+    res = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(res)  # type: ignore[union-attr]
+    try:
+        cfg = res.checked(config)
+    except (res.ConfigError, SystemExit) as exc:
+        die(f"hub config {config} is invalid: {exc}")
+    slug = Path(config).stem
+    out = ["", f"### Hub board `{slug}`", "",
+           f"Hub repo `{res.repo_name(cfg['hub']['remote'])}` holds reports and parent issues; code lives "
+           f"in the members. Run from this checkout: `/super-board run {slug}` · `/super-board status {slug}`. "
+           "Member checkouts keep only the guard hooks (hub.md → Cut-over).", "",
+           "| Member | Repo | Checkout | Base |", "|---|---|---|---|"]
+    for m in res.members_of(cfg, config):
+        try:
+            rel = os.path.relpath(m["path"], root.resolve()).replace(os.sep, "/")
+        except ValueError:  # another drive on Windows
+            rel = m["path"]
+        out.append(f"| {m['key']} | {m['repo']} | `{rel}` | {cfg['members'][m['key']]['base_branch']} |")
+    return out
+
+
+def render_block(template: Path, version: str, variables: dict[str, str] | None = None,
+                 extra: list[str] | None = None) -> list[str]:
     if not template.is_file():
         die(f"block template not found: {template}")
-    body = template.read_text(encoding="utf-8").strip("\n").splitlines()
+    text = template.read_text(encoding="utf-8").strip("\n")
+    for name, value in (variables or {}).items():
+        text = text.replace("{{" + name + "}}", value)
+    left = sorted(set(re.findall(r"\{\{(\w+)\}\}", text)))
+    if left:
+        die(f"template {template.name} needs --var for: {', '.join(left)}")
+    body = text.splitlines() + (extra or [])
     return ([f"<!-- super-board:begin v{version} (managed; edits inside are overwritten on upgrade) -->"]
             + body + ["<!-- super-board:end -->"])
 
@@ -155,7 +191,14 @@ def cmd_block(a) -> int:
     path = root / a.file
     version = a.version or (DEFAULT_VERSION_FILE.read_text(encoding="utf-8").strip()
                             if DEFAULT_VERSION_FILE.is_file() else "0.0.0")
-    block = render_block(Path(a.template) if a.template else DEFAULT_TEMPLATE, version)
+    variables = {}
+    for item in a.var or []:
+        name, sep, value = item.partition("=")
+        if not sep or not re.fullmatch(r"\w+", name):
+            die(f"--var needs NAME=VALUE, got {item!r}", 64)
+        variables[name] = value
+    extra = [line for c in (a.hub_config or []) for line in hub_lines(root, c)]
+    block = render_block(Path(a.template) if a.template else DEFAULT_TEMPLATE, version, variables, extra)
     if not path.exists():
         if not a.create:
             die(f"{path} does not exist (pass --create to start one)")
@@ -327,6 +370,7 @@ def main() -> int:
     p = sub.add_parser("block")
     p.add_argument("--root", default="."); p.add_argument("--file", default="AGENTS.md")
     p.add_argument("--template"); p.add_argument("--version"); p.add_argument("--create", action="store_true")
+    p.add_argument("--var", action="append"); p.add_argument("--hub-config", action="append")
     p = sub.add_parser("pointer")
     p.add_argument("--root", default="."); p.add_argument("--tail"); p.add_argument("--force", action="store_true")
     p = sub.add_parser("write"); p.add_argument("--src", required=True); p.add_argument("--dest", required=True)

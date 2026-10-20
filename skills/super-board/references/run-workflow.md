@@ -286,8 +286,10 @@ Repeat until a done condition or halt gate fires:
    The QA lane runs pass one against `qa.local` / `target.urls` (run.md → Tester step 2).
    **Hub config:** `configPath` is the hub config and `cards` are the planner's, each with its
    `member`, `configPath`, `checkout`, `baseBranch` and `deploy`; omit the wave-level `deploy`
-   (each member card carries its own). Claim, release and comment with each card's
-   `--repo <repository>`.
+   (each member card carries its own). Pass the plan's `packDir` too: member checkouts keep
+   no `.claude/bin` (hub.md → Cut-over), so every prompt names the hub's absolute pack
+   folder, and the wave refuses a hub wave without it. Claim, release and comment with each
+   card's `--repo <repository>`.
 5. **Reconcile** (when the run completes) — read the returned `cards`
    summary. If `halted: true`, any card is `halted`, or the GitHub helper's `--check`
    fails, preserve claims and stop. For verification-readiness (exit 9), repair

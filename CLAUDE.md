@@ -57,6 +57,12 @@ one exists (nothing outside the markers), records an older install in
 `super-board onboard` asks the questions. Onboard's 🔍 Checks (`scripts/super-board-setup.py`)
 fixes must-haves and finishes upgrades with no question.
 
+Hub boards (`skills/super-board/references/hub.md` → Cut-over): `install.sh --hub <hub>` is the
+full install plus hub-config validation; `install.sh --member <dir>` installs only the guard
+hooks, their settings and the member AGENTS.md block; `--member --remove-pack [--apply]`
+lists, then deletes, exactly the skills, bin scripts and workflows the pack ships (never
+`.claude/super-board/`, hooks or other files). Plain `install.sh <target>` is unchanged.
+
 ## Board shape (v3.0.0)
 
 Columns are always Backlog · Ready · Building · QA · Review · Blocked · Done — no Skipped, no

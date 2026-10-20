@@ -8,7 +8,8 @@ inside an `ssh host '...'` payload or a `docker exec` line -- matching is on the
 whole command string, case-insensitive.
 
 Rules come from `guard.prod` in .claude/super-board/configs/*.json (all configs
-are merged):
+are merged; a hub config's `members.<k>.guard.prod` too, and in a member checkout the hub
+config of an ancestor folder gives the board's and that member's rules):
   "guard": { "prod": {
     "patterns": ["primecore-prod-"],          # regexes
     "hosts":    ["prod.example.com"],          # matched as whole host tokens
@@ -27,13 +28,54 @@ import sys
 SHELL_TOOLS = ("Bash", "PowerShell")
 
 
+def _configs(folder):
+    for p in sorted(glob.glob(os.path.join(folder, ".claude", "super-board", "configs", "*.json"))):
+        try:
+            cfg = json.load(open(p, encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(cfg, dict):
+            yield cfg
+
+
+def _same(a, b):
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+
+
+def governing(project_dir, levels=4):
+    """(config, member key or None) for every config that governs project_dir: its own
+    configs, and a hub config in an ancestor naming it as a member checkout (hub.md:
+    after the cut-over a member keeps no configs of its own)."""
+    out = [(cfg, None) for cfg in _configs(project_dir)]
+    here = os.path.dirname(os.path.realpath(project_dir))
+    for _ in range(levels):
+        for cfg in _configs(here):
+            members = cfg.get("members")
+            for key, m in (members.items() if isinstance(members, dict) else []):
+                path = ((m or {}).get("repo") or {}).get("path") if isinstance(m, dict) else None
+                if isinstance(path, str) and path and _same(os.path.join(here, os.path.expanduser(path)), project_dir):
+                    out.append((cfg, key))
+        parent = os.path.dirname(here)
+        if parent == here:
+            break
+        here = parent
+    return out
+
+
+def prod_blocks(cfg, member):
+    """guard.prod blocks a config applies: the board's, plus each member's (its own config
+    names them all; a hub config found from a member checkout names that member's)."""
+    blocks = [cfg.get("guard")]
+    members = cfg.get("members") if isinstance(cfg.get("members"), dict) else {}
+    for key, m in members.items():
+        if isinstance(m, dict) and (member is None or key == member):
+            blocks.append(m.get("guard"))
+    return [(b.get("prod") or {}) for b in blocks if isinstance(b, dict)]
+
+
 def load_rules(project_dir):
     rules = {"patterns": [], "hosts": [], "ports": [], "message": []}
-    for p in sorted(glob.glob(os.path.join(project_dir, ".claude", "super-board", "configs", "*.json"))):
-        try:
-            prod = (json.load(open(p, encoding="utf-8")).get("guard") or {}).get("prod") or {}
-        except (OSError, ValueError, AttributeError):
-            continue
+    for prod in [p for cfg, member in governing(project_dir) for p in prod_blocks(cfg, member)]:
         if not isinstance(prod, dict):
             continue
         for key in ("patterns", "hosts", "ports"):

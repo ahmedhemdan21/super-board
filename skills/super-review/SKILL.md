@@ -14,6 +14,13 @@ on missing requirements and recheck each conditional helper before use.
 
 Super Review should be conservative with claims: only say **merge-ready** when review evidence is clean and verification has passed. If evidence is missing, say what is unverified.
 
+## Pack paths on a hub board
+
+`.claude/bin/<script>` and `.claude/skills/<path>` below are the pack's folders. On a hub
+board (hub.md → Cut-over) the pack lives only in the hub checkout: a member checkout and
+its worktrees have no `.claude/bin`. The wave prompt names the hub's absolute pack folder
+(`packDir`); call `<packDir>/bin/<script>` and read `<packDir>/skills/<path>` from any cwd.
+
 ## When to use
 
 Use this skill for:

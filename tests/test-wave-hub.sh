@@ -43,7 +43,7 @@ const card = (m, number, status = 'Ready', extra = {}) => ({ number, status, tit
 
 ;(async () => {
   // 1 — backend #7 and frontend #7 in one wave: two chains, two labels, never one.
-  const { out, labels, prompts, logs } = await run({ configPath: '/hub/.claude/super-board/configs/pc.json',
+  const { out, labels, prompts, logs } = await run({ configPath: '/hub/.claude/super-board/configs/pc.json', packDir: '/hub/.claude',
     cards: [card(BE, 7), card(FE, 7), card(FE, 9, 'Review')] },
     { 'backend#7': { verdict: 'proceed', detail: 'clean' }, 'frontend#7': { verdict: 'proceed', detail: 'clean' } })
   for (const l of ['build:backend#7', 'build:frontend#7', 'qa:backend#7', 'qa:frontend#7', 'review:frontend#9'])
@@ -70,7 +70,7 @@ const card = (m, number, status = 'Ready', extra = {}) => ({ number, status, tit
     || fail('QA target uses the member config')
   ;/--repo acme\/api --add-label/.test(prompts['classify:backend#7']) || fail('classifier labels in the member repo')
   // 5 — deploy per member: backend's flag on, frontend's off, whatever the wave flag says.
-  const dep = await run({ configPath: 'hub.json', cards: [card(BE, 3, 'Review'), card(FE, 4, 'Review')] })
+  const dep = await run({ configPath: 'hub.json', packDir: '/hub/.claude/', cards: [card(BE, 3, 'Review'), card(FE, 4, 'Review')] })
   dep.labels.includes('deploy:backend#3') || fail('backend deploys after merge: ' + dep.labels)
   dep.labels.includes('deploy:frontend#4') && fail('frontend has no deploy on its base')
   dep.prompts['deploy:backend#3'].includes('super-board-deploy-wait.sh --config /hub/.claude/super-board/resolved/pc.backend.json')
@@ -80,7 +80,7 @@ const card = (m, number, status = 'Ready', extra = {}) => ({ number, status, tit
   ;(s && s.repository === 'acme/web' && s.finalStatus === 'advanced') || fail('summary carries member + repo: ' + JSON.stringify(out.cards))
   ;/backend: #7=advanced@Done · frontend: #7=advanced@Done, #9=advanced@Done/.test(logs.join('\n')) || fail('log groups by member: ' + logs)
   // 7 — a held verdict for frontend #7 never stops backend #7 (verdicts keyed per member).
-  const held = await run({ configPath: 'hub.json', cards: [card(BE, 7), card(FE, 7)] },
+  const held = await run({ configPath: 'hub.json', packDir: '/hub/.claude/', cards: [card(BE, 7), card(FE, 7)] },
     { 'backend#7': { verdict: 'proceed', detail: 'clean' }, 'frontend#7': { verdict: 'hold', column: 'Blocked', detail: 'dup' } })
   ;(held.labels.includes('build:backend#7') && !held.labels.includes('build:frontend#7')) || fail('verdicts are per member: ' + held.labels)
   // 8 — single-repo cards are unchanged: no member block, wave config everywhere.
@@ -88,6 +88,25 @@ const card = (m, number, status = 'Ready', extra = {}) => ({ number, status, tit
   const r = one.prompts['review:#5']
   ;(r && r.includes('Config: c.json') && !/Hub board|member/.test(r)) || fail('single-repo prompt unchanged: ' + r)
   ;(one.out.cards[0].member === undefined) || fail('single-repo summary has no member')
+  ;(r.includes('python3 .claude/bin/super-board-skills-ready.py --root "$PWD"') && r.includes('Read .claude/skills/super-board/references/run.md'))
+    || fail('single-repo prompts keep the relative .claude paths: ' + r)
+  // 9 — P6 cut-over: member checkouts have no .claude/bin, so every pack path in a hub
+  //     prompt is the hub's absolute packDir, the skills check roots at the hub, and a
+  //     hub wave without packDir is refused before any lane runs.
+  for (const [label, p] of Object.entries(prompts)) {
+    ;/(^|[^\w/])\.claude\/(bin|skills)\/(?!<)/.test(p) && fail(`${label} still names a relative .claude/bin or .claude/skills path`)
+  }
+  for (const needle of ['python3 /hub/.claude/bin/super-board-skills-ready.py --root "/hub"', 'Read /hub/.claude/skills/super-board/references/run.md',
+                        '/hub/.claude/bin/super-board-card.sh --config', '/hub/.claude/bin/super-board-pr-body.sh', 'use /hub/.claude/bin/<script>'])
+    b.includes(needle) || fail('backend build prompt missing pack path: ' + needle)
+  prompts['qa:backend#7'].includes('bash /hub/.claude/bin/super-board-qa-target.sh start') || fail('QA target script from the hub pack')
+  dep.prompts['deploy:backend#3'].includes('bash /hub/.claude/bin/super-board-deploy-wait.sh') || fail('deploy-wait from the hub pack (trailing / trimmed)')
+  prompts['preflight:backend#7'].includes('Run /hub/.claude/bin/super-board-preflight.sh') || fail('pre-flight script from the hub pack')
+  const win = await run({ configPath: 'hub.json', packDir: 'C:\\hub\\.claude', cards: [card(BE, 3, 'Review')] })
+  win.prompts['review:backend#3'].includes('C:/hub/.claude/bin/super-board-card.sh') || fail('a Windows packDir is written with forward slashes')
+  let refused = ''
+  try { await run({ configPath: 'hub.json', cards: [card(BE, 7)] }) } catch (e) { refused = String(e.message) }
+  ;/needs packDir/.test(refused) || fail('a hub wave without packDir must be refused, got: ' + refused)
 })().catch((e) => fail(e.stack))
 JS
-echo "PASS: test-wave-hub.sh (8 scenarios)"
+echo "PASS: test-wave-hub.sh (9 scenarios)"

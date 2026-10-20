@@ -54,6 +54,8 @@ canonical skill files; the package bundles no private skill. See
 curl -fsSL https://raw.githubusercontent.com/EricTechPro/super-board/main/get.sh | bash
 ```
 
+One board over several repos? Install the pack once in the hub (`./install.sh --hub <hub>`) and only the guard hooks in each member (`./install.sh --member <repo>`): [hub boards](skills/super-board/references/hub.md#cut-over-p6).
+
 ### 2. Onboard
 
 ```

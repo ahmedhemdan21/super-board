@@ -94,7 +94,9 @@ Both feeds then land on the same runs issue: local runs and cloud runs side by s
 
 Same script, same config shape, Linux paths:
 
-1. Install the pack into the repo checkouts on the server (`install.sh <repo>`), log in to
+1. Install the pack into the repo checkouts on the server (`install.sh <repo>`; a hub board:
+   `install.sh --hub <hub>` and `install.sh --member <member>`, hub.md → Cut-over — a job
+   names the hub checkout and the hub slug, never a slim member), log in to
    `gh` and `claude` as the service user (never root), and copy any ssh keys the Loki /
    Prometheus transport needs.
 2. Copy `scheduler.json` to `~/.config/super-board/scheduler.json` and change each `repo`

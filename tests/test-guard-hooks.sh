@@ -101,6 +101,30 @@ OUT=$(printf '%s' "$(bash_cmd 'git push --force origin main' "$REPO")" | SB_ALLO
 [ -z "$OUT" ] || fail "SB_ALLOW_PROTECTED_PUSH=1 should turn the guard off"; PASS=$((PASS + 1))
 rm -rf "$REPO"
 
+# Hub boards (hub.md → Cut-over): a hub config protects every member's base_branch, from
+# the hub session and from a slim member session that has no config of its own.
+HUBP=$(mktemp -d); HUBP=$(cd "$HUBP" && pwd -P)
+mkdir -p "$HUBP/.claude/super-board/configs" "$HUBP/api"
+cat > "$HUBP/.claude/super-board/configs/pc.json" <<'JSON'
+{"project":{"owner":"a","number":1},"hub":{"remote":"https://github.com/a/docs"},
+ "members":{"api":{"repo":{"path":"api","remote":"https://github.com/a/api"},"base_branch":"dev",
+                   "guard":{"prod":{"patterns":["api-prod-"]}}},
+            "web":{"repo":{"path":"web","remote":"https://github.com/a/web"},"base_branch":"release"}},
+ "guard":{"prod":{"hosts":["prod.example.com"]}}}
+JSON
+git -C "$HUBP/api" init -q -b dev
+git -C "$HUBP/api" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+hp() { CLAUDE_PROJECT_DIR="$1" expect "$2" guard-protected-push.py "$(bash_cmd "$3" "$HUBP/api")" "$4"; }
+hp "$HUBP"     deny  'git push --force origin dev'     "hub session: member base_branch protected"
+hp "$HUBP"     deny  'git push origin feat:release'    "hub session: every member's base_branch"
+hp "$HUBP/api" deny  'git push origin HEAD'            "member session: its base from the hub config"
+hp "$HUBP/api" allow 'git push origin feat:release'    "member session: another member's base is not this repo's"
+hp "$HUBP/api" allow 'git push -u origin api-issue-7-x' "member session: member-prefixed feature branch"
+CLAUDE_PROJECT_DIR="$HUBP/api" expect deny guard-prod.py "$(bash_cmd "docker logs api-prod-db")" "member session: member guard.prod from the hub config"
+CLAUDE_PROJECT_DIR="$HUBP/api" expect deny guard-prod.py "$(bash_cmd "ssh prod.example.com")" "member session: board guard.prod from the hub config"
+CLAUDE_PROJECT_DIR="$HUBP" expect deny guard-prod.py "$(bash_cmd "docker logs api-prod-db")" "hub session: members' guard.prod"
+rm -rf "$HUBP"
+
 # ---- guard-prod ---------------------------------------------------------------
 PRODP=$(mktemp -d); mkdir -p "$PRODP/.claude/super-board/configs"
 cat > "$PRODP/.claude/super-board/configs/app.json" <<'JSON'
