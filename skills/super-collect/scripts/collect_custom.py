@@ -21,6 +21,9 @@ Kinds:
         {"status": "agent", ...} and the agent calls the server's read/list tool once
         (limit 1 for ping), then pipes the JSON through `normalize`.
   app   a known app name resolved at classify time to one of the three above.
+        `ado` / `azure devops` / a dev.azure.com link -> the Azure DevOps MCP server
+        (@azure-devops/mcp) with a default work-item `map`; ping/list say `unavailable`
+        until that server is configured.
 
 Output: one JSON object. Exit 0 ok · 2 unreachable / refused · 64 usage.
 Secrets: only the named env var is read (collect_common.secret); never printed.
@@ -56,6 +59,20 @@ APPS = {
     "betterstack": ("http", "https://uptime.betterstack.com/api/v2/incidents", "BETTERSTACK_API_TOKEN"),
     "statuspage": ("http", "https://<page>.statuspage.io/api/v2/incidents.json", None),
 }
+# Azure DevOps: typed names, the MCP server names it is usually added under, and the map
+# from a work item (wit_work_item get_batch / REST) to a candidate.
+ADO_ALIASES = {"ado", "azure devops", "azure-devops", "azuredevops", "azdo"}
+ADO_SERVERS = ("ado", "azure-devops", "azureDevOps", "azuredevops", "azure_devops")
+ADO_MAP = {"id": "id", "title": "fields.System.Title", "url": ["_links.html.href", "url"],
+           "body": "fields.Microsoft.VSTS.TCM.ReproSteps",
+           "extra": {"state": "fields.System.State", "type": "fields.System.WorkItemType",
+                     "priority": "fields.Microsoft.VSTS.Common.Priority",
+                     "severity": "fields.Microsoft.VSTS.Common.Severity",
+                     "area": "fields.System.AreaPath", "created": "fields.System.CreatedDate",
+                     "changed": "fields.System.ChangedDate"}}
+ADO_HINT = ("the Azure DevOps MCP server isn't configured here. Add it: "
+            "claude mcp add --transport stdio ado -- npx -y @azure-devops/mcp <your-org>  "
+            "(then restart Claude Code and test again)")
 MUTATING = re.compile(r"\b(rm|mv|dd|kill|delete|destroy|drop|push|deploy|apply|create|update|edit|set|write|"
                       r"publish|merge|reset|truncate|install|uninstall|scale|restart|rollback|promote)\b", re.I)
 MAX_CANDIDATES = 50
@@ -77,6 +94,24 @@ def mcp_servers():
     return names
 
 
+def ado_server(servers=None):
+    """The configured Azure DevOps MCP server's name, else None."""
+    servers = mcp_servers() if servers is None else servers
+    by_low = {n.lower(): n for n in servers}
+    for n in ADO_SERVERS:
+        if n.lower() in by_low:
+            return by_low[n.lower()]
+    return None
+
+
+def is_ado(src):
+    return bool(src) and (src.get("app") == "ado" or src.get("name") == "ado")
+
+
+def default_map(src):
+    return (src or {}).get("map") or (ADO_MAP if is_ado(src) else {})
+
+
 def slug(s):
     return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")[:30] or "custom"
 
@@ -91,6 +126,12 @@ def classify(text):
     if low.startswith("mcp:"):
         name = t[4:].strip()
         return {"kind": "mcp", "name": slug(name), "target": name}
+    if low in ADO_ALIASES or re.match(r"^https?://(dev\.azure\.com|[^/]+\.visualstudio\.com)(/|$)", low):
+        server = ado_server()
+        out = {"kind": "mcp", "name": "ado", "target": server or "ado", "app": "ado", "map": ADO_MAP}
+        if not server:
+            out["note"] = ADO_HINT
+        return out
     if re.match(r"^https?://", low):
         host = re.sub(r"^https?://([^/]+).*", r"\1", low)
         return {"kind": "http", "name": slug(host.split(".")[-2] if host.count(".") else host), "target": t}
@@ -111,10 +152,18 @@ def classify(text):
 
 
 def dig(obj, path):
-    for part in (path or "").split("."):
-        if not part:
-            continue
+    parts = [p for p in (path or "").split(".") if p]
+    i = 0
+    while i < len(parts):
+        part = parts[i]
+        i += 1
         if isinstance(obj, dict):
+            if part not in obj:  # a key with dots in it (ADO's "System.Title"): longest match wins
+                for j in range(len(parts), i, -1):
+                    joined = ".".join(parts[i - 1:j])
+                    if joined in obj:
+                        part, i = joined, j
+                        break
             obj = obj.get(part)
         elif isinstance(obj, list) and part.isdigit() and int(part) < len(obj):
             obj = obj[int(part)]
@@ -142,8 +191,12 @@ def records_of(data, mp):
 
 def first(rec, mp, key, names):
     if mp.get(key):
-        v = dig(rec, mp[key])
-        return v
+        paths = mp[key] if isinstance(mp[key], list) else [mp[key]]
+        for path in paths:  # a list of dot-paths: the first non-empty one wins
+            v = dig(rec, path)
+            if v not in (None, ""):
+                return v
+        return None
     for n in names:
         if isinstance(rec, dict) and rec.get(n) not in (None, ""):
             return rec[n]
@@ -177,6 +230,12 @@ def normalize(name, data, mp=None):
                                        "url": first(rec, mp, "url", ("url", "html_url", "permalink", "link", "shortlink")),
                                        "count": 0})
             c["count"] += int(count) if isinstance(count, (int, float)) else 1
+            extra = {k: dig(rec, v) for k, v in (mp.get("extra") or {}).items()}
+            extra = {k: v for k, v in extra.items() if v not in (None, "")}
+            if extra:
+                c.setdefault("fields", {}).update(extra)
+            if isinstance(c["url"], str):  # an ADO REST url -> the work item's web page
+                c["url"] = re.sub(r"/_apis/wit/workItems/(\d+).*$", r"/_workitems/edit/\1", c["url"], flags=re.I)
     out = []
     for key, c in list(cands.items())[:MAX_CANDIDATES]:
         out.append({"source": "custom", "name": name, "key": key, "fingerprint": f"custom|{name}|{key}", **c})
@@ -187,6 +246,13 @@ def fetch(src, since=None):
     """Return (status, data or error). status: ok | unavailable | refused | agent."""
     kind, target = src.get("kind"), src.get("target") or ""
     if kind == "mcp":
+        if is_ado(src) and target not in mcp_servers():
+            return "unavailable", ADO_HINT
+        if is_ado(src):
+            return "agent", {"server": target, "how": "read-only: wit_query action wiql (Bugs changed in the window, "
+                             "State not Closed/Removed, scoped to collect.ado project/area_path), then wit_work_item "
+                             "action get_batch on those ids; for a ping, one id. Pipe the work items JSON into: "
+                             "collect_custom.py normalize --name " + src.get("name", "ado")}
         return "agent", {"server": target, "how": "call this MCP server's read/list tool (issues, errors or incidents), "
                          "read-only; for a ping, limit 1. Then pipe the JSON into: collect_custom.py normalize --name "
                          + src.get("name", target)}
@@ -238,6 +304,8 @@ def find(cfg, name):
     for s in (cc.collect_block(cfg).get("custom") or []):
         if s.get("name") == name:
             return s
+    if name == "ado":  # `/super-collect ado` with no saved entry: the configured ADO MCP server
+        return {"name": "ado", "kind": "mcp", "target": ado_server() or "ado", "app": "ado"}
     return None
 
 
@@ -296,7 +364,7 @@ def main(argv=None):
             return emit({"name": s["name"], "status": "agent", **data})
         if status != "ok":
             return emit({"name": s["name"], "status": status, "error": data}, 2)
-        cands, _ = normalize(s["name"], data, s.get("map"))
+        cands, _ = normalize(s["name"], data, default_map(s))
         return emit({"name": s["name"], "status": "ok", "count": len(cands), "message": describe(cands, data),
                      "sample": cands[:1]})
 
@@ -324,7 +392,7 @@ def main(argv=None):
             data = json.loads(raw)
         except ValueError:
             data = raw
-        cands, trunc = normalize(s["name"], data, s.get("map"))
+        cands, trunc = normalize(s["name"], data, default_map(s))
         return emit({"source": "custom", "name": s["name"], "truncated": trunc, "candidates": cands})
 
     if a.cmd == "list":
@@ -335,7 +403,7 @@ def main(argv=None):
             status, data = fetch(s, a.since)
             row = {"name": s["name"], "kind": s.get("kind"), "status": status}
             if status == "ok":
-                row["candidates"], row["truncated"] = normalize(s["name"], data, s.get("map"))
+                row["candidates"], row["truncated"] = normalize(s["name"], data, default_map(s))
                 row["status"] = "read" if row["candidates"] else "empty"
             elif status == "agent":
                 row.update(data)

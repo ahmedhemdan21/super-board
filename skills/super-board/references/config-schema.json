@@ -605,6 +605,12 @@
       // Cap on refactor findings filed per run. Default 5.
       "max_findings": 5
     },
+    // Optional scope for the `ado` custom source (Azure DevOps). Absent = every project
+    // the MCP server's org can read.
+    "ado": {
+      "project": "Contoso",
+      "area_path": "Contoso\\Web"
+    },
     // Extra sources added in onboard's "➕ Add another source" (v3.0.0). Each
     // was pinged read-only before it was saved. `/super-collect` runs them with
     // skills/super-collect/scripts/collect_custom.py, turns the output into
@@ -618,9 +624,14 @@
     //   auth_env — optional env var holding a token (http: sent as Bearer). The
     //              name only; the value stays in .env.local / .env (never a tracked file).
     //   map      — optional dot-paths into each record: items (the list), id,
-    //              title, body, url, count. Absent = best guess per record.
+    //              title, body, url, count (a value may be a list of paths: first
+    //              non-empty wins), extra {field: path} copied onto the candidate's
+    //              `fields`. Absent = best guess per record (ado: the work-item map).
+    //   ado      — `/super-collect ado`: Azure DevOps Bugs through the Azure DevOps MCP
+    //              server (@azure-devops/mcp); `target` is that server's name. Read-only.
     "custom": [
       { "name": "linear", "kind": "mcp", "target": "linear", "map": { "items": "issues" } },
+      { "name": "ado", "kind": "mcp", "target": "ado", "app": "ado" },
       { "name": "statuspage", "kind": "http", "target": "https://status.example.com/api/v2/incidents.json",
         "map": { "items": "incidents", "id": "id", "title": "name", "url": "shortlink" } },
       { "name": "vercel-logs", "kind": "cli", "target": "vercel logs --output json" }
