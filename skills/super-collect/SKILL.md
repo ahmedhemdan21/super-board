@@ -121,6 +121,23 @@ source: every candidate goes to the same verifier and the same filer. A source t
 reached is `unavailable`, never `empty`. A command that looks like it changes something is refused
 by the script — never work around that.
 
+### Any MCP server this session has
+
+On `/super-collect <name>`, or when a full run finds an MCP server for a bug or monitoring
+service in this session with no saved entry (Grafana, Jira, Linear, Sentry, …), use it like a
+custom `mcp` source: no onboard step, no preset needed.
+
+- Read-only tools only (list, search, query, get). Never create, update, silence or delete.
+- Pick the server for this project's environment: a `-dev` / `-local` server over an unnamed
+  one; never read a server or datasource whose name says `prod` unless the user named it.
+- Read only open problems in the window: e.g. Grafana → firing alert rules, open incidents,
+  error-pattern logs; Jira / Linear → open bugs. Skip what a built-in source already covers
+  in this run (same alert as `prometheus`, same log group as `loki`, same issue as `sentry`).
+- Pipe the JSON into `python3 $S/collect_custom.py normalize --name <service>` (add
+  `--map '{"id":…,"title":…,"url":…,"body":…}'` when its fields are not the usual
+  id/title/url/description); fp `custom|<service>|<id>`. Then the same verifier and filer.
+- Server missing or failing → record the source `unavailable` and move on.
+
 ### ado — Azure DevOps work items
 
 Runs when `collect.custom` has an `ado` entry (onboard: type `ado`, `azure devops` or a
